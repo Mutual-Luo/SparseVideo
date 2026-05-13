@@ -1,0 +1,28 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "sparsevideo"
+version = "0.1.0"
+description = "Plug-and-play sparse attention for video diffusion models"
+requires-python = ">=3.10"
+license = "Apache-2.0"
+dependencies = [
+    "torch>=2.0.0",
+    "diffusers>=0.36.0",
+    "einops>=0.6.0",
+]
+
+[project.optional-dependencies]
+spargeattn = ["spas-sage-attn"]
+svoo = ["triton"]
+sap = ["flashinfer"]
+adacluster = ["flashinfer", "triton"]
+flashomni = ["flashomni"]
+draft = ["block-sparse-attn"]
+all = ["sparsevideo[spargeattn,svoo,sap,adacluster,flashomni,draft]"]
+dev = ["pytest", "ruff"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/sparsevideo"]

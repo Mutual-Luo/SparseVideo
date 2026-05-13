@@ -1,0 +1,122 @@
+# Local third-party checkouts
+training_free
+training_free/*
+kernels/flash-attention/
+
+# Python bytecode and test caches
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.pyre/
+.ruff_cache/
+.coverage
+coverage.xml
+htmlcov/
+.ipynb_checkpoints/
+
+# Packaging and editable-install artifacts
+build/
+dist/
+*.egg-info/
+.eggs/
+pip-wheel-metadata/
+*.whl
+
+# Native, CUDA, and CMake build outputs
+CMakeCache.txt
+CMakeFiles/
+cmake-build-*/
+.ninja_deps
+.ninja_log
+*.o
+*.a
+*.so
+*.dylib
+*.dll
+*.pyd
+*.cuo
+
+# Local Python environments
+.venv/
+venv/
+env/
+ENV/
+.conda/
+conda-meta/
+
+# Local editor, OS, and shell state
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Secrets and machine-local configuration
+.env
+.env.*
+!.env.example
+*.local
+
+# Runtime caches
+.cache/
+.triton/
+.triton_cache/
+torch_extensions/
+
+# Model weights and large binary artifacts
+/models/
+/checkpoints/
+/checkpoint/
+/ckpts/
+/weights/
+*.safetensors
+*.ckpt
+*.pt
+*.pth
+*.bin
+*.onnx
+*.engine
+
+# Datasets and Hugging Face caches
+/data/
+/datasets/
+/hf_cache/
+/.huggingface/
+
+# Experiment, benchmark, and generation outputs
+outputs/
+output/
+results/
+runs/
+logs/
+wandb/
+tensorboard/
+artifacts/
+samples/
+videos/
+generated/
+eval_outputs/
+benchmark_outputs/
+*.log
+*.mp4
+*.mov
+*.avi
+*.mkv
+*.webm
+
+# Profiling and compiler diagnostics
+*.nsys-rep
+*.qdrep
+*.sqlite
+*.prof
+*.trace
+
+# Vibe
+.codex/
+.vscode/
+.agents/
+AGENTS.md/
+CLAUDE.md/

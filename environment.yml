@@ -1,0 +1,47 @@
+name: sparsevideo
+channels:
+  - conda-forge
+  - nvidia
+dependencies:
+  - python=3.11
+  - pip
+  - setuptools
+  - wheel
+  - packaging
+  - cmake
+  - ninja
+  - make
+  - pkg-config
+  - cuda-toolkit=12.8
+  - cuda-nvcc=12.8
+  - gcc_linux-64
+  - gxx_linux-64
+  - sysroot_linux-64
+  - git
+  - git-lfs
+  - ffmpeg
+  - pip:
+      - transformers
+      - accelerate
+      - safetensors
+      - huggingface_hub
+      - sentencepiece
+      - protobuf
+      - einops
+      - numpy
+      - scipy
+      - pillow
+      - opencv-python
+      - imageio
+      - imageio-ffmpeg
+      - tqdm
+      - rich
+      - pydantic
+      - scikit-learn
+      - matplotlib
+      - loguru
+      - pandas
+      - ftfy
+      - termcolor
+      - tabulate
+      - scikit-image

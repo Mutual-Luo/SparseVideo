@@ -1,0 +1,282 @@
+"""Triton k-means clustering kernels.
+
+Port of: training_free/Adacluster/triton_kernel/fast_kmeans.py
+Simplified for [B, N, D] input (B = batch*heads, already folded by method code).
+"""
+from __future__ import annotations
+
+import torch
+import triton
+import triton.language as tl
+
+
+@triton.jit
+def _norm_sq_kernel(
+    Centroids,
+    Norms,
+    K: tl.constexpr,
+    D: tl.constexpr,
+    stride_cb: tl.constexpr,
+    stride_ck: tl.constexpr,
+    stride_cd: tl.constexpr,
+    stride_nb: tl.constexpr,
+    stride_nk: tl.constexpr,
+    BLOCK_K: tl.constexpr,
+):
+    bid = tl.program_id(1)
+    block_k = tl.program_id(0)
+
+    c_ptr = tl.make_block_ptr(
+        base=Centroids + bid * stride_cb,
+        shape=(K, D),
+        strides=(stride_ck, stride_cd),
+        offsets=(block_k * BLOCK_K, 0),
+        block_shape=(BLOCK_K, D),
+        order=(1, 0),
+    )
+    c = tl.load(c_ptr, boundary_check=(0,), padding_option="zero")
+    norms = tl.sum(c * c, axis=1)
+
+    n_ptr = tl.make_block_ptr(
+        base=Norms + bid * stride_nb,
+        shape=(K,),
+        strides=(stride_nk,),
+        offsets=(block_k * BLOCK_K,),
+        block_shape=(BLOCK_K,),
+        order=(0,),
+    )
+    tl.store(n_ptr, norms, boundary_check=(0,))
+
+
+@triton.jit
+def _assign_kernel(
+    X,
+    Centroids,
+    CentroidNorms,
+    Labels,
+    N: tl.constexpr,
+    K: tl.constexpr,
+    D: tl.constexpr,
+    stride_xb: tl.constexpr,
+    stride_xn: tl.constexpr,
+    stride_xd: tl.constexpr,
+    stride_cb: tl.constexpr,
+    stride_ck: tl.constexpr,
+    stride_cd: tl.constexpr,
+    stride_nb: tl.constexpr,
+    stride_nk: tl.constexpr,
+    stride_lb: tl.constexpr,
+    stride_ln: tl.constexpr,
+    BLOCK_N: tl.constexpr,
+    BLOCK_K: tl.constexpr,
+):
+    bid = tl.program_id(1)
+    block_n = tl.program_id(0)
+
+    x_ptr = tl.make_block_ptr(
+        base=X + bid * stride_xb,
+        shape=(N, D),
+        strides=(stride_xn, stride_xd),
+        offsets=(block_n * BLOCK_N, 0),
+        block_shape=(BLOCK_N, D),
+        order=(1, 0),
+    )
+    x = tl.load(x_ptr, boundary_check=(0,), padding_option="zero")
+
+    min_dist = tl.full([BLOCK_N], float("inf"), dtype=tl.float32)
+    min_idx = tl.zeros([BLOCK_N], dtype=tl.int32)
+
+    for k_start in range(0, K, BLOCK_K):
+        c_ptr = tl.make_block_ptr(
+            base=Centroids + bid * stride_cb,
+            shape=(D, K),
+            strides=(stride_cd, stride_ck),
+            offsets=(0, k_start),
+            block_shape=(D, BLOCK_K),
+            order=(0, 1),
+        )
+        c_t = tl.load(c_ptr, boundary_check=(1,), padding_option="zero")
+
+        n_ptr = tl.make_block_ptr(
+            base=CentroidNorms + bid * stride_nb,
+            shape=(K,),
+            strides=(stride_nk,),
+            offsets=(k_start,),
+            block_shape=(BLOCK_K,),
+            order=(0,),
+        )
+        norms = tl.load(n_ptr, boundary_check=(0,), padding_option="zero")
+
+        dots = tl.dot(x, c_t)
+        dist = norms[None, :] - 2.0 * dots
+
+        invalid = tl.arange(0, BLOCK_K) >= (K - k_start)
+        dist = tl.where(invalid[None, :], float("inf"), dist)
+
+        block_min, block_argmin = tl.min(dist, axis=1, return_indices=True)
+        block_argmin = block_argmin + k_start
+
+        update = block_min < min_dist
+        n_valid = tl.arange(0, BLOCK_N) < (N - block_n * BLOCK_N)
+        update = update & n_valid
+        min_dist = tl.where(update, block_min, min_dist)
+        min_idx = tl.where(update, block_argmin, min_idx)
+
+    l_ptr = tl.make_block_ptr(
+        base=Labels + bid * stride_lb,
+        shape=(N,),
+        strides=(stride_ln,),
+        offsets=(block_n * BLOCK_N,),
+        block_shape=(BLOCK_N,),
+        order=(0,),
+    )
+    tl.store(l_ptr, min_idx, boundary_check=(0,))
+
+
+@triton.jit
+def _update_centroids_kernel(
+    X,
+    Labels,
+    NewCentroids,
+    Counts,
+    N: tl.constexpr,
+    K: tl.constexpr,
+    D: tl.constexpr,
+    stride_xb: tl.constexpr,
+    stride_xn: tl.constexpr,
+    stride_xd: tl.constexpr,
+    stride_lb: tl.constexpr,
+    stride_ln: tl.constexpr,
+    stride_cb: tl.constexpr,
+    stride_ck: tl.constexpr,
+    stride_cd: tl.constexpr,
+    stride_ctb: tl.constexpr,
+    stride_ctk: tl.constexpr,
+    BLOCK_N: tl.constexpr,
+):
+    bid = tl.program_id(1)
+    block_n = tl.program_id(0)
+
+    n_range = block_n * BLOCK_N + tl.arange(0, BLOCK_N)
+    n_mask = n_range < N
+
+    l_ptrs = Labels + bid * stride_lb + n_range * stride_ln
+    labels = tl.load(l_ptrs, mask=n_mask, other=0)
+
+    d_range = tl.arange(0, D)
+    x_ptrs = X + bid * stride_xb + n_range[:, None] * stride_xn + d_range[None, :] * stride_xd
+    x = tl.load(x_ptrs, mask=n_mask[:, None], other=0.0)
+
+    c_ptrs = NewCentroids + bid * stride_cb + labels[:, None] * stride_ck + d_range[None, :] * stride_cd
+    tl.atomic_add(c_ptrs, x.to(NewCentroids.type.element_ty), mask=n_mask[:, None])
+
+    ct_ptrs = Counts + bid * stride_ctb + labels * stride_ctk
+    tl.atomic_add(ct_ptrs, tl.full([BLOCK_N], 1, dtype=tl.int32), mask=n_mask)
+
+
+def triton_kmeans(
+    x: torch.Tensor,
+    n_clusters: int,
+    max_iters: int = 10,
+    init_centroids: torch.Tensor | None = None,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Triton-accelerated batch k-means.
+
+    Args:
+        x: [B, N, D] input tokens
+        n_clusters: number of clusters
+        max_iters: maximum iterations
+        init_centroids: optional [B, K, D] initial centroids
+
+    Returns:
+        labels: [B, N] cluster assignments
+        centroids: [B, K, D] final centroids
+        sizes: [B, K] cluster sizes
+    """
+    B, N, D = x.shape
+    K = min(n_clusters, N)
+    device = x.device
+
+    assert D in (16, 32, 64, 128, 256), f"head_dim {D} not supported, must be power of 2 in [16..256]"
+
+    if init_centroids is not None and init_centroids.shape == (B, K, D):
+        centroids = init_centroids.to(device=device, dtype=x.dtype).contiguous()
+    else:
+        idx = torch.randint(0, N, (B, K), device=device)
+        centroids = torch.gather(x, 1, idx.unsqueeze(-1).expand(-1, -1, D)).contiguous()
+
+    BLOCK_N = 64
+    BLOCK_K = min(64, K)
+    BLOCK_K_NORM = min(64, K)
+
+    labels = torch.empty(B, N, dtype=torch.int32, device=device)
+    norms = torch.empty(B, K, dtype=torch.float32, device=device)
+
+    for _ in range(max_iters):
+        # Step 1: compute centroid norms
+        grid_norm = (triton.cdiv(K, BLOCK_K_NORM), B)
+        _norm_sq_kernel[grid_norm](
+            centroids, norms,
+            K=K, D=D,
+            stride_cb=centroids.stride(0), stride_ck=centroids.stride(1), stride_cd=centroids.stride(2),
+            stride_nb=norms.stride(0), stride_nk=norms.stride(1),
+            BLOCK_K=BLOCK_K_NORM,
+        )
+
+        # Step 2: assign clusters
+        grid_assign = (triton.cdiv(N, BLOCK_N), B)
+        _assign_kernel[grid_assign](
+            x, centroids, norms, labels,
+            N=N, K=K, D=D,
+            stride_xb=x.stride(0), stride_xn=x.stride(1), stride_xd=x.stride(2),
+            stride_cb=centroids.stride(0), stride_ck=centroids.stride(1), stride_cd=centroids.stride(2),
+            stride_nb=norms.stride(0), stride_nk=norms.stride(1),
+            stride_lb=labels.stride(0), stride_ln=labels.stride(1),
+            BLOCK_N=BLOCK_N, BLOCK_K=BLOCK_K,
+        )
+
+        # Step 3: update centroids via atomic add
+        new_centroids = torch.zeros(B, K, D, dtype=torch.float32, device=device)
+        counts = torch.zeros(B, K, dtype=torch.int32, device=device)
+
+        grid_update = (triton.cdiv(N, BLOCK_N), B)
+        _update_centroids_kernel[grid_update](
+            x, labels, new_centroids, counts,
+            N=N, K=K, D=D,
+            stride_xb=x.stride(0), stride_xn=x.stride(1), stride_xd=x.stride(2),
+            stride_lb=labels.stride(0), stride_ln=labels.stride(1),
+            stride_cb=new_centroids.stride(0), stride_ck=new_centroids.stride(1), stride_cd=new_centroids.stride(2),
+            stride_ctb=counts.stride(0), stride_ctk=counts.stride(1),
+            BLOCK_N=BLOCK_N,
+        )
+
+        safe_counts = counts.clamp(min=1).unsqueeze(-1).float()
+        new_centroids = (new_centroids / safe_counts).to(x.dtype)
+
+        if torch.allclose(centroids, new_centroids, atol=1e-4):
+            centroids = new_centroids
+            break
+        centroids = new_centroids.contiguous()
+
+    # Final assignment with converged centroids
+    _norm_sq_kernel[(triton.cdiv(K, BLOCK_K_NORM), B)](
+        centroids, norms,
+        K=K, D=D,
+        stride_cb=centroids.stride(0), stride_ck=centroids.stride(1), stride_cd=centroids.stride(2),
+        stride_nb=norms.stride(0), stride_nk=norms.stride(1),
+        BLOCK_K=BLOCK_K_NORM,
+    )
+    _assign_kernel[(triton.cdiv(N, BLOCK_N), B)](
+        x, centroids, norms, labels,
+        N=N, K=K, D=D,
+        stride_xb=x.stride(0), stride_xn=x.stride(1), stride_xd=x.stride(2),
+        stride_cb=centroids.stride(0), stride_ck=centroids.stride(1), stride_cd=centroids.stride(2),
+        stride_nb=norms.stride(0), stride_nk=norms.stride(1),
+        stride_lb=labels.stride(0), stride_ln=labels.stride(1),
+        BLOCK_N=BLOCK_N, BLOCK_K=BLOCK_K,
+    )
+
+    sizes = torch.zeros(B, K, dtype=torch.long, device=device)
+    sizes.scatter_add_(1, labels.long(), torch.ones(B, N, dtype=torch.long, device=device))
+
+    return labels, centroids, sizes
