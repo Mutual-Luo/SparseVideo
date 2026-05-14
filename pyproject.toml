@@ -17,11 +17,11 @@ dependencies = [
 [project.optional-dependencies]
 spargeattn = ["spas-sage-attn"]
 svoo = ["triton"]
-sap = ["flashinfer"]
+svg2 = ["triton"]
 adacluster = ["flashinfer", "triton"]
 flashomni = ["flashomni"]
 draft = ["block-sparse-attn"]
-all = ["sparsevideo[spargeattn,svoo,sap,adacluster,flashomni,draft]"]
+all = ["sparsevideo[spargeattn,svoo,svg2,adacluster,flashomni,draft]"]
 dev = ["pytest", "ruff"]
 
 [tool.hatch.build.targets.wheel]

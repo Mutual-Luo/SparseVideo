@@ -1,7 +1,6 @@
 from __future__ import annotations
 
-from math import ceil, prod
-from typing import Any, Tuple
+from math import ceil
 
 import torch
 import torch.nn.functional as F
@@ -10,6 +9,7 @@ from diffusers.models.attention_dispatch import dispatch_attention_fn
 
 from ._base import SparseMethod
 from ..processors.wan import SparseWanAttnProcessor
+from ..processors.hunyuan_video import SparseHunyuanVideoAttnProcessor
 
 
 class STAMethod(SparseMethod):
@@ -20,57 +20,74 @@ class STAMethod(SparseMethod):
     }
 
     def create_processor(self, layer_idx, total_layers, original_processor, step_tracker):
-        if self.model_info.model_type == "wan":
-            tile_size = tuple(self.config["tile_size"])
-            skip_steps = self.config["skip_first_steps"]
-            skip_layers = self.config["skip_first_layers"]
+        if self.model_info.model_type not in ("wan", "hunyuan_video"):
+            raise NotImplementedError(f"sta not yet supported for {self.model_info.model_type}")
 
-            def attn_fn(query, key, value, attention_mask):
-                use_sparse = (
-                    layer_idx >= skip_layers
-                    and step_tracker.step > skip_steps
+        tile_size = tuple(self.config["tile_size"])
+        skip_steps = self.config["skip_first_steps"]
+        skip_layers = self.config["skip_first_layers"]
+        model_type = self.model_info.model_type
+
+        def attn_fn(query, key, value, attention_mask, **kwargs):
+            use_sparse = (
+                layer_idx >= skip_layers
+                and step_tracker.step > skip_steps
+            )
+            if not use_sparse:
+                return dispatch_attention_fn(
+                    query, key, value,
+                    attn_mask=attention_mask, dropout_p=0.0, is_causal=False,
                 )
-                if not use_sparse:
-                    return dispatch_attention_fn(
-                        query, key, value,
-                        attn_mask=attention_mask, dropout_p=0.0, is_causal=False,
-                    )
-                return _sta_attention(query, key, value, tile_size=tile_size)
+            text_len = kwargs.get("text_len", 0)
+            return _sta_attention(query, key, value, tile_size=tile_size,
+                                  model_type=model_type, text_len=text_len)
 
+        if self.model_info.model_type == "wan":
             return SparseWanAttnProcessor(
                 attn_fn=attn_fn, layer_idx=layer_idx, step_tracker=step_tracker,
             )
-        raise NotImplementedError(f"sta not yet supported for {self.model_info.model_type}")
+        return SparseHunyuanVideoAttnProcessor(
+            attn_fn=attn_fn, layer_idx=layer_idx, step_tracker=step_tracker,
+        )
 
 
-def _sta_attention(query, key, value, tile_size):
+def _sta_attention(query, key, value, tile_size, model_type="wan", text_len=0):
     """Sliding Tile Attention: compute attention independently within 3D tiles.
 
     query/key/value: [B, N, H, D]
     tile_size: (T_tile, H_tile, W_tile)
     """
     B, N, H, D = query.shape
-    scale = D ** -0.5
 
-    # Determine video structure
-    context_len = 226
-    if N <= context_len:
+    # Determine token layout: Wan has text at START, HunyuanVideo has text at END
+    if model_type == "hunyuan_video":
+        ctx_start = N - text_len if text_len > 0 else N
+        vid_start = 0
+        video_len = ctx_start
+    else:
+        context_len = 226
+        vid_start = context_len
+        ctx_start = 0
+        video_len = N - context_len
+
+    if video_len <= 0:
         return dispatch_attention_fn(query, key, value, attn_mask=None, dropout_p=0.0, is_causal=False)
 
-    video_len = N - context_len
-    T, spatial_h, spatial_w = _infer_video_shape(video_len)
+    try:
+        T, spatial_h, spatial_w = _infer_video_shape(video_len)
+        if T * spatial_h * spatial_w != video_len:
+            raise ValueError("shape mismatch")
+    except (ValueError, RuntimeError):
+        return dispatch_attention_fn(query, key, value, attn_mask=None, dropout_p=0.0, is_causal=False)
 
     ts, hs, ws = tile_size
     tile_tokens = ts * hs * ws
 
-    # Split into context and video
-    q_ctx = query[:, :context_len, :, :]
-    k_ctx = key[:, :context_len, :, :]
-    v_ctx = value[:, :context_len, :, :]
-
-    q_vid = query[:, context_len:context_len + T * spatial_h * spatial_w, :, :]
-    k_vid = key[:, context_len:context_len + T * spatial_h * spatial_w, :, :]
-    v_vid = value[:, context_len:context_len + T * spatial_h * spatial_w, :, :]
+    # Extract video tokens
+    vid_end = vid_start + T * spatial_h * spatial_w
+    q_vid = query[:, vid_start:vid_end, :, :]
+    k_vid = key[:, vid_start:vid_end, :, :]
+    v_vid = value[:, vid_start:vid_end, :, :]
 
     # Reshape video tokens to [B, T, H_s, W_s, H_head, D]
     q_3d = q_vid.view(B, T, spatial_h, spatial_w, H, D)
@@ -93,7 +110,7 @@ def _sta_attention(query, key, value, tile_size):
     k_tiles = k_3d.view(B, nT, ts, nH, hs, nW, ws, H, D)
     v_tiles = v_3d.view(B, nT, ts, nH, hs, nW, ws, H, D)
 
-    # Merge tile spatial dims: [B, nT, nH, nW, ts*hs*ws, H, D]
+    # Merge tile spatial dims: [B, num_tiles, ts*hs*ws, H, D]
     q_tiles = q_tiles.permute(0, 1, 3, 5, 2, 4, 6, 7, 8).reshape(B, nT * nH * nW, tile_tokens, H, D)
     k_tiles = k_tiles.permute(0, 1, 3, 5, 2, 4, 6, 7, 8).reshape(B, nT * nH * nW, tile_tokens, H, D)
     v_tiles = v_tiles.permute(0, 1, 3, 5, 2, 4, 6, 7, 8).reshape(B, nT * nH * nW, tile_tokens, H, D)
@@ -105,7 +122,6 @@ def _sta_attention(query, key, value, tile_size):
     v_flat = v_tiles.reshape(B * num_tiles, tile_tokens, H, D).permute(0, 2, 1, 3)
 
     out_flat = F.scaled_dot_product_attention(q_flat, k_flat, v_flat, dropout_p=0.0)
-    # [B*num_tiles, H, tile_tokens, D]
 
     # Reshape back
     out_tiles = out_flat.permute(0, 2, 1, 3).reshape(B, nT, nH, nW, ts, hs, ws, H, D)
@@ -115,21 +131,30 @@ def _sta_attention(query, key, value, tile_size):
     out_3d = out_3d[:, :T, :spatial_h, :spatial_w, :, :]
     out_vid = out_3d.reshape(B, T * spatial_h * spatial_w, H, D)
 
-    # Context: use dense attention (context attends to all context + video)
-    q_all_for_ctx = query[:, :context_len, :, :].permute(0, 2, 1, 3)
+    # Context tokens: use dense attention
     k_all = key.permute(0, 2, 1, 3)
     v_all = value.permute(0, 2, 1, 3)
-    out_ctx = F.scaled_dot_product_attention(q_all_for_ctx, k_all, v_all, dropout_p=0.0)
-    out_ctx = out_ctx.permute(0, 2, 1, 3)  # [B, context_len, H, D]
 
-    # Combine
-    remaining = N - context_len - T * spatial_h * spatial_w
-    out = torch.cat([out_ctx, out_vid], dim=1)
-    if remaining > 0:
-        # Handle any remaining tokens with dense attention
-        q_rem = query[:, context_len + T * spatial_h * spatial_w:, :, :].permute(0, 2, 1, 3)
-        out_rem = F.scaled_dot_product_attention(q_rem, k_all, v_all, dropout_p=0.0)
-        out = torch.cat([out, out_rem.permute(0, 2, 1, 3)], dim=1)
+    if model_type == "hunyuan_video":
+        # Text tokens at end; video output is first, then dense for text
+        parts = [out_vid]
+        if text_len > 0:
+            q_ctx = query[:, ctx_start:, :, :].permute(0, 2, 1, 3)
+            out_ctx = F.scaled_dot_product_attention(q_ctx, k_all, v_all, dropout_p=0.0)
+            parts.append(out_ctx.permute(0, 2, 1, 3))
+        out = torch.cat(parts, dim=1)
+    else:
+        # Wan: text at start, video after
+        q_ctx = query[:, :vid_start, :, :].permute(0, 2, 1, 3)
+        out_ctx = F.scaled_dot_product_attention(q_ctx, k_all, v_all, dropout_p=0.0)
+        out_ctx = out_ctx.permute(0, 2, 1, 3)
+        out = torch.cat([out_ctx, out_vid], dim=1)
+        # Handle any remaining tokens after video
+        remaining = N - vid_start - T * spatial_h * spatial_w
+        if remaining > 0:
+            q_rem = query[:, vid_end:, :, :].permute(0, 2, 1, 3)
+            out_rem = F.scaled_dot_product_attention(q_rem, k_all, v_all, dropout_p=0.0)
+            out = torch.cat([out, out_rem.permute(0, 2, 1, 3)], dim=1)
 
     return out
 

@@ -7,6 +7,7 @@ from diffusers.models.attention_dispatch import dispatch_attention_fn
 
 from ._base import SparseMethod
 from ..processors.wan import SparseWanAttnProcessor
+from ..processors.hunyuan_video import SparseHunyuanVideoAttnProcessor
 from ..kernels.kmeans import triton_kmeans
 from ..kernels.block_sparse_attn import block_sparse_attention
 
@@ -30,33 +31,43 @@ class AdaClusterMethod(SparseMethod):
     }
 
     def create_processor(self, layer_idx, total_layers, original_processor, step_tracker):
-        if self.model_info.model_type == "wan":
-            cfg = self.config
-            skip_steps = cfg["skip_first_steps"]
-            skip_layers = cfg["skip_first_layers"]
+        if self.model_info.model_type not in ("wan", "hunyuan_video"):
+            raise NotImplementedError(f"adacluster not yet supported for {self.model_info.model_type}")
 
-            def attn_fn(query, key, value, attention_mask):
-                use_sparse = (
-                    layer_idx >= skip_layers
-                    and step_tracker.step > skip_steps
-                )
-                if not use_sparse:
-                    return dispatch_attention_fn(
-                        query, key, value,
-                        attn_mask=attention_mask, dropout_p=0.0, is_causal=False,
-                    )
-                return _adacluster_attention(
+        cfg = self.config
+        skip_steps = cfg["skip_first_steps"]
+        skip_layers = cfg["skip_first_layers"]
+
+        def attn_fn(query, key, value, attention_mask, **kwargs):
+            use_sparse = (
+                layer_idx >= skip_layers
+                and step_tracker.step > skip_steps
+            )
+            if not use_sparse:
+                return dispatch_attention_fn(
                     query, key, value,
-                    budget=cfg["budget"],
-                    num_clusters=cfg["num_clusters"],
-                    distance=cfg["distance"],
-                    kmeans_iters=cfg["kmeans_iters"],
+                    attn_mask=attention_mask, dropout_p=0.0, is_causal=False,
                 )
+            if not query.is_cuda:
+                return dispatch_attention_fn(
+                    query, key, value,
+                    attn_mask=attention_mask, dropout_p=0.0, is_causal=False,
+                )
+            return _adacluster_attention(
+                query, key, value,
+                budget=cfg["budget"],
+                num_clusters=cfg["num_clusters"],
+                distance=cfg["distance"],
+                kmeans_iters=cfg["kmeans_iters"],
+            )
 
+        if self.model_info.model_type == "wan":
             return SparseWanAttnProcessor(
                 attn_fn=attn_fn, layer_idx=layer_idx, step_tracker=step_tracker,
             )
-        raise NotImplementedError(f"adacluster not yet supported for {self.model_info.model_type}")
+        return SparseHunyuanVideoAttnProcessor(
+            attn_fn=attn_fn, layer_idx=layer_idx, step_tracker=step_tracker,
+        )
 
 
 def _adacluster_attention(query, key, value, budget, num_clusters, distance, kmeans_iters):
@@ -64,6 +75,11 @@ def _adacluster_attention(query, key, value, budget, num_clusters, distance, kme
 
     query/key/value: [B, N, H, D]
     """
+    if not query.is_cuda:
+        return dispatch_attention_fn(
+            query, key, value, attn_mask=None, dropout_p=0.0, is_causal=False,
+        )
+
     B, N, H, D = query.shape
     scale = D ** -0.5
 
@@ -93,13 +109,13 @@ def _adacluster_attention(query, key, value, budget, num_clusters, distance, kme
     q_sizes = torch.zeros(B * H, nc, dtype=torch.long, device=query.device)
     q_sizes.scatter_add_(1, q_labels.long(), torch.ones(B * H, N, dtype=torch.long, device=query.device))
 
-    q_centroids = torch.zeros(B * H, nc, D, device=query.device, dtype=query.dtype)
-    q_centroids.scatter_add_(1, q_labels.long().unsqueeze(-1).expand(-1, -1, D), q_flat)
+    q_centroids = torch.zeros(B * H, nc, D, device=query.device, dtype=torch.float32)
+    q_centroids.scatter_add_(1, q_labels.long().unsqueeze(-1).expand(-1, -1, D), q_flat.float())
     safe_qsizes = q_sizes.clamp(min=1).unsqueeze(-1).float()
     q_centroids = q_centroids / safe_qsizes
 
     # Cluster-level attention → top-k → dynamic map
-    cluster_scores = torch.matmul(q_centroids, k_centroids.transpose(-2, -1)) * scale
+    cluster_scores = torch.matmul(q_centroids, k_centroids.float().transpose(-2, -1)) * scale
     cluster_attn = F.softmax(cluster_scores, dim=-1)
 
     k_keep = max(1, int(nc * budget))

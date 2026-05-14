@@ -10,6 +10,7 @@ from diffusers.models.attention_dispatch import dispatch_attention_fn
 
 from ._base import SparseMethod
 from ..processors.wan import SparseWanAttnProcessor
+from ..processors.hunyuan_video import SparseHunyuanVideoAttnProcessor
 
 
 class SVGMethod(SparseMethod):
@@ -27,38 +28,47 @@ class SVGMethod(SparseMethod):
     }
 
     def create_processor(self, layer_idx, total_layers, original_processor, step_tracker):
-        if self.model_info.model_type == "wan":
-            cfg = self.config
-            skip_steps = cfg["skip_first_steps"]
-            skip_layers = cfg["skip_first_layers"]
+        if self.model_info.model_type not in ("wan", "hunyuan_video"):
+            raise NotImplementedError(f"svg not yet supported for {self.model_info.model_type}")
 
-            state = {"block_mask": None, "profiled_step": -1}
+        cfg = self.config
+        skip_steps = cfg["skip_first_steps"]
+        skip_layers = cfg["skip_first_layers"]
 
-            def attn_fn(query, key, value, attention_mask):
-                use_sparse = (
-                    layer_idx >= skip_layers
-                    and step_tracker.step > skip_steps
-                )
-                if not use_sparse:
-                    return dispatch_attention_fn(
-                        query, key, value,
-                        attn_mask=attention_mask, dropout_p=0.0, is_causal=False,
-                    )
-                return _svg_attention(
+        state = {"block_mask": None, "profiled_step": -1}
+        model_type = self.model_info.model_type
+
+        def attn_fn(query, key, value, attention_mask, **kwargs):
+            use_sparse = (
+                layer_idx >= skip_layers
+                and step_tracker.step > skip_steps
+            )
+            if not use_sparse:
+                return dispatch_attention_fn(
                     query, key, value,
-                    multiplier=cfg["multiplier"],
-                    num_sampled_rows=cfg["num_sampled_rows"],
-                    state=state,
-                    step_tracker_step=step_tracker.step,
+                    attn_mask=attention_mask, dropout_p=0.0, is_causal=False,
                 )
+            return _svg_attention(
+                query, key, value,
+                multiplier=cfg["multiplier"],
+                num_sampled_rows=cfg["num_sampled_rows"],
+                state=state,
+                step_tracker_step=step_tracker.step,
+                model_type=model_type,
+                text_len=kwargs.get("text_len", 0),
+            )
 
+        if self.model_info.model_type == "wan":
             return SparseWanAttnProcessor(
                 attn_fn=attn_fn, layer_idx=layer_idx, step_tracker=step_tracker,
             )
-        raise NotImplementedError(f"svg not yet supported for {self.model_info.model_type}")
+        return SparseHunyuanVideoAttnProcessor(
+            attn_fn=attn_fn, layer_idx=layer_idx, step_tracker=step_tracker,
+        )
 
 
-def _svg_attention(query, key, value, multiplier, num_sampled_rows, state, step_tracker_step):
+def _svg_attention(query, key, value, multiplier, num_sampled_rows, state,
+                   step_tracker_step, model_type="wan", text_len=0):
     """SVG stripe-based sparse attention with per-head profiling.
 
     query/key/value: [B, N, H, D]
@@ -66,13 +76,18 @@ def _svg_attention(query, key, value, multiplier, num_sampled_rows, state, step_
     B, N, H, D = query.shape
     scale = D ** -0.5
 
-    context_len = 226
-    if N <= context_len:
+    if model_type == "hunyuan_video":
+        context_len = 0
+        video_len = N - text_len
+    else:
+        context_len = 226
+        video_len = N - context_len
+
+    if video_len <= 0:
         return dispatch_attention_fn(
             query, key, value, attn_mask=None, dropout_p=0.0, is_causal=False,
         )
 
-    video_len = N - context_len
     frame_size = _estimate_frame_size(video_len)
     num_frames = video_len // frame_size
     video_end = context_len + num_frames * frame_size

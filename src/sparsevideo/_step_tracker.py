@@ -21,7 +21,7 @@ class StepTracker:
         self._prev_timestep: Optional[float] = None
 
     def _hook(self, module, args, kwargs=None):
-        t_val = self._extract_timestep(args)
+        t_val = self._extract_timestep(args, kwargs or {})
         if t_val is None:
             return
 
@@ -30,7 +30,13 @@ class StepTracker:
             self.timestep = t_val
             self.step += 1
 
-    def _extract_timestep(self, args) -> Optional[float]:
+    def _extract_timestep(self, args, kwargs) -> Optional[float]:
+        for key in ("timestep", "timesteps", "t"):
+            if key in kwargs:
+                value = self._to_float(kwargs[key])
+                if value is not None:
+                    return value
+
         if self._model_type == "wan":
             idx = 1
         elif self._model_type == "hunyuan_video":
@@ -41,11 +47,14 @@ class StepTracker:
             idx = 1
 
         if idx < len(args):
-            candidate = args[idx]
-            if isinstance(candidate, (int, float)):
-                return float(candidate)
-            if isinstance(candidate, torch.Tensor) and candidate.numel() <= 16:
-                return candidate.flatten()[0].item()
+            return self._to_float(args[idx])
+        return None
+
+    def _to_float(self, candidate) -> Optional[float]:
+        if isinstance(candidate, (int, float)):
+            return float(candidate)
+        if isinstance(candidate, torch.Tensor) and candidate.numel() <= 16:
+            return candidate.flatten()[0].item()
         return None
 
     def reset(self):
@@ -58,6 +67,6 @@ def install_step_tracker(model_info: ModelInfo):
     tracker = StepTracker(model_type=model_info.model_type)
     hooks = []
     for transformer in model_info.transformers:
-        h = transformer.register_forward_pre_hook(tracker._hook)
+        h = transformer.register_forward_pre_hook(tracker._hook, with_kwargs=True)
         hooks.append(h)
     return tracker, hooks

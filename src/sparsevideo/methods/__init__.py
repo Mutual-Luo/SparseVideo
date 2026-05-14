@@ -18,13 +18,13 @@ except ImportError:
 
 try:
     from .svg import SVGMethod
-    register_method("svg", SVGMethod)
+    register_method("svg1", SVGMethod)
 except ImportError:
     pass
 
 try:
-    from .sap import SAPMethod
-    register_method("sap", SAPMethod)
+    from .sap import SVG2Method
+    register_method("svg2", SVG2Method)
 except ImportError:
     pass
 

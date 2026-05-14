@@ -11,4 +11,6 @@ class DenseMethod(SparseMethod):
     CONFIG_DEFAULTS = {}
 
     def create_processor(self, layer_idx, total_layers, original_processor, step_tracker):
+        if self.model_info.model_type not in ("wan", "hunyuan_video"):
+            raise NotImplementedError(f"dense not yet supported for {self.model_info.model_type}")
         return original_processor

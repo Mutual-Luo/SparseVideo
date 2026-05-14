@@ -7,6 +7,7 @@ from diffusers.models.attention_dispatch import dispatch_attention_fn
 
 from ._base import SparseMethod
 from ..processors.wan import SparseWanAttnProcessor
+from ..processors.hunyuan_video import SparseHunyuanVideoAttnProcessor
 from ..kernels.kmeans import triton_kmeans
 from ..kernels.block_sparse_attn import block_sparse_attention
 from ..kernels.co_cluster import profile_norm, co_cluster_assign
@@ -32,37 +33,47 @@ class SVOOMethod(SparseMethod):
     }
 
     def create_processor(self, layer_idx, total_layers, original_processor, step_tracker):
-        if self.model_info.model_type == "wan":
-            cfg = self.config
-            skip_steps = cfg["skip_first_steps"]
-            skip_layers = cfg["skip_first_layers"]
+        if self.model_info.model_type not in ("wan", "hunyuan_video"):
+            raise NotImplementedError(f"svoo not yet supported for {self.model_info.model_type}")
 
-            state = {"prev_k_centroids": None, "prev_q_profile_centroids": None}
+        cfg = self.config
+        skip_steps = cfg["skip_first_steps"]
+        skip_layers = cfg["skip_first_layers"]
 
-            def attn_fn(query, key, value, attention_mask):
-                use_sparse = (
-                    layer_idx >= skip_layers
-                    and step_tracker.step > skip_steps
-                )
-                if not use_sparse:
-                    return dispatch_attention_fn(
-                        query, key, value,
-                        attn_mask=attention_mask, dropout_p=0.0, is_causal=False,
-                    )
-                return _svoo_attention(
+        state = {"prev_k_centroids": None, "prev_q_profile_centroids": None}
+
+        def attn_fn(query, key, value, attention_mask, **kwargs):
+            use_sparse = (
+                layer_idx >= skip_layers
+                and step_tracker.step > skip_steps
+            )
+            if not use_sparse:
+                return dispatch_attention_fn(
                     query, key, value,
-                    budget=cfg["budget"],
-                    num_q_centroids=cfg["num_q_centroids"],
-                    num_k_centroids=cfg["num_k_centroids"],
-                    kmeans_iters=cfg["kmeans_iters"],
-                    min_kc_ratio=cfg["min_kc_ratio"],
-                    state=state,
+                    attn_mask=attention_mask, dropout_p=0.0, is_causal=False,
                 )
+            if not query.is_cuda:
+                return dispatch_attention_fn(
+                    query, key, value,
+                    attn_mask=attention_mask, dropout_p=0.0, is_causal=False,
+                )
+            return _svoo_attention(
+                query, key, value,
+                budget=cfg["budget"],
+                num_q_centroids=cfg["num_q_centroids"],
+                num_k_centroids=cfg["num_k_centroids"],
+                kmeans_iters=cfg["kmeans_iters"],
+                min_kc_ratio=cfg["min_kc_ratio"],
+                state=state,
+            )
 
+        if self.model_info.model_type == "wan":
             return SparseWanAttnProcessor(
                 attn_fn=attn_fn, layer_idx=layer_idx, step_tracker=step_tracker,
             )
-        raise NotImplementedError(f"svoo not yet supported for {self.model_info.model_type}")
+        return SparseHunyuanVideoAttnProcessor(
+            attn_fn=attn_fn, layer_idx=layer_idx, step_tracker=step_tracker,
+        )
 
 
 def _svoo_attention(query, key, value, budget, num_q_centroids, num_k_centroids,
@@ -71,6 +82,11 @@ def _svoo_attention(query, key, value, budget, num_q_centroids, num_k_centroids,
 
     query/key/value: [B, N, H, D]
     """
+    if not query.is_cuda:
+        return dispatch_attention_fn(
+            query, key, value, attn_mask=None, dropout_p=0.0, is_causal=False,
+        )
+
     B, N, H, D = query.shape
     scale = D ** -0.5
 
@@ -113,21 +129,21 @@ def _svoo_attention(query, key, value, budget, num_q_centroids, num_k_centroids,
     new_pc = torch.zeros(B * H, nqc, nkc, device=q_flat.device, dtype=torch.float32)
     pc_counts = torch.zeros(B * H, nqc, device=q_flat.device, dtype=torch.float32)
     # Compute profiles for centroid update (small: [B*H, nqc, nkc])
-    q_centroids_token = torch.zeros(B * H, nqc, D, device=q_flat.device, dtype=q_flat.dtype)
+    q_centroids_token = torch.zeros(B * H, nqc, D, device=q_flat.device, dtype=torch.float32)
     q_sizes = torch.zeros(B * H, nqc, dtype=torch.long, device=q_flat.device)
     q_sizes.scatter_add_(1, q_labels, torch.ones(B * H, N, dtype=torch.long, device=q_flat.device))
-    q_centroids_token.scatter_add_(1, q_labels.unsqueeze(-1).expand(-1, -1, D), q_flat)
+    q_centroids_token.scatter_add_(1, q_labels.unsqueeze(-1).expand(-1, -1, D), q_flat.float())
     safe_qsizes = q_sizes.clamp(min=1).unsqueeze(-1).float()
     q_centroids_token = q_centroids_token / safe_qsizes
 
     # Profile centroids = normalized softmax(q_centroid @ k_centroids^T)
-    q_profiles = torch.matmul(q_centroids_token, k_centroids.transpose(-2, -1)) * scale
+    q_profiles = torch.matmul(q_centroids_token, k_centroids.float().transpose(-2, -1)) * scale
     q_profiles = F.softmax(q_profiles, dim=-1)
     profile_norms_new = q_profiles.norm(dim=-1, keepdim=True).clamp(min=1e-8)
     state["prev_q_profile_centroids"] = (q_profiles / profile_norms_new).detach()
 
     # Step 3: Dynamic map — cumulative probability thresholding
-    cluster_scores = torch.matmul(q_centroids_token, k_centroids.transpose(-2, -1)) * scale
+    cluster_scores = torch.matmul(q_centroids_token, k_centroids.float().transpose(-2, -1)) * scale
     k_cluster_sizes_f = k_sizes.float().clamp(min=1)
     cluster_scores = cluster_scores + k_cluster_sizes_f.unsqueeze(1).log()
     cluster_attn = F.softmax(cluster_scores, dim=-1)

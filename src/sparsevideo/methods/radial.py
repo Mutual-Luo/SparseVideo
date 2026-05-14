@@ -7,6 +7,7 @@ from diffusers.models.attention_dispatch import dispatch_attention_fn
 
 from ._base import SparseMethod
 from ..processors.wan import SparseWanAttnProcessor
+from ..processors.hunyuan_video import SparseHunyuanVideoAttnProcessor
 
 
 class RadialMethod(SparseMethod):
@@ -22,54 +23,68 @@ class RadialMethod(SparseMethod):
     }
 
     def create_processor(self, layer_idx, total_layers, original_processor, step_tracker):
-        if self.model_info.model_type == "wan":
-            decay_factor = self.config["decay_factor"]
-            skip_steps = self.config["skip_first_steps"]
-            skip_layers = self.config["skip_first_layers"]
+        if self.model_info.model_type not in ("wan", "hunyuan_video"):
+            raise NotImplementedError(f"radial not yet supported for {self.model_info.model_type}")
 
-            block_mask_cache = {}
+        decay_factor = self.config["decay_factor"]
+        skip_steps = self.config["skip_first_steps"]
+        skip_layers = self.config["skip_first_layers"]
 
-            def attn_fn(query, key, value, attention_mask):
-                use_sparse = (
-                    layer_idx >= skip_layers
-                    and step_tracker.step > skip_steps
-                )
-                if not use_sparse:
-                    return dispatch_attention_fn(
-                        query, key, value,
-                        attn_mask=attention_mask, dropout_p=0.0, is_causal=False,
-                    )
-                return _radial_attention(
+        block_mask_cache = {}
+        model_type = self.model_info.model_type
+
+        def attn_fn(query, key, value, attention_mask, **kwargs):
+            use_sparse = (
+                layer_idx >= skip_layers
+                and step_tracker.step > skip_steps
+            )
+            if not use_sparse:
+                return dispatch_attention_fn(
                     query, key, value,
-                    decay_factor=decay_factor,
-                    block_mask_cache=block_mask_cache,
+                    attn_mask=attention_mask, dropout_p=0.0, is_causal=False,
                 )
+            return _radial_attention(
+                query, key, value,
+                decay_factor=decay_factor,
+                block_mask_cache=block_mask_cache,
+                model_type=model_type,
+                text_len=kwargs.get("text_len", 0),
+            )
 
+        if self.model_info.model_type == "wan":
             return SparseWanAttnProcessor(
                 attn_fn=attn_fn, layer_idx=layer_idx, step_tracker=step_tracker,
             )
-        raise NotImplementedError(f"radial not yet supported for {self.model_info.model_type}")
+        return SparseHunyuanVideoAttnProcessor(
+            attn_fn=attn_fn, layer_idx=layer_idx, step_tracker=step_tracker,
+        )
 
 
-def _radial_attention(query, key, value, decay_factor, block_mask_cache):
+def _radial_attention(query, key, value, decay_factor, block_mask_cache,
+                      model_type="wan", text_len=0):
     """Radial attention via flex_attention with logarithmic band decay.
 
     query/key/value: [B, N, H, D]
     """
     B, N, H, D = query.shape
 
-    context_len = 226
-    if N <= context_len:
+    if model_type == "hunyuan_video":
+        context_len = 0
+        video_len = N - text_len
+    else:
+        context_len = 226
+        video_len = N - context_len
+
+    if video_len <= 0:
         return dispatch_attention_fn(
             query, key, value, attn_mask=None, dropout_p=0.0, is_causal=False,
         )
 
-    video_len = N - context_len
     frame_size = _estimate_frame_size(video_len)
     num_frames = video_len // frame_size
     video_end = context_len + num_frames * frame_size
 
-    cache_key = N
+    cache_key = (N, context_len)
     if cache_key not in block_mask_cache:
         tpf_bits = frame_size.bit_length()
 

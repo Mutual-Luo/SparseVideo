@@ -8,6 +8,7 @@ from diffusers.models.attention_dispatch import dispatch_attention_fn
 
 from ._base import SparseMethod
 from ..processors.wan import SparseWanAttnProcessor
+from ..processors.hunyuan_video import SparseHunyuanVideoAttnProcessor
 
 
 class FlashOmniMethod(SparseMethod):
@@ -36,33 +37,38 @@ class FlashOmniMethod(SparseMethod):
             pass
 
     def create_processor(self, layer_idx, total_layers, original_processor, step_tracker):
-        if self.model_info.model_type == "wan":
-            cfg = self.config
-            skip_steps = cfg["skip_first_steps"]
-            skip_layers = cfg["skip_first_layers"]
-            has_flashomni = self._has_flashomni
+        if self.model_info.model_type not in ("wan", "hunyuan_video"):
+            raise NotImplementedError(f"flashomni not yet supported for {self.model_info.model_type}")
 
-            def attn_fn(query, key, value, attention_mask):
-                use_sparse = (
-                    layer_idx >= skip_layers
-                    and step_tracker.step > skip_steps
-                )
-                if not use_sparse:
-                    return dispatch_attention_fn(
-                        query, key, value,
-                        attn_mask=attention_mask, dropout_p=0.0, is_causal=False,
-                    )
-                return _flashomni_attention(
+        cfg = self.config
+        skip_steps = cfg["skip_first_steps"]
+        skip_layers = cfg["skip_first_layers"]
+        has_flashomni = self._has_flashomni
+
+        def attn_fn(query, key, value, attention_mask, **kwargs):
+            use_sparse = (
+                layer_idx >= skip_layers
+                and step_tracker.step > skip_steps
+            )
+            if not use_sparse:
+                return dispatch_attention_fn(
                     query, key, value,
-                    budget=cfg["budget"],
-                    block_size=cfg["block_size"],
-                    has_flashomni=has_flashomni,
+                    attn_mask=attention_mask, dropout_p=0.0, is_causal=False,
                 )
+            return _flashomni_attention(
+                query, key, value,
+                budget=cfg["budget"],
+                block_size=cfg["block_size"],
+                has_flashomni=has_flashomni,
+            )
 
+        if self.model_info.model_type == "wan":
             return SparseWanAttnProcessor(
                 attn_fn=attn_fn, layer_idx=layer_idx, step_tracker=step_tracker,
             )
-        raise NotImplementedError(f"flashomni not yet supported for {self.model_info.model_type}")
+        return SparseHunyuanVideoAttnProcessor(
+            attn_fn=attn_fn, layer_idx=layer_idx, step_tracker=step_tracker,
+        )
 
 
 def _flashomni_attention(query, key, value, budget, block_size, has_flashomni):

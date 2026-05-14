@@ -7,14 +7,15 @@ from diffusers.models.attention_dispatch import dispatch_attention_fn
 
 from ._base import SparseMethod
 from ..processors.wan import SparseWanAttnProcessor
+from ..processors.hunyuan_video import SparseHunyuanVideoAttnProcessor
 from ..kernels.kmeans import triton_kmeans
 from ..kernels.block_sparse_attn import block_sparse_attention
 
 
-class SAPMethod(SparseMethod):
-    """SAP (Semantic-Aware Permutation): k-means clustering + block-sparse attention.
+class SVG2Method(SparseMethod):
+    """SVG2: k-means clustering + block-sparse attention.
 
-    Port of: training_free/Sparse-VideoGen/svg/models/wan/attention.py (SAP path)
+    Approximate port of the second Sparse-VideoGen method.
     """
 
     CONFIG_DEFAULTS = {
@@ -27,40 +28,55 @@ class SAPMethod(SparseMethod):
     }
 
     def create_processor(self, layer_idx, total_layers, original_processor, step_tracker):
-        if self.model_info.model_type == "wan":
-            cfg = self.config
-            skip_steps = cfg["skip_first_steps"]
-            skip_layers = cfg["skip_first_layers"]
+        if self.model_info.model_type not in ("wan", "hunyuan_video"):
+            raise NotImplementedError(f"svg2 not yet supported for {self.model_info.model_type}")
 
-            def attn_fn(query, key, value, attention_mask):
-                use_sparse = (
-                    layer_idx >= skip_layers
-                    and step_tracker.step > skip_steps
-                )
-                if not use_sparse:
-                    return dispatch_attention_fn(
-                        query, key, value,
-                        attn_mask=attention_mask, dropout_p=0.0, is_causal=False,
-                    )
-                return _sap_attention(
+        cfg = self.config
+        skip_steps = cfg["skip_first_steps"]
+        skip_layers = cfg["skip_first_layers"]
+
+        def attn_fn(query, key, value, attention_mask, **kwargs):
+            use_sparse = (
+                layer_idx >= skip_layers
+                and step_tracker.step > skip_steps
+            )
+            if not use_sparse:
+                return dispatch_attention_fn(
                     query, key, value,
-                    budget=cfg["budget"],
-                    num_q_centroids=cfg["num_q_centroids"],
-                    num_k_centroids=cfg["num_k_centroids"],
-                    kmeans_iters=cfg["kmeans_iters"],
+                    attn_mask=attention_mask, dropout_p=0.0, is_causal=False,
                 )
+            if not query.is_cuda:
+                return dispatch_attention_fn(
+                    query, key, value,
+                    attn_mask=attention_mask, dropout_p=0.0, is_causal=False,
+                )
+            return _svg2_attention(
+                query, key, value,
+                budget=cfg["budget"],
+                num_q_centroids=cfg["num_q_centroids"],
+                num_k_centroids=cfg["num_k_centroids"],
+                kmeans_iters=cfg["kmeans_iters"],
+            )
 
+        if self.model_info.model_type == "wan":
             return SparseWanAttnProcessor(
                 attn_fn=attn_fn, layer_idx=layer_idx, step_tracker=step_tracker,
             )
-        raise NotImplementedError(f"sap not yet supported for {self.model_info.model_type}")
+        return SparseHunyuanVideoAttnProcessor(
+            attn_fn=attn_fn, layer_idx=layer_idx, step_tracker=step_tracker,
+        )
 
 
-def _sap_attention(query, key, value, budget, num_q_centroids, num_k_centroids, kmeans_iters):
-    """SAP: Triton k-means clustering + block-sparse attention.
+def _svg2_attention(query, key, value, budget, num_q_centroids, num_k_centroids, kmeans_iters):
+    """SVG2: Triton k-means clustering + block-sparse attention.
 
     query/key/value: [B, N, H, D]
     """
+    if not query.is_cuda:
+        return dispatch_attention_fn(
+            query, key, value, attn_mask=None, dropout_p=0.0, is_causal=False,
+        )
+
     B, N, H, D = query.shape
     scale = D ** -0.5
 

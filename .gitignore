@@ -115,8 +115,8 @@ benchmark_outputs/
 *.trace
 
 # Vibe
-.codex/
-.vscode/
-.agents/
-AGENTS.md/
-CLAUDE.md/
+.codex
+.vscode
+.agents
+AGENTS.md
+CLAUDE.md
