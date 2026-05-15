@@ -42,6 +42,13 @@ def apply_sparse_attention(
     method_cls = get_method_class(method)
     method_instance = method_cls(config=config, model_info=model_info)
 
+    if method == "dense":
+        return SparseAttentionHandle(
+            model_info=model_info,
+            original_processors={},
+            step_tracker_hooks=[],
+        )
+
     original_processors = {}
     for path, attn_module in model_info.iter_self_attn_modules():
         original_processors[path] = attn_module.get_processor()

@@ -1,59 +1,63 @@
 from .._registry import register_method
 
-from .dense import DenseMethod
 
-register_method("dense", DenseMethod)
-
-try:
-    from .spargeattn import SpargeAttnMethod
-    register_method("spargeattn", SpargeAttnMethod)
-except ImportError:
-    pass
-
-try:
-    from .svg1 import SVG1Method
-    register_method("svg1", SVG1Method)
-except ImportError:
-    pass
-
-try:
-    from .svg2 import SVG2Method
-    register_method("svg2", SVG2Method)
-except ImportError:
-    pass
-
-try:
-    from .radial import RadialMethod
-    register_method("radial", RadialMethod)
-except ImportError:
-    pass
-
-try:
-    from .sta import STAMethod
-    register_method("sta", STAMethod)
-except ImportError:
-    pass
-
-try:
-    from .draft import DraftMethod
-    register_method("draft", DraftMethod)
-except ImportError:
-    pass
-
-try:
-    from .adacluster import AdaClusterMethod
-    register_method("adacluster", AdaClusterMethod)
-except ImportError:
-    pass
-
-try:
-    from .flashomni import FlashOmniMethod
-    register_method("flashomni", FlashOmniMethod)
-except ImportError:
-    pass
-
-try:
-    from .svoo import SVOOMethod
-    register_method("svoo", SVOOMethod)
-except ImportError:
-    pass
+register_method(
+    "dense",
+    module="sparsevideo.methods.dense",
+    class_name="DenseMethod",
+    config_module="sparsevideo.methods.dense.config",
+)
+register_method(
+    "spargeattn",
+    module="sparsevideo.methods.spargeattn",
+    class_name="SpargeAttnMethod",
+    config_module="sparsevideo.methods.spargeattn.config",
+)
+register_method(
+    "svg1",
+    module="sparsevideo.methods.svg1",
+    class_name="SVG1Method",
+    config_module="sparsevideo.methods.svg1.config",
+)
+register_method(
+    "svg2",
+    module="sparsevideo.methods.svg2",
+    class_name="SVG2Method",
+    config_module="sparsevideo.methods.svg2.config",
+)
+register_method(
+    "radial",
+    module="sparsevideo.methods.radial",
+    class_name="RadialMethod",
+    config_module="sparsevideo.methods.radial.config",
+)
+register_method(
+    "sta",
+    module="sparsevideo.methods.sta",
+    class_name="STAMethod",
+    config_module="sparsevideo.methods.sta.config",
+)
+register_method(
+    "draft",
+    module="sparsevideo.methods.draft",
+    class_name="DraftMethod",
+    config_module="sparsevideo.methods.draft.config",
+)
+register_method(
+    "adacluster",
+    module="sparsevideo.methods.adacluster",
+    class_name="AdaClusterMethod",
+    config_module="sparsevideo.methods.adacluster.config",
+)
+register_method(
+    "flashomni",
+    module="sparsevideo.methods.flashomni",
+    class_name="FlashOmniMethod",
+    config_module="sparsevideo.methods.flashomni.config",
+)
+register_method(
+    "svoo",
+    module="sparsevideo.methods.svoo",
+    class_name="SVOOMethod",
+    config_module="sparsevideo.methods.svoo.config",
+)

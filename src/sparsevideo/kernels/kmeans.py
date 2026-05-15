@@ -209,7 +209,9 @@ def triton_kmeans(
         )
 
         safe_counts = counts.clamp(min=1).unsqueeze(-1).float()
-        new_centroids = (new_centroids / safe_counts).to(x.dtype)
+        new_centroids = new_centroids / safe_counts
+        empty_mask = (counts == 0).unsqueeze(-1)
+        new_centroids = torch.where(empty_mask, centroids.to(torch.float32), new_centroids).to(x.dtype)
 
         if torch.allclose(centroids, new_centroids, atol=1e-4):
             centroids = new_centroids

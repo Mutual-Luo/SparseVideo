@@ -1,20 +1,111 @@
 from __future__ import annotations
 
-from typing import Any, Dict, Type
+from dataclasses import dataclass
+import importlib
+from typing import Any, Dict, Optional, Type
 
-_METHODS: Dict[str, Type] = {}
+
+@dataclass
+class MethodEntry:
+    module: str
+    class_name: str
+    config_module: Optional[str] = None
+    loaded_class: Optional[Type] = None
 
 
-def register_method(name: str, cls: Type):
-    _METHODS[name] = cls
+_METHODS: Dict[str, MethodEntry] = {}
+
+
+def register_method(
+    name: str,
+    cls: Optional[Type] = None,
+    *,
+    module: Optional[str] = None,
+    class_name: Optional[str] = None,
+    config_module: Optional[str] = None,
+):
+    if cls is not None:
+        module = cls.__module__
+        class_name = cls.__name__
+    if module is None or class_name is None:
+        raise ValueError("register_method requires either cls or module/class_name")
+    _METHODS[name] = MethodEntry(
+        module=module,
+        class_name=class_name,
+        config_module=config_module,
+        loaded_class=cls,
+    )
 
 
 def get_method_class(name: str) -> Type:
     if name not in _METHODS:
         available = ", ".join(sorted(_METHODS))
         raise ValueError(f"Unknown method '{name}'. Available: {available}")
-    return _METHODS[name]
+    entry = _METHODS[name]
+    if entry.loaded_class is None:
+        module = importlib.import_module(entry.module)
+        entry.loaded_class = getattr(module, entry.class_name)
+    return entry.loaded_class
 
 
 def list_methods() -> list[str]:
     return sorted(_METHODS)
+
+
+def default_method_config(name: str, **context: Any) -> Dict[str, Any]:
+    entry = _get_entry(name)
+    if entry.config_module is not None:
+        module = importlib.import_module(entry.config_module)
+        if hasattr(module, "default_config"):
+            config = dict(module.default_config(**context))
+        else:
+            config = dict(getattr(module, "CONFIG_DEFAULTS"))
+        num_inference_steps = context.get("num_inference_steps")
+        if num_inference_steps is not None and "num_inference_steps" in config:
+            config["num_inference_steps"] = num_inference_steps
+        return config
+    method_cls = get_method_class(name)
+    return method_cls.default_config(**context)
+
+
+def normalize_method_config(name: str, config: Dict[str, Any]) -> Dict[str, Any]:
+    entry = _get_entry(name)
+    if entry.config_module is not None:
+        module = importlib.import_module(entry.config_module)
+        defaults = getattr(module, "CONFIG_DEFAULTS")
+        aliases = getattr(module, "CONFIG_ALIASES", {})
+        return _normalize_config(config, defaults, aliases, entry.class_name)
+    method_cls = get_method_class(name)
+    return method_cls.normalize_config(config)
+
+
+def _get_entry(name: str) -> MethodEntry:
+    if name not in _METHODS:
+        available = ", ".join(sorted(_METHODS))
+        raise ValueError(f"Unknown method '{name}'. Available: {available}")
+    return _METHODS[name]
+
+
+def _normalize_config(
+    config: Dict[str, Any],
+    defaults: Dict[str, Any],
+    aliases: Dict[str, str],
+    class_name: str,
+) -> Dict[str, Any]:
+    normalized: Dict[str, Any] = {}
+    for key, value in config.items():
+        canonical_key = aliases.get(key, key)
+        if canonical_key in normalized:
+            raise ValueError(
+                f"Config key {key!r} conflicts with {canonical_key!r} "
+                f"for {class_name}"
+            )
+        normalized[canonical_key] = value
+
+    unknown = set(normalized) - set(defaults)
+    if unknown:
+        raise ValueError(
+            f"Unknown config keys for {class_name}: {unknown}. "
+            f"Valid keys: {list(defaults)}"
+        )
+    return normalized

@@ -7,8 +7,104 @@ Pass 2: _fused_cocluster_assign_kernel — argmin in profile space without mater
 from __future__ import annotations
 
 import torch
+import torch.nn.functional as F
 import triton
 import triton.language as tl
+
+
+@triton.jit
+def _centroid_update_chunk_kernel(
+    X,                 # [B, N, D] original-order tokens
+    SortedIdx,         # [B, N] token indices sorted by cluster id
+    SortedCluster,     # [B, N] cluster ids in sorted order
+    Sum,               # [B, K, D] fp32
+    Count,             # [B, K] int32
+    B,
+    N,
+    D: tl.constexpr,
+    K: tl.constexpr,
+    stride_xb: tl.constexpr,
+    stride_xn: tl.constexpr,
+    stride_xd: tl.constexpr,
+    BLOCK_N: tl.constexpr,
+):
+    pid_chunk = tl.program_id(0)
+    pid_b = tl.program_id(1)
+    chunk_start = pid_chunk * BLOCK_N
+    if chunk_start >= N:
+        return
+
+    token_offs = chunk_start + tl.arange(0, BLOCK_N)
+    valid = token_offs < N
+    first_token_idx = chunk_start
+    last_token_idx = tl.minimum(chunk_start + BLOCK_N, N) - 1
+
+    first_id = tl.load(SortedCluster + pid_b * N + first_token_idx)
+    last_id = tl.load(SortedCluster + pid_b * N + last_token_idx)
+    all_ids = tl.load(SortedCluster + pid_b * N + token_offs, mask=valid, other=-1)
+    all_token_idx = tl.load(SortedIdx + pid_b * N + token_offs, mask=valid, other=-1)
+    dim_offs = tl.arange(0, D)
+
+    for cid in range(first_id, last_id + 1):
+        cluster_mask = all_ids == cid
+        cluster_size = tl.sum(cluster_mask.to(tl.int32))
+        if cluster_size != 0:
+            x_ptrs = (
+                X
+                + pid_b.to(tl.int64) * stride_xb
+                + all_token_idx.to(tl.int64)[:, None] * stride_xn
+                + dim_offs.to(tl.int64)[None, :] * stride_xd
+            )
+            token_valid = all_token_idx[:, None] >= 0
+            feats = tl.load(x_ptrs, mask=(cluster_mask[:, None] & token_valid), other=0.0).to(tl.float32)
+            sums = tl.sum(feats, axis=0)
+            sum_ptrs = Sum + (pid_b * K + cid) * D + dim_offs
+            tl.atomic_add(sum_ptrs, sums)
+            tl.atomic_add(Count + pid_b * K + cid, cluster_size)
+
+
+def centroid_update_sorted_euclid(
+    x: torch.Tensor,
+    cluster_ids: torch.Tensor,
+    old_centroids: torch.Tensor,
+    *,
+    block_n: int = 256,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Update Euclidean centroids using upstream SVOO's sorted-cluster policy.
+
+    Empty clusters keep their previous centroid, matching
+    training_free/SVOO/svoo/co_clustering.py.
+    """
+    assert x.is_cuda and cluster_ids.is_cuda, "centroid update requires CUDA"
+    B, N, D = x.shape
+    K = old_centroids.shape[1]
+
+    sorted_cluster_ids, sorted_idx = torch.sort(cluster_ids, dim=-1)
+    centroid_sums = torch.zeros((B, K, D), device=x.device, dtype=torch.float32)
+    centroid_counts = torch.zeros((B, K), device=x.device, dtype=torch.int32)
+
+    grid = (triton.cdiv(N, block_n), B)
+    _centroid_update_chunk_kernel[grid](
+        x,
+        sorted_idx.to(torch.int32),
+        sorted_cluster_ids.to(torch.int32),
+        centroid_sums,
+        centroid_counts,
+        B,
+        N,
+        D,
+        K,
+        x.stride(0),
+        x.stride(1),
+        x.stride(2),
+        BLOCK_N=block_n,
+    )
+
+    counts_f = centroid_counts.to(torch.float32).unsqueeze(-1).clamp(min=1.0)
+    centroids = centroid_sums / counts_f
+    empty_mask = (centroid_counts == 0).unsqueeze(-1)
+    centroids = torch.where(empty_mask, old_centroids.to(torch.float32), centroids)
+    return centroids.to(x.dtype), centroid_counts.to(torch.long)
 
 
 @triton.jit
@@ -148,7 +244,7 @@ def profile_norm(x: torch.Tensor, kcentroids: torch.Tensor) -> torch.Tensor:
     norms = torch.empty(B, N, device=x.device, dtype=torch.float32)
 
     BLOCK_N = 32
-    BLOCK_K = min(32, K)
+    BLOCK_K = max(16, min(32, triton.next_power_of_2(K)))
 
     grid = (triton.cdiv(N, BLOCK_N), B)
     _profile_norm_kernel[grid](
@@ -192,8 +288,8 @@ def co_cluster_assign(
     out = torch.empty(B, N, device=x.device, dtype=torch.int32)
 
     BLOCK_N = 64
-    BLOCK_K = min(32, K)
-    BLOCK_J = min(32, J)
+    BLOCK_K = max(16, min(32, triton.next_power_of_2(K)))
+    BLOCK_J = max(16, min(32, triton.next_power_of_2(J)))
 
     grid = (triton.cdiv(N, BLOCK_N), B)
     _fused_cocluster_assign_kernel[grid](
@@ -207,3 +303,48 @@ def co_cluster_assign(
         BLOCK_N=BLOCK_N, BLOCK_K=BLOCK_K, BLOCK_J=BLOCK_J,
     )
     return out.long()
+
+
+def co_cluster_tokens(
+    q_flat: torch.Tensor,
+    k_flat: torch.Tensor,
+    num_q_centroids: int,
+    num_k_centroids: int,
+    max_iters: int = 10,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Cluster query/key tokens with the SVOO low-memory co-clustering loop.
+
+    This mirrors training_free/SVOO/svoo/co_clustering.py: initialize Q/K
+    centroids from random tokens, then alternate K clustering in Q-centroid
+    profile space and Q clustering in K-centroid profile space.
+    """
+    if max_iters <= 0:
+        raise ValueError("SVOO co_cluster_tokens requires max_iters > 0")
+    if not (q_flat.is_cuda and k_flat.is_cuda):
+        raise RuntimeError("SVOO co_cluster_tokens requires CUDA tensors")
+
+    batch_heads, seq_len, head_dim = q_flat.shape
+    q_clusters = min(int(num_q_centroids), seq_len)
+    k_clusters = min(int(num_k_centroids), seq_len)
+    device = q_flat.device
+
+    q_indices = torch.randint(0, seq_len, (batch_heads, q_clusters), device=device)
+    q_centroids = torch.gather(q_flat, 1, q_indices.unsqueeze(-1).expand(-1, -1, head_dim))
+    k_indices = torch.randint(0, seq_len, (batch_heads, k_clusters), device=device)
+    k_centroids = torch.gather(k_flat, 1, k_indices.unsqueeze(-1).expand(-1, -1, head_dim))
+
+    q_labels = q_sizes = k_labels = k_sizes = None
+    for _ in range(max_iters):
+        profile_centroids_k = torch.matmul(k_centroids, q_centroids.transpose(-2, -1))
+        profile_centroids_k = F.normalize(profile_centroids_k.float(), p=2, dim=-1, eps=1e-8).contiguous()
+        k_norms = profile_norm(k_flat, q_centroids)
+        k_labels = co_cluster_assign(k_flat, q_centroids, profile_centroids_k, k_norms)
+        k_centroids, k_sizes = centroid_update_sorted_euclid(k_flat, k_labels, k_centroids, block_n=128)
+
+        profile_centroids_q = torch.matmul(q_centroids, k_centroids.transpose(-2, -1))
+        profile_centroids_q = F.normalize(profile_centroids_q.float(), p=2, dim=-1, eps=1e-8).contiguous()
+        q_norms = profile_norm(q_flat, k_centroids)
+        q_labels = co_cluster_assign(q_flat, k_centroids, profile_centroids_q, q_norms)
+        q_centroids, q_sizes = centroid_update_sorted_euclid(q_flat, q_labels, q_centroids, block_n=128)
+
+    return q_labels, q_centroids, q_sizes, k_labels, k_centroids, k_sizes
