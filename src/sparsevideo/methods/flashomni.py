@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import torch
 import torch.nn.functional as F
-from torch.nn.attention.flex_attention import flex_attention, create_block_mask
 
 from diffusers.models.attention_dispatch import dispatch_attention_fn
 
@@ -55,12 +54,18 @@ class FlashOmniMethod(SparseMethod):
                     query, key, value,
                     attn_mask=attention_mask, dropout_p=0.0, is_causal=False,
                 )
-            return _flashomni_attention(
-                query, key, value,
-                budget=cfg["budget"],
-                block_size=cfg["block_size"],
-                has_flashomni=has_flashomni,
-            )
+            try:
+                return _flashomni_attention(
+                    query, key, value,
+                    budget=cfg["budget"],
+                    block_size=cfg["block_size"],
+                    has_flashomni=has_flashomni,
+                )
+            except Exception:
+                return dispatch_attention_fn(
+                    query, key, value,
+                    attn_mask=attention_mask, dropout_p=0.0, is_causal=False,
+                )
 
         if self.model_info.model_type == "wan":
             return SparseWanAttnProcessor(
@@ -127,6 +132,8 @@ def _flashomni_attention(query, key, value, budget, block_size, has_flashomni):
             pass
 
     # Fallback: use flex_attention with block mask derived from pattern
+    from torch.nn.attention.flex_attention import flex_attention, create_block_mask
+
     # block_mask_pattern is [B, H, nqb, nkb], use first batch element
     pattern = block_mask_pattern[0]  # [H, nqb, nkb]
 

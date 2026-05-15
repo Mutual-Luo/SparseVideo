@@ -5,25 +5,19 @@ from .dense import DenseMethod
 register_method("dense", DenseMethod)
 
 try:
-    from .topk import TopKMethod
-    register_method("topk", TopKMethod)
-except ImportError:
-    pass
-
-try:
     from .spargeattn import SpargeAttnMethod
     register_method("spargeattn", SpargeAttnMethod)
 except ImportError:
     pass
 
 try:
-    from .svg import SVGMethod
-    register_method("svg1", SVGMethod)
+    from .svg1 import SVG1Method
+    register_method("svg1", SVG1Method)
 except ImportError:
     pass
 
 try:
-    from .sap import SVG2Method
+    from .svg2 import SVG2Method
     register_method("svg2", SVG2Method)
 except ImportError:
     pass

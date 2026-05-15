@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from math import ceil
+import warnings
 
 import torch
 import torch.nn.functional as F
@@ -8,15 +9,39 @@ import torch.nn.functional as F
 from diffusers.models.attention_dispatch import dispatch_attention_fn
 
 from ._base import SparseMethod
+from ._layout import infer_video_token_layout
 from ..processors.wan import SparseWanAttnProcessor
 from ..processors.hunyuan_video import SparseHunyuanVideoAttnProcessor
+
+
+_TRITON_FALLBACK_WARNED = False
+
+
+def _dense_attention(query, key, value):
+    return dispatch_attention_fn(
+        query, key, value, attn_mask=None, dropout_p=0.0, is_causal=False,
+    )
+
+
+def _warn_triton_fallback(exc):
+    global _TRITON_FALLBACK_WARNED
+    if _TRITON_FALLBACK_WARNED:
+        return
+    msg = str(exc).splitlines()[0] if str(exc) else type(exc).__name__
+    warnings.warn(
+        f"draft Triton sparse path failed ({type(exc).__name__}: {msg}); "
+        "falling back to dense attention.",
+        RuntimeWarning,
+        stacklevel=2,
+    )
+    _TRITON_FALLBACK_WARNED = True
 
 
 class DraftMethod(SparseMethod):
     """Draft Attention: 2D pooling guidance for sparse attention.
 
     Computes low-resolution attention via avg-pooling to build a block-sparse
-    mask, then executes full-resolution attention with that mask.
+    mask, then executes full-resolution attention using Triton block-sparse kernel.
 
     Port of: training_free/draft-attention/draft_attention.py
     """
@@ -68,40 +93,59 @@ class DraftMethod(SparseMethod):
 
 
 def _draft_attention(query, key, value, budget, pool_h, pool_w, model_type="wan", text_len=0):
-    """Draft Attention: 2D pooling guidance for sparse video-video attention.
+    """Draft Attention: 2D pooling guidance → Triton block-sparse execution.
 
     query/key/value: [B, N, H, D]
     """
     B, N, H, D = query.shape
     scale = D ** -0.5
 
-    if model_type == "hunyuan_video":
-        context_len = 0
-        video_len = N - text_len
-    else:
-        context_len = 226
-        video_len = N - context_len
+    layout = infer_video_token_layout(N, model_type=model_type, text_len=text_len)
+    context_len = layout.context_len
+    video_len = layout.video_len
 
     if video_len <= 1:
-        return dispatch_attention_fn(
-            query, key, value, attn_mask=None, dropout_p=0.0, is_causal=False,
-        )
+        return _dense_attention(query, key, value)
 
     try:
         T, frame_h, frame_w = _infer_video_shape(video_len)
         if T * frame_h * frame_w != video_len:
             raise ValueError("shape mismatch")
     except (ValueError, RuntimeError):
-        return dispatch_attention_fn(
-            query, key, value, attn_mask=None, dropout_p=0.0, is_causal=False,
-        )
+        return _dense_attention(query, key, value)
     frame_size = frame_h * frame_w
     video_end = context_len + T * frame_size
+
+    # Use Triton block-sparse path if on CUDA
+    if query.is_cuda:
+        try:
+            return _draft_triton_path(
+                query, key, value, B, N, H, D, scale,
+                context_len, video_end, T, frame_h, frame_w, frame_size,
+                budget, pool_h, pool_w, model_type, text_len,
+            )
+        except Exception as exc:
+            _warn_triton_fallback(exc)
+
+    # CPU fallback: dense attention
+    return _dense_attention(query, key, value)
+
+
+def _draft_triton_path(query, key, value, B, N, H, D, scale,
+                       context_len, video_end, T, frame_h, frame_w, frame_size,
+                       budget, pool_h, pool_w, model_type, text_len):
+    """Pool-guided block-sparse attention.
+
+    Primary backend: flashinfer VariableBlockSparseAttentionWrapper.
+    Fallback: Triton block_sparse_attention.
+    """
+    from ..kernels.block_sparse_attn import block_sparse_attention
+    from ..kernels.flashinfer_block_sparse import HAS_FLASHINFER, variable_block_sparse_attn
 
     q_vid = query[:, context_len:video_end, :, :]
     k_vid = key[:, context_len:video_end, :, :]
 
-    # 2D avg pooling on Q and K per frame
+    # 2D avg pooling on Q and K per frame to get pooled tokens
     q_2d = q_vid.view(B, T, frame_h, frame_w, H, D).permute(0, 1, 4, 5, 2, 3)
     q_2d = q_2d.reshape(B * T, H * D, frame_h, frame_w)
     k_2d = k_vid.view(B, T, frame_h, frame_w, H, D).permute(0, 1, 4, 5, 2, 3)
@@ -125,13 +169,13 @@ def _draft_attention(query, key, value, budget, pool_h, pool_w, model_type="wan"
     draft_scores = torch.matmul(qp, kp.transpose(-2, -1)) * scale
     draft_attn = F.softmax(draft_scores, dim=-1)
 
-    # Top-budget block mask: [B, H, S, S]
+    # Top-budget block selection: [B, H, S, S]
     k_keep = max(1, int(S * budget))
     _, topk_idx = torch.topk(draft_attn, k=k_keep, dim=-1)
     draft_mask = torch.zeros(B, H, S, S, dtype=torch.bool, device=query.device)
     draft_mask.scatter_(dim=-1, index=topk_idx, value=True)
 
-    # Map each video token to its pooled block index
+    # Map each video token to its pool-block index
     vid_idx = torch.arange(T * frame_size, device=query.device)
     vid_t = vid_idx // frame_size
     vid_spatial = vid_idx % frame_size
@@ -140,26 +184,48 @@ def _draft_attention(query, key, value, budget, pool_h, pool_w, model_type="wan"
     pool_idx = vid_t * (ph * pw) + (vid_h // pool_h) * pw + (vid_w // pool_w)
     pool_idx = pool_idx.clamp(max=S - 1)
 
-    # Expand block mask to full video resolution via gather
-    # Row gather: [B, H, S, S] -> [B, H, video_len, S]
-    row_idx = pool_idx.view(1, 1, -1, 1).expand(B, H, -1, S)
-    mask_rows = torch.gather(draft_mask, 2, row_idx)
-    # Col gather: [B, H, video_len, S] -> [B, H, video_len, video_len]
-    col_idx = pool_idx.view(1, 1, 1, -1).expand(B, H, T * frame_size, -1)
-    full_mask = torch.gather(mask_rows, 3, col_idx)
+    # Fold B*H together
+    video_tokens = T * frame_size
+    q_flat = q_vid.permute(0, 2, 1, 3).reshape(B * H, video_tokens, D)
+    k_flat = k_vid.permute(0, 2, 1, 3).reshape(B * H, video_tokens, D)
+    v_vid = value[:, context_len:video_end, :, :]
+    v_flat = v_vid.permute(0, 2, 1, 3).reshape(B * H, video_tokens, D)
 
-    # Video-video attention with sparse mask
-    q_v = q_vid.permute(0, 2, 1, 3)
-    k_v = k_vid.permute(0, 2, 1, 3)
-    v_v = value[:, context_len:video_end, :, :].permute(0, 2, 1, 3)
+    labels = pool_idx.unsqueeze(0).expand(B * H, -1)  # [B*H, video_tokens]
 
-    attn_bias = torch.zeros(B, H, T * frame_size, T * frame_size, device=query.device, dtype=query.dtype)
-    attn_bias.masked_fill_(~full_mask, float('-inf'))
+    # Cluster sizes (same for Q and K — same spatial partition)
+    q_sizes = torch.zeros(B * H, S, dtype=torch.int32, device=query.device)
+    q_sizes.scatter_add_(1, labels.to(torch.int32),
+                         torch.ones(B * H, video_tokens, dtype=torch.int32, device=query.device))
+    k_sizes = q_sizes.clone()
 
-    out_vid = F.scaled_dot_product_attention(q_v, k_v, v_v, attn_mask=attn_bias, dropout_p=0.0)
-    out_vid = out_vid.permute(0, 2, 1, 3)
+    # dynamic_map: [B*H, S, S]
+    dynamic_map = draft_mask.reshape(B * H, S, S)
 
-    # Context tokens: dense attention to everything
+    # Sort tokens by pool-block label
+    sorted_idx = labels.argsort(dim=-1)
+    q_sorted = torch.gather(q_flat, 1, sorted_idx.unsqueeze(-1).expand(-1, -1, D))
+    k_sorted = torch.gather(k_flat, 1, sorted_idx.unsqueeze(-1).expand(-1, -1, D))
+    v_sorted = torch.gather(v_flat, 1, sorted_idx.unsqueeze(-1).expand(-1, -1, D))
+
+    # Block-sparse attention — flashinfer primary, Triton fallback
+    if HAS_FLASHINFER:
+        out_sorted = variable_block_sparse_attn(
+            q_sorted, k_sorted, v_sorted,
+            dynamic_map, q_sizes, k_sizes,
+        )
+    else:
+        out_sorted = block_sparse_attention(
+            q_sorted, k_sorted, v_sorted,
+            q_sizes.to(torch.long), k_sizes.to(torch.long), dynamic_map, scale,
+        )
+
+    # Unsort
+    inv_idx = sorted_idx.argsort(dim=-1)
+    out_flat = torch.gather(out_sorted, 1, inv_idx.unsqueeze(-1).expand(-1, -1, D))
+    out_vid = out_flat.reshape(B, H, video_tokens, D).permute(0, 2, 1, 3)
+
+    # Context/text tokens: dense attention to everything
     q_all = query.permute(0, 2, 1, 3)
     k_all = key.permute(0, 2, 1, 3)
     v_all = value.permute(0, 2, 1, 3)

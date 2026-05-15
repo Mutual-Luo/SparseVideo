@@ -8,14 +8,12 @@ from diffusers.models.attention_dispatch import dispatch_attention_fn
 from ._base import SparseMethod
 from ..processors.wan import SparseWanAttnProcessor
 from ..processors.hunyuan_video import SparseHunyuanVideoAttnProcessor
-from ..kernels.kmeans import triton_kmeans
-from ..kernels.block_sparse_attn import block_sparse_attention
 
 
 class SVG2Method(SparseMethod):
     """SVG2: k-means clustering + block-sparse attention.
 
-    Approximate port of the second Sparse-VideoGen method.
+    Port of the second Sparse-VideoGen method.
     """
 
     CONFIG_DEFAULTS = {
@@ -50,13 +48,19 @@ class SVG2Method(SparseMethod):
                     query, key, value,
                     attn_mask=attention_mask, dropout_p=0.0, is_causal=False,
                 )
-            return _svg2_attention(
-                query, key, value,
-                budget=cfg["budget"],
-                num_q_centroids=cfg["num_q_centroids"],
-                num_k_centroids=cfg["num_k_centroids"],
-                kmeans_iters=cfg["kmeans_iters"],
-            )
+            try:
+                return _svg2_attention(
+                    query, key, value,
+                    budget=cfg["budget"],
+                    num_q_centroids=cfg["num_q_centroids"],
+                    num_k_centroids=cfg["num_k_centroids"],
+                    kmeans_iters=cfg["kmeans_iters"],
+                )
+            except Exception:
+                return dispatch_attention_fn(
+                    query, key, value,
+                    attn_mask=attention_mask, dropout_p=0.0, is_causal=False,
+                )
 
         if self.model_info.model_type == "wan":
             return SparseWanAttnProcessor(
@@ -68,14 +72,20 @@ class SVG2Method(SparseMethod):
 
 
 def _svg2_attention(query, key, value, budget, num_q_centroids, num_k_centroids, kmeans_iters):
-    """SVG2: Triton k-means clustering + block-sparse attention.
+    """SVG2: k-means clustering + block-sparse attention.
 
     query/key/value: [B, N, H, D]
+    Primary backend: flashinfer VariableBlockSparseAttentionWrapper.
+    Fallback: Triton block_sparse_attention.
     """
     if not query.is_cuda:
         return dispatch_attention_fn(
             query, key, value, attn_mask=None, dropout_p=0.0, is_causal=False,
         )
+
+    from ..kernels.kmeans import triton_kmeans
+    from ..kernels.block_sparse_attn import block_sparse_attention
+    from ..kernels.flashinfer_block_sparse import HAS_FLASHINFER, variable_block_sparse_attn
 
     B, N, H, D = query.shape
     scale = D ** -0.5
@@ -107,11 +117,19 @@ def _svg2_attention(query, key, value, budget, num_q_centroids, num_k_centroids,
     k_sorted = torch.gather(k_flat, 1, k_sorted_idx.unsqueeze(-1).expand(-1, -1, D))
     v_sorted = torch.gather(v_flat, 1, k_sorted_idx.unsqueeze(-1).expand(-1, -1, D))
 
-    # Block-sparse attention via Triton
-    out_sorted = block_sparse_attention(
-        q_sorted, k_sorted, v_sorted,
-        q_sizes, k_sizes, dynamic_map, scale,
-    )
+    # Block-sparse attention — flashinfer primary, Triton fallback
+    q_sizes_i32 = q_sizes.to(torch.int32)
+    k_sizes_i32 = k_sizes.to(torch.int32)
+    if HAS_FLASHINFER:
+        out_sorted = variable_block_sparse_attn(
+            q_sorted, k_sorted, v_sorted,
+            dynamic_map, q_sizes_i32, k_sizes_i32,
+        )
+    else:
+        out_sorted = block_sparse_attention(
+            q_sorted, k_sorted, v_sorted,
+            q_sizes, k_sizes, dynamic_map, scale,
+        )
 
     # Unsort
     inv_q_idx = q_sorted_idx.argsort(dim=-1)

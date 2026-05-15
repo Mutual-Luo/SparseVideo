@@ -14,6 +14,12 @@ from diffusers.models.transformers.transformer_wan import (
 if TYPE_CHECKING:
     from .._step_tracker import StepTracker
 
+try:
+    from ..kernels.fused_norm_rope import triton_rope_wan_inplace, triton_rmsnorm_inplace
+    _HAS_FUSED_KERNELS = True
+except Exception:
+    _HAS_FUSED_KERNELS = False
+
 
 class SparseWanAttnProcessor:
     _attention_backend = None
@@ -46,8 +52,12 @@ class SparseWanAttnProcessor:
 
         # --- QKV projection + norm ---
         query, key, value = _get_qkv_projections(attn, hidden_states, encoder_hidden_states)
-        query = attn.norm_q(query)
-        key = attn.norm_k(key)
+        if _HAS_FUSED_KERNELS and query.is_cuda:
+            query = triton_rmsnorm_inplace(query, attn.norm_q.weight, attn.norm_q.eps)
+            key   = triton_rmsnorm_inplace(key,   attn.norm_k.weight, attn.norm_k.eps)
+        else:
+            query = attn.norm_q(query)
+            key   = attn.norm_k(key)
 
         query = query.unflatten(2, (attn.heads, -1))
         key = key.unflatten(2, (attn.heads, -1))
@@ -55,17 +65,19 @@ class SparseWanAttnProcessor:
 
         # --- RoPE ---
         if rotary_emb is not None:
-            def apply_rotary_emb(hidden_states, freqs_cos, freqs_sin):
-                x1, x2 = hidden_states.unflatten(-1, (-1, 2)).unbind(-1)
-                cos = freqs_cos[..., 0::2]
-                sin = freqs_sin[..., 1::2]
-                out = torch.empty_like(hidden_states)
-                out[..., 0::2] = x1 * cos - x2 * sin
-                out[..., 1::2] = x1 * sin + x2 * cos
-                return out.type_as(hidden_states)
-
-            query = apply_rotary_emb(query, *rotary_emb)
-            key = apply_rotary_emb(key, *rotary_emb)
+            if _HAS_FUSED_KERNELS and query.is_cuda:
+                query, key = triton_rope_wan_inplace(query, key, rotary_emb[0], rotary_emb[1])
+            else:
+                def _apply_rotary_emb_pytorch(hidden_states, freqs_cos, freqs_sin):
+                    x1, x2 = hidden_states.unflatten(-1, (-1, 2)).unbind(-1)
+                    cos = freqs_cos[..., 0::2]
+                    sin = freqs_sin[..., 1::2]
+                    out = torch.empty_like(hidden_states)
+                    out[..., 0::2] = x1 * cos - x2 * sin
+                    out[..., 1::2] = x1 * sin + x2 * cos
+                    return out.type_as(hidden_states)
+                query = _apply_rotary_emb_pytorch(query, *rotary_emb)
+                key   = _apply_rotary_emb_pytorch(key,   *rotary_emb)
 
         # --- I2V image attention (always dense) ---
         hidden_states_img = None

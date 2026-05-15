@@ -4,17 +4,17 @@ from math import ceil
 
 import torch
 import torch.nn.functional as F
-from torch.nn.attention.flex_attention import flex_attention, create_block_mask
 
 from diffusers.models.attention_dispatch import dispatch_attention_fn
 
 from ._base import SparseMethod
+from ._layout import infer_video_token_layout
 from ..processors.wan import SparseWanAttnProcessor
 from ..processors.hunyuan_video import SparseHunyuanVideoAttnProcessor
 
 
-class SVGMethod(SparseMethod):
-    """SVG: Sparse VideoGen stripe-based attention with online MSE profiling.
+class SVG1Method(SparseMethod):
+    """SVG1: Sparse VideoGen stripe-based attention with online MSE profiling.
 
     Port of: training_free/Sparse-VideoGen/svg/models/wan/attention.py + utils.py
     """
@@ -29,7 +29,7 @@ class SVGMethod(SparseMethod):
 
     def create_processor(self, layer_idx, total_layers, original_processor, step_tracker):
         if self.model_info.model_type not in ("wan", "hunyuan_video"):
-            raise NotImplementedError(f"svg not yet supported for {self.model_info.model_type}")
+            raise NotImplementedError(f"svg1 not yet supported for {self.model_info.model_type}")
 
         cfg = self.config
         skip_steps = cfg["skip_first_steps"]
@@ -48,15 +48,21 @@ class SVGMethod(SparseMethod):
                     query, key, value,
                     attn_mask=attention_mask, dropout_p=0.0, is_causal=False,
                 )
-            return _svg_attention(
-                query, key, value,
-                multiplier=cfg["multiplier"],
-                num_sampled_rows=cfg["num_sampled_rows"],
-                state=state,
-                step_tracker_step=step_tracker.step,
-                model_type=model_type,
-                text_len=kwargs.get("text_len", 0),
-            )
+            try:
+                return _svg_attention(
+                    query, key, value,
+                    multiplier=cfg["multiplier"],
+                    num_sampled_rows=cfg["num_sampled_rows"],
+                    state=state,
+                    step_tracker_step=step_tracker.step,
+                    model_type=model_type,
+                    text_len=kwargs.get("text_len", 0),
+                )
+            except Exception:
+                return dispatch_attention_fn(
+                    query, key, value,
+                    attn_mask=attention_mask, dropout_p=0.0, is_causal=False,
+                )
 
         if self.model_info.model_type == "wan":
             return SparseWanAttnProcessor(
@@ -73,15 +79,14 @@ def _svg_attention(query, key, value, multiplier, num_sampled_rows, state,
 
     query/key/value: [B, N, H, D]
     """
+    from torch.nn.attention.flex_attention import flex_attention
+
     B, N, H, D = query.shape
     scale = D ** -0.5
 
-    if model_type == "hunyuan_video":
-        context_len = 0
-        video_len = N - text_len
-    else:
-        context_len = 226
-        video_len = N - context_len
+    layout = infer_video_token_layout(N, model_type=model_type, text_len=text_len)
+    context_len = layout.context_len
+    video_len = layout.video_len
 
     if video_len <= 0:
         return dispatch_attention_fn(
@@ -195,6 +200,7 @@ def _temporal_transpose_mask_rows(q_idx, all_idx, context_len, video_end, frame_
 def _build_svg_block_mask(head_choices, N, H, context_len, video_end,
                           frame_size, num_frames, window_width, device):
     """Build per-head flex_attention block mask."""
+    from torch.nn.attention.flex_attention import create_block_mask
 
     def mask_mod(b, h, q_idx, kv_idx):
         q_in_video = (q_idx >= context_len) & (q_idx < video_end)

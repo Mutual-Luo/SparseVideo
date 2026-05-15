@@ -10,6 +10,12 @@ from diffusers.models.embeddings import apply_rotary_emb
 if TYPE_CHECKING:
     from .._step_tracker import StepTracker
 
+try:
+    from ..kernels.fused_norm_rope import triton_rmsnorm_inplace, triton_rope_hyvideo_inplace
+    _HAS_FUSED_KERNELS = True
+except Exception:
+    _HAS_FUSED_KERNELS = False
+
 
 class SparseHunyuanVideoAttnProcessor:
     """Drop-in replacement for HunyuanVideoAttnProcessor2_0 with pluggable sparse attention.
@@ -53,40 +59,54 @@ class SparseHunyuanVideoAttnProcessor:
         key = key.unflatten(2, (attn.heads, -1))
         value = value.unflatten(2, (attn.heads, -1))
 
-        # 2. QK normalization
-        if attn.norm_q is not None:
-            query = attn.norm_q(query)
-        if attn.norm_k is not None:
-            key = attn.norm_k(key)
+        # 2. QK normalization — Triton inplace when available
+        if _HAS_FUSED_KERNELS and query.is_cuda:
+            query = triton_rmsnorm_inplace(query, attn.norm_q.weight, attn.norm_q.eps)
+            key   = triton_rmsnorm_inplace(key,   attn.norm_k.weight, attn.norm_k.eps)
+        else:
+            if attn.norm_q is not None:
+                query = attn.norm_q(query)
+            if attn.norm_k is not None:
+                key = attn.norm_k(key)
 
         # 3. RoPE (selective: single blocks apply only to video portion)
         if image_rotary_emb is not None:
-            if attn.add_q_proj is None and encoder_hidden_states is not None:
-                query = torch.cat(
-                    [
-                        apply_rotary_emb(
-                            query[:, : -encoder_hidden_states.shape[1]],
-                            image_rotary_emb,
-                            sequence_dim=1,
-                        ),
-                        query[:, -encoder_hidden_states.shape[1] :],
-                    ],
-                    dim=1,
-                )
-                key = torch.cat(
-                    [
-                        apply_rotary_emb(
-                            key[:, : -encoder_hidden_states.shape[1]],
-                            image_rotary_emb,
-                            sequence_dim=1,
-                        ),
-                        key[:, -encoder_hidden_states.shape[1] :],
-                    ],
-                    dim=1,
-                )
+            if _HAS_FUSED_KERNELS and query.is_cuda:
+                cos, sin = image_rotary_emb
+                if attn.add_q_proj is None and encoder_hidden_states is not None:
+                    # Single block: text tokens at end, skip them for RoPE
+                    txt_len = encoder_hidden_states.shape[1]
+                    query, key = triton_rope_hyvideo_inplace(query, key, cos, sin, txt_len=txt_len)
+                else:
+                    # Dual block: all tokens are video, txt_len=0
+                    query, key = triton_rope_hyvideo_inplace(query, key, cos, sin, txt_len=0)
             else:
-                query = apply_rotary_emb(query, image_rotary_emb, sequence_dim=1)
-                key = apply_rotary_emb(key, image_rotary_emb, sequence_dim=1)
+                if attn.add_q_proj is None and encoder_hidden_states is not None:
+                    query = torch.cat(
+                        [
+                            apply_rotary_emb(
+                                query[:, : -encoder_hidden_states.shape[1]],
+                                image_rotary_emb,
+                                sequence_dim=1,
+                            ),
+                            query[:, -encoder_hidden_states.shape[1] :],
+                        ],
+                        dim=1,
+                    )
+                    key = torch.cat(
+                        [
+                            apply_rotary_emb(
+                                key[:, : -encoder_hidden_states.shape[1]],
+                                image_rotary_emb,
+                                sequence_dim=1,
+                            ),
+                            key[:, -encoder_hidden_states.shape[1] :],
+                        ],
+                        dim=1,
+                    )
+                else:
+                    query = apply_rotary_emb(query, image_rotary_emb, sequence_dim=1)
+                    key = apply_rotary_emb(key, image_rotary_emb, sequence_dim=1)
 
         # 4. Dual blocks: separate encoder QKV then concatenate
         if attn.add_q_proj is not None and encoder_hidden_states is not None:

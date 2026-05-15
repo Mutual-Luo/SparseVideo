@@ -8,8 +8,6 @@ from diffusers.models.attention_dispatch import dispatch_attention_fn
 from ._base import SparseMethod
 from ..processors.wan import SparseWanAttnProcessor
 from ..processors.hunyuan_video import SparseHunyuanVideoAttnProcessor
-from ..kernels.kmeans import triton_kmeans
-from ..kernels.block_sparse_attn import block_sparse_attention
 
 
 class AdaClusterMethod(SparseMethod):
@@ -53,13 +51,19 @@ class AdaClusterMethod(SparseMethod):
                     query, key, value,
                     attn_mask=attention_mask, dropout_p=0.0, is_causal=False,
                 )
-            return _adacluster_attention(
-                query, key, value,
-                budget=cfg["budget"],
-                num_clusters=cfg["num_clusters"],
-                distance=cfg["distance"],
-                kmeans_iters=cfg["kmeans_iters"],
-            )
+            try:
+                return _adacluster_attention(
+                    query, key, value,
+                    budget=cfg["budget"],
+                    num_clusters=cfg["num_clusters"],
+                    distance=cfg["distance"],
+                    kmeans_iters=cfg["kmeans_iters"],
+                )
+            except Exception:
+                return dispatch_attention_fn(
+                    query, key, value,
+                    attn_mask=attention_mask, dropout_p=0.0, is_causal=False,
+                )
 
         if self.model_info.model_type == "wan":
             return SparseWanAttnProcessor(
@@ -79,6 +83,9 @@ def _adacluster_attention(query, key, value, budget, num_clusters, distance, kme
         return dispatch_attention_fn(
             query, key, value, attn_mask=None, dropout_p=0.0, is_causal=False,
         )
+
+    from ..kernels.kmeans import triton_kmeans
+    from ..kernels.block_sparse_attn import block_sparse_attention
 
     B, N, H, D = query.shape
     scale = D ** -0.5

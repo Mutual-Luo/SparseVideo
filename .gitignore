@@ -118,5 +118,6 @@ benchmark_outputs/
 .codex
 .vscode
 .agents
+.claude
 AGENTS.md
 CLAUDE.md
