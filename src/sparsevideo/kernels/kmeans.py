@@ -134,6 +134,9 @@ def triton_kmeans(
     n_clusters: int,
     max_iters: int = 10,
     init_centroids: torch.Tensor | None = None,
+    preserve_empty_centroids: bool = True,
+    final_reassign: bool = True,
+    clamp_clusters: bool = True,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """Triton-accelerated batch k-means.
 
@@ -142,6 +145,17 @@ def triton_kmeans(
         n_clusters: number of clusters
         max_iters: maximum iterations
         init_centroids: optional [B, K, D] initial centroids
+        preserve_empty_centroids: keep the previous centroid for empty clusters.
+            AdaCluster upstream resets empty clusters to zero, so that method
+            passes False.
+        final_reassign: run one final assignment after centroid updates. The
+            generic default keeps self-consistent labels for new centroids.
+            AdaCluster upstream returns labels/counts from the last update
+            iteration instead, so it passes False.
+        clamp_clusters: cap cluster count at N. Most methods do this before
+            calling k-means; SVOO routing buckets intentionally keep the
+            upstream n_clusters value because random initialization may sample
+            duplicate centers.
 
     Returns:
         labels: [B, N] cluster assignments
@@ -149,7 +163,7 @@ def triton_kmeans(
         sizes: [B, K] cluster sizes
     """
     B, N, D = x.shape
-    K = min(n_clusters, N)
+    K = min(n_clusters, N) if clamp_clusters else int(n_clusters)
     device = x.device
 
     assert D in (16, 32, 64, 128, 256), f"head_dim {D} not supported, must be power of 2 in [16..256]"
@@ -163,12 +177,13 @@ def triton_kmeans(
     def _next_pow2(n):
         return 1 << (max(1, n) - 1).bit_length()
 
-    BLOCK_N = min(64, _next_pow2(N))
-    BLOCK_K = min(64, _next_pow2(K))
+    BLOCK_N = min(64, max(16, _next_pow2(N)))
+    BLOCK_K = min(64, max(16, _next_pow2(K)))
     BLOCK_K_NORM = min(64, _next_pow2(K))
 
     labels = torch.empty(B, N, dtype=torch.int32, device=device)
     norms = torch.empty(B, K, dtype=torch.float32, device=device)
+    counts = None
 
     for _ in range(max_iters):
         # Step 1: compute centroid norms
@@ -210,13 +225,18 @@ def triton_kmeans(
 
         safe_counts = counts.clamp(min=1).unsqueeze(-1).float()
         new_centroids = new_centroids / safe_counts
-        empty_mask = (counts == 0).unsqueeze(-1)
-        new_centroids = torch.where(empty_mask, centroids.to(torch.float32), new_centroids).to(x.dtype)
+        if preserve_empty_centroids:
+            empty_mask = (counts == 0).unsqueeze(-1)
+            new_centroids = torch.where(empty_mask, centroids.to(torch.float32), new_centroids)
+        new_centroids = new_centroids.to(x.dtype)
 
         if torch.allclose(centroids, new_centroids, atol=1e-4):
             centroids = new_centroids
             break
         centroids = new_centroids.contiguous()
+
+    if not final_reassign and counts is not None:
+        return labels, centroids, counts.to(torch.long)
 
     # Final assignment with converged centroids
     _norm_sq_kernel[(triton.cdiv(K, BLOCK_K_NORM), B)](

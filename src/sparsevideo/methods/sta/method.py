@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-import importlib.util
+import json
 from math import ceil
-import warnings
+from pathlib import Path
 
 import torch
 import torch.nn.functional as F
@@ -12,39 +12,22 @@ from .._layout import infer_video_frame_shape, infer_video_token_layout
 from ...processors.wan import SparseWanAttnProcessor
 from ...processors.hunyuan_video import SparseHunyuanVideoAttnProcessor
 from . import config as method_config
-
-
-_TRITON_FALLBACK_WARNED = False
-_HAS_FASTVIDEO_KERNEL = None
-
-
-def _has_fastvideo_kernel():
-    global _HAS_FASTVIDEO_KERNEL
-    if _HAS_FASTVIDEO_KERNEL is None:
-        try:
-            _HAS_FASTVIDEO_KERNEL = importlib.util.find_spec("fastvideo_kernel") is not None
-        except Exception:
-            _HAS_FASTVIDEO_KERNEL = False
-    return _HAS_FASTVIDEO_KERNEL
-
-
-def _warn_triton_fallback(exc):
-    global _TRITON_FALLBACK_WARNED
-    if _TRITON_FALLBACK_WARNED:
-        return
-    msg = str(exc).splitlines()[0] if str(exc) else type(exc).__name__
-    warnings.warn(
-        f"sta fastvideo_kernel path failed ({type(exc).__name__}: {msg}); "
-        "falling back to SparseVideo Triton STA.",
-        RuntimeWarning,
-        stacklevel=2,
-    )
-    _TRITON_FALLBACK_WARNED = True
+from .ops import STA_SUPPORTED_SEQ_SHAPES, STA_TILE_SIZE
 
 
 class STAMethod(SparseMethod):
     CONFIG_DEFAULTS = method_config.CONFIG_DEFAULTS
     CONFIG_ALIASES = method_config.CONFIG_ALIASES
+
+    @classmethod
+    def default_config(cls, **context):
+        return method_config.default_config(**context)
+
+    def __init__(self, config, model_info):
+        super().__init__(config=config, model_info=model_info)
+        if self.config["STA_mode"] != "STA_inference":
+            raise NotImplementedError("SparseVideo STA currently supports upstream STA_inference mode only")
+        self._mask_strategy = _load_mask_strategy(self.config.get("mask_strategy_file_path"))
 
     def create_processor(self, layer_idx, total_layers, original_processor, step_tracker):
         if self.model_info.model_type not in ("wan", "hunyuan_video"):
@@ -55,13 +38,26 @@ class STAMethod(SparseMethod):
         seq_shape = self.config["seq_shape"]
         has_text = self.config["has_text"]
         model_type = self.model_info.model_type
+        mask_strategy = self._mask_strategy
 
         def attn_fn(query, key, value, attention_mask, **kwargs):
             text_len = kwargs.get("text_len", 0)
-            return _sta_attention(query, key, value, tile_size=tile_size,
-                                  kernel_size=kernel_size,
-                                  model_type=model_type, text_len=text_len,
-                                  seq_shape=seq_shape, has_text=has_text)
+            prompt_length = kwargs.get("prompt_length")
+            out = _sta_attention(query, key, value, tile_size=tile_size,
+                                 kernel_size=kernel_size,
+                                 model_type=model_type, text_len=text_len,
+                                 prompt_length=prompt_length,
+                                 seq_shape=seq_shape, has_text=has_text,
+                                 layer_idx=layer_idx,
+                                 step_idx=max(0, step_tracker.step - 1),
+                                 mask_strategy=mask_strategy)
+            self.record_runtime_dispatch(
+                "sparse",
+                backend=_sta_backend_name(query),
+                layer_idx=layer_idx,
+                step=getattr(step_tracker, "step", None),
+            )
+            return out
 
         if self.model_info.model_type == "wan":
             return SparseWanAttnProcessor(
@@ -72,9 +68,24 @@ class STAMethod(SparseMethod):
         )
 
 
+def _sta_backend_name(query):
+    from . import ops
+
+    try:
+        capability = torch.cuda.get_device_capability(query.device)
+    except Exception:
+        capability = (0, 0)
+    if query.is_cuda and ops.sta_fwd is not None and capability[0] >= 9:
+        return "fastvideo_sta_h100"
+    if query.is_cuda and capability[0] == 8:
+        return "fastvideo_sta_a100_triton"
+    return "fastvideo_sta_triton"
+
+
 def _sta_attention(query, key, value, tile_size, kernel_size, model_type="wan",
-                   text_len=0, seq_shape=None, has_text=True):
-    """Sliding Tile Attention with 3D neighborhood overlap via Triton kernel.
+                   text_len=0, prompt_length=None, seq_shape=None, has_text=True,
+                   layer_idx=0, step_idx=0, mask_strategy=None):
+    """Sliding Tile Attention using the SparseVideo-owned FastVideo STA path.
 
     query/key/value: [B, N, H, D]
     tile_size: (T_tile, H_tile, W_tile) — tile dimensions
@@ -104,173 +115,59 @@ def _sta_attention(query, key, value, tile_size, kernel_size, model_type="wan",
     H_pad = ceil(spatial_h / hs) * hs
     W_pad = ceil(spatial_w / ws) * ws
 
-    # fastvideo_kernel path > Triton path (CUDA only)
-    if query.is_cuda:
-        if _has_fastvideo_kernel():
-            try:
-                return _sta_fastvideo_path(
-                    query, key, value, B, N, H, D,
-                    vid_start, video_len, text_len, context_len,
-                    T, spatial_h, spatial_w,
-                    T_pad, H_pad, W_pad,
-                    tile_size, kernel_size, model_type, seq_shape, has_text,
-                )
-            except Exception as exc:
-                _warn_triton_fallback(exc)
-        try:
-            return _sta_triton_path(
-                query, key, value, B, N, H, D,
-                vid_start, video_len, text_len, context_len,
-                T, spatial_h, spatial_w,
-                T_pad, H_pad, W_pad,
-                tile_size, kernel_size, model_type,
-            )
-        except Exception as exc:
-            raise RuntimeError("sta Triton sparse path failed") from exc
+    if not query.is_cuda:
+        raise RuntimeError("sta sparse path requires CUDA; CPU fallback is disabled for fair inference benchmarking")
 
-    raise RuntimeError("sta sparse path requires CUDA; CPU fallback is disabled for fair inference benchmarking")
+    if tile_size != STA_TILE_SIZE:
+        raise RuntimeError(
+            f"sta sparse path requires FastVideo STA tile_size={STA_TILE_SIZE}; got {tile_size}. "
+            "SparseVideo does not silently run the non-upstream generalized STA fallback for parity runs."
+        )
 
+    if not _is_supported_fastvideo_shape((T_pad, H_pad, W_pad)):
+        raise RuntimeError(
+            "sta sparse path only supports FastVideo STA native padded seq_shape values "
+            f"{sorted(STA_SUPPORTED_SEQ_SHAPES)}; got {T_pad}x{H_pad}x{W_pad}. "
+            "Use the upstream profile/resolution/frame count or a different method."
+        )
 
-def _sta_triton_path(query, key, value, B, N, H, D,
-                     vid_start, video_len, text_len, context_len,
-                     T, spatial_h, spatial_w,
-                     T_pad, H_pad, W_pad,
-                     tile_size, kernel_size, model_type):
-    """Triton kernel path: 3D neighborhood sliding tile attention."""
-    from ...kernels.sta_triton import triton_sliding_tile_attention
-
-    ts, hs, ws = tile_size
-
-    # Extract video tokens and reshape to padded 3D grid
-    vid_end = vid_start + video_len
-    q_vid = query[:, vid_start:vid_end, :, :]
-    k_vid = key[:, vid_start:vid_end, :, :]
-    v_vid = value[:, vid_start:vid_end, :, :]
-
-    # Reshape to [B, T, H_s, W_s, Heads, D] then pad
-    q_3d = q_vid.view(B, T, spatial_h, spatial_w, H, D)
-    k_3d = k_vid.view(B, T, spatial_h, spatial_w, H, D)
-    v_3d = v_vid.view(B, T, spatial_h, spatial_w, H, D)
-
-    if T_pad != T or H_pad != spatial_h or W_pad != spatial_w:
-        q_3d = F.pad(q_3d, (0, 0, 0, 0, 0, W_pad - spatial_w, 0, H_pad - spatial_h, 0, T_pad - T))
-        k_3d = F.pad(k_3d, (0, 0, 0, 0, 0, W_pad - spatial_w, 0, H_pad - spatial_h, 0, T_pad - T))
-        v_3d = F.pad(v_3d, (0, 0, 0, 0, 0, W_pad - spatial_w, 0, H_pad - spatial_h, 0, T_pad - T))
-
-    img_seq_len = T_pad * H_pad * W_pad
-
-    # Flatten to [B, img_seq_len, H, D] then fold to [B*H, seq_len, D]
-    q_flat = q_3d.reshape(B, img_seq_len, H, D)
-    k_flat = k_3d.reshape(B, img_seq_len, H, D)
-    v_flat = v_3d.reshape(B, img_seq_len, H, D)
-
-    # Determine text tokens for the Triton kernel
-    if model_type == "hunyuan_video" and text_len > 0:
-        # Text at end: append text tokens after video
-        q_text = query[:, N - text_len:, :, :]
-        k_text = key[:, N - text_len:, :, :]
-        v_text = value[:, N - text_len:, :, :]
-        q_flat = torch.cat([q_flat, q_text], dim=1)
-        k_flat = torch.cat([k_flat, k_text], dim=1)
-        v_flat = torch.cat([v_flat, v_text], dim=1)
-        triton_text_len = text_len
-    elif model_type != "hunyuan_video" and context_len > 0:
-        # Non-video prefix tokens are appended after video for the STA kernel.
-        q_ctx = query[:, :context_len, :, :]
-        k_ctx = key[:, :context_len, :, :]
-        v_ctx = value[:, :context_len, :, :]
-        q_flat = torch.cat([q_flat, q_ctx], dim=1)
-        k_flat = torch.cat([k_flat, k_ctx], dim=1)
-        v_flat = torch.cat([v_flat, v_ctx], dim=1)
-        triton_text_len = context_len
-    else:
-        triton_text_len = 0
-
-    total_seq = q_flat.shape[1]
-
-    # Fold to [B*H, seq_len, D]
-    q_bh = q_flat.permute(0, 2, 1, 3).reshape(B * H, total_seq, D)
-    k_bh = k_flat.permute(0, 2, 1, 3).reshape(B * H, total_seq, D)
-    v_bh = v_flat.permute(0, 2, 1, 3).reshape(B * H, total_seq, D)
-
-    out_bh = triton_sliding_tile_attention(
-        q_bh, k_bh, v_bh,
-        canvas_shape=(T_pad, H_pad, W_pad),
-        tile_size=tile_size,
-        kernel_size=kernel_size,
-        text_length=triton_text_len,
+    return _sta_sparsevideo_fastvideo_path(
+        query, key, value, B, N, H, D,
+        vid_start, video_len, text_len, context_len,
+        T, spatial_h, spatial_w,
+        T_pad, H_pad, W_pad,
+        tile_size, kernel_size, model_type, seq_shape, has_text,
+        layer_idx, step_idx, mask_strategy, prompt_length,
     )
 
-    # Unfold: [B*H, seq_len, D] -> [B, H, seq_len, D] -> [B, seq_len, H, D]
-    out_full = out_bh.reshape(B, H, total_seq, D).permute(0, 2, 1, 3)
 
-    # Extract video output (remove padding) and text output
-    out_vid_padded = out_full[:, :img_seq_len, :, :]
-    out_vid_3d = out_vid_padded.view(B, T_pad, H_pad, W_pad, H, D)
-    out_vid_3d = out_vid_3d[:, :T, :spatial_h, :spatial_w, :, :]
-    out_vid = out_vid_3d.reshape(B, video_len, H, D)
+def _sta_sparsevideo_fastvideo_path(query, key, value, B, N, H, D,
+                                    vid_start, video_len, text_len, context_len,
+                                    T, spatial_h, spatial_w,
+                                    T_pad, H_pad, W_pad,
+                                    tile_size, kernel_size, model_type, seq_shape_override,
+                                    has_text_config, layer_idx, step_idx, mask_strategy,
+                                    prompt_length=None):
+    """SparseVideo-owned port of FastVideo's sliding_tile_attention API.
 
-    if triton_text_len > 0:
-        out_text = out_full[:, img_seq_len:img_seq_len + triton_text_len, :, :]
-
-    # Reassemble in original token order
-    if model_type == "hunyuan_video":
-        if text_len > 0:
-            return torch.cat([out_vid, out_text], dim=1)
-        return out_vid
-    else:
-        # Non-Hunyuan layout: [optional prefix, video, optional tail]
-        parts = []
-        if context_len > 0:
-            parts.append(out_text)  # context was appended as "text"
-        parts.append(out_vid)
-        remaining = N - context_len - video_len
-        if remaining > 0:
-            # Remaining tokens: dense attention
-            q_rem = query[:, vid_start + video_len:, :, :].permute(0, 2, 1, 3)
-            k_all = key.permute(0, 2, 1, 3)
-            v_all = value.permute(0, 2, 1, 3)
-            out_rem = F.scaled_dot_product_attention(q_rem, k_all, v_all, dropout_p=0.0)
-            parts.append(out_rem.permute(0, 2, 1, 3))
-        return torch.cat(parts, dim=1)
-
-
-def _sta_fastvideo_path(query, key, value, B, N, H, D,
-                        vid_start, video_len, text_len, context_len,
-                        T, spatial_h, spatial_w,
-                        T_pad, H_pad, W_pad,
-                        tile_size, kernel_size, model_type, seq_shape_override,
-                        has_text_config):
-    """fastvideo_kernel.sliding_tile_attention path.
-
-    On SM90 (H100): uses ThunderKittens CUDA kernel (sta_fwd).
-    On SM80 (A100): automatically falls back to Triton (sliding_tile_attention_triton).
-
-    This matches the original FastVideo execution path exactly.
-    Input layout: [B, H, S, D] (BHSD) as expected by fastvideo_kernel.
+    H100 C++ dispatch is used only if a SparseVideo-owned sta_h100 extension is
+    built. Otherwise this uses the SparseVideo-owned Triton port of FastVideo's
+    fallback kernel.
+    Input layout: [B, H, S, D] (BHSD), matching FastVideo STA.
     window_size: list of (t, h, w) per head — use kernel_size for all heads.
     """
-    from fastvideo_kernel import sliding_tile_attention as _fvk_sta
+    from .ops import sliding_tile_attention as _sv_sta
 
-    ts, hs, ws = tile_size
-    kt, kh, kw = kernel_size
     vid_end = vid_start + video_len
 
-    # Determine 3D sequence shape string (nearest supported: 30x48x80, 36x48x48, 18x48x80)
     seq_shape = seq_shape_override or f"{T_pad}x{H_pad}x{W_pad}"
-    _SUPPORTED_SHAPES = {"30x48x80", "36x48x48", "18x48x80"}
 
-    # Build per-head window_size list using kernel_size
-    # Each entry is (tiles_t, tiles_h, tiles_w) for that head
-    nt = T_pad // ts
-    nh = H_pad // hs
-    nw = W_pad // ws
-    window_size = [(kt, kh, kw)] * H
+    window_size = _sta_window_sizes(mask_strategy, step_idx, layer_idx, H, kernel_size)
 
     # Extract video tokens, reshape to [B, H, T_pad*H_pad*W_pad, D]
-    q_vid = query[:, vid_start:vid_end, :, :].permute(0, 2, 1, 3)
-    k_vid = key[:, vid_start:vid_end, :, :].permute(0, 2, 1, 3)
-    v_vid = value[:, vid_start:vid_end, :, :].permute(0, 2, 1, 3)
+    q_vid = query[:, vid_start:vid_end, :, :].permute(0, 2, 1, 3).contiguous()
+    k_vid = key[:, vid_start:vid_end, :, :].permute(0, 2, 1, 3).contiguous()
+    v_vid = value[:, vid_start:vid_end, :, :].permute(0, 2, 1, 3).contiguous()
 
     # Pad to T_pad, H_pad, W_pad
     if T_pad != T or H_pad != spatial_h or W_pad != spatial_w:
@@ -284,24 +181,28 @@ def _sta_fastvideo_path(query, key, value, B, N, H, D,
         v_vid = F.pad(v_vid, (0, 0, 0, W_pad - spatial_w, 0, H_pad - spatial_h, 0, T_pad - T))
         v_vid = v_vid.reshape(B, H, T_pad * H_pad * W_pad, D)
 
+    q_vid = _sta_tile_bhsd(q_vid, (T_pad, H_pad, W_pad), tile_size)
+    k_vid = _sta_tile_bhsd(k_vid, (T_pad, H_pad, W_pad), tile_size)
+    v_vid = _sta_tile_bhsd(v_vid, (T_pad, H_pad, W_pad), tile_size)
+
     img_seq_len = T_pad * H_pad * W_pad
 
     # Handle text/context tokens
     has_text = False
     fvk_text_len = 0
     if model_type == "hunyuan_video" and text_len > 0:
-        q_text = query[:, N - text_len:, :, :].permute(0, 2, 1, 3)
-        k_text = key[:, N - text_len:, :, :].permute(0, 2, 1, 3)
-        v_text = value[:, N - text_len:, :, :].permute(0, 2, 1, 3)
+        fvk_text_len = _sta_effective_text_length(prompt_length, text_len)
+        q_text = query[:, N - text_len:, :, :].permute(0, 2, 1, 3).contiguous()
+        k_text = key[:, N - text_len:, :, :].permute(0, 2, 1, 3).contiguous()
+        v_text = value[:, N - text_len:, :, :].permute(0, 2, 1, 3).contiguous()
         q_in = torch.cat([q_vid, q_text], dim=2)
         k_in = torch.cat([k_vid, k_text], dim=2)
         v_in = torch.cat([v_vid, v_text], dim=2)
         has_text = bool(has_text_config)
-        fvk_text_len = text_len
     elif model_type != "hunyuan_video" and context_len > 0:
-        q_ctx = query[:, :context_len, :, :].permute(0, 2, 1, 3)
-        k_ctx = key[:, :context_len, :, :].permute(0, 2, 1, 3)
-        v_ctx = value[:, :context_len, :, :].permute(0, 2, 1, 3)
+        q_ctx = query[:, :context_len, :, :].permute(0, 2, 1, 3).contiguous()
+        k_ctx = key[:, :context_len, :, :].permute(0, 2, 1, 3).contiguous()
+        v_ctx = value[:, :context_len, :, :].permute(0, 2, 1, 3).contiguous()
         q_in = torch.cat([q_vid, q_ctx], dim=2)
         k_in = torch.cat([k_vid, k_ctx], dim=2)
         v_in = torch.cat([v_vid, v_ctx], dim=2)
@@ -310,27 +211,12 @@ def _sta_fastvideo_path(query, key, value, B, N, H, D,
     else:
         q_in, k_in, v_in = q_vid, k_vid, v_vid
 
-    # fastvideo_kernel expects [B, H, S, D] BHSD layout
-    # Only use named seq_shape when it's a supported value
-    if seq_shape in _SUPPORTED_SHAPES:
-        out = _fvk_sta(q_in, k_in, v_in, window_size, fvk_text_len, has_text, seq_shape)
-    else:
-        # Unsupported shape — fall back to triton path
-        from ...kernels.sta_triton import triton_sliding_tile_attention
-        q_bh = q_in.reshape(B * H, -1, D)
-        k_bh = k_in.reshape(B * H, -1, D)
-        v_bh = v_in.reshape(B * H, -1, D)
-        out_bh = triton_sliding_tile_attention(
-            q_bh, k_bh, v_bh,
-            canvas_shape=(T_pad, H_pad, W_pad),
-            tile_size=tile_size,
-            kernel_size=kernel_size,
-            text_length=fvk_text_len,
-        )
-        out = out_bh.reshape(B, H, -1, D)
+    out = _sv_sta(q_in, k_in, v_in, window_size, fvk_text_len, has_text, seq_shape)
 
     # out: [B, H, img_seq_len (+ text), D]
-    out_vid_pad = out[:, :, :img_seq_len, :].view(B, H, T_pad, H_pad, W_pad, D)
+    out_vid_tiled = out[:, :, :img_seq_len, :]
+    out_vid_pad = _sta_untile_bhsd(out_vid_tiled, (T_pad, H_pad, W_pad), tile_size)
+    out_vid_pad = out_vid_pad.view(B, H, T_pad, H_pad, W_pad, D)
     out_vid = out_vid_pad[:, :, :T, :spatial_h, :spatial_w, :].reshape(B, H, video_len, D)
     out_vid = out_vid.permute(0, 2, 1, 3)  # [B, video_len, H, D]
 
@@ -355,75 +241,93 @@ def _sta_fastvideo_path(query, key, value, B, N, H, D,
         return torch.cat(parts, dim=1)
 
 
-def _sta_sdpa_fallback(query, key, value, B, N, H, D,
-                       vid_start, video_len, context_len,
-                       T, spatial_h, spatial_w,
-                       T_pad, H_pad, W_pad,
-                       tile_size, model_type, text_len):
-    """CPU fallback: non-overlapping tile SDPA (original approach)."""
-    ts, hs, ws = tile_size
-    tile_tokens = ts * hs * ws
-
-    vid_end = vid_start + T * spatial_h * spatial_w
-    q_vid = query[:, vid_start:vid_end, :, :]
-    k_vid = key[:, vid_start:vid_end, :, :]
-    v_vid = value[:, vid_start:vid_end, :, :]
-
-    q_3d = q_vid.view(B, T, spatial_h, spatial_w, H, D)
-    k_3d = k_vid.view(B, T, spatial_h, spatial_w, H, D)
-    v_3d = v_vid.view(B, T, spatial_h, spatial_w, H, D)
-
-    if T_pad != T or H_pad != spatial_h or W_pad != spatial_w:
-        q_3d = F.pad(q_3d, (0, 0, 0, 0, 0, W_pad - spatial_w, 0, H_pad - spatial_h, 0, T_pad - T))
-        k_3d = F.pad(k_3d, (0, 0, 0, 0, 0, W_pad - spatial_w, 0, H_pad - spatial_h, 0, T_pad - T))
-        v_3d = F.pad(v_3d, (0, 0, 0, 0, 0, W_pad - spatial_w, 0, H_pad - spatial_h, 0, T_pad - T))
-
-    nT, nH, nW = T_pad // ts, H_pad // hs, W_pad // ws
-    q_tiles = q_3d.view(B, nT, ts, nH, hs, nW, ws, H, D)
-    k_tiles = k_3d.view(B, nT, ts, nH, hs, nW, ws, H, D)
-    v_tiles = v_3d.view(B, nT, ts, nH, hs, nW, ws, H, D)
-
-    q_tiles = q_tiles.permute(0, 1, 3, 5, 2, 4, 6, 7, 8).reshape(B, nT * nH * nW, tile_tokens, H, D)
-    k_tiles = k_tiles.permute(0, 1, 3, 5, 2, 4, 6, 7, 8).reshape(B, nT * nH * nW, tile_tokens, H, D)
-    v_tiles = v_tiles.permute(0, 1, 3, 5, 2, 4, 6, 7, 8).reshape(B, nT * nH * nW, tile_tokens, H, D)
-
-    num_tiles = nT * nH * nW
-    q_flat = q_tiles.reshape(B * num_tiles, tile_tokens, H, D).permute(0, 2, 1, 3)
-    k_flat = k_tiles.reshape(B * num_tiles, tile_tokens, H, D).permute(0, 2, 1, 3)
-    v_flat = v_tiles.reshape(B * num_tiles, tile_tokens, H, D).permute(0, 2, 1, 3)
-
-    out_flat = F.scaled_dot_product_attention(q_flat, k_flat, v_flat, dropout_p=0.0)
-
-    out_tiles = out_flat.permute(0, 2, 1, 3).reshape(B, nT, nH, nW, ts, hs, ws, H, D)
-    out_3d = out_tiles.permute(0, 1, 4, 2, 5, 3, 6, 7, 8).reshape(B, T_pad, H_pad, W_pad, H, D)
-    out_3d = out_3d[:, :T, :spatial_h, :spatial_w, :, :]
-    out_vid = out_3d.reshape(B, T * spatial_h * spatial_w, H, D)
-
-    k_all = key.permute(0, 2, 1, 3)
-    v_all = value.permute(0, 2, 1, 3)
-
-    if model_type == "hunyuan_video":
-        parts = [out_vid]
-        if text_len > 0:
-            q_ctx = query[:, N - text_len:, :, :].permute(0, 2, 1, 3)
-            out_ctx = F.scaled_dot_product_attention(q_ctx, k_all, v_all, dropout_p=0.0)
-            parts.append(out_ctx.permute(0, 2, 1, 3))
-        return torch.cat(parts, dim=1)
-    else:
-        if context_len > 0:
-            q_ctx = query[:, :vid_start, :, :].permute(0, 2, 1, 3)
-            out_ctx = F.scaled_dot_product_attention(q_ctx, k_all, v_all, dropout_p=0.0)
-            out = torch.cat([out_ctx.permute(0, 2, 1, 3), out_vid], dim=1)
-        else:
-            out = out_vid
-        remaining = N - vid_start - T * spatial_h * spatial_w
-        if remaining > 0:
-            q_rem = query[:, vid_end:, :, :].permute(0, 2, 1, 3)
-            out_rem = F.scaled_dot_product_attention(q_rem, k_all, v_all, dropout_p=0.0)
-            out = torch.cat([out, out_rem.permute(0, 2, 1, 3)], dim=1)
-        return out
+def _sta_effective_text_length(prompt_length, text_len):
+    if prompt_length is None:
+        return int(text_len)
+    return max(0, min(int(prompt_length), int(text_len)))
 
 
 def _infer_video_shape(video_len, model_type="wan", seq_shape=None):
     """Infer (T, H, W) from video token count."""
     return infer_video_frame_shape(video_len, model_type=model_type, seq_shape=seq_shape)
+
+
+def _is_supported_fastvideo_shape(shape: tuple[int, int, int]) -> bool:
+    return shape in set(STA_SUPPORTED_SEQ_SHAPES.values())
+
+
+def _sta_tile_bhsd(x: torch.Tensor, canvas_shape, tile_size):
+    canvas_t, canvas_h, canvas_w = canvas_shape
+    tile_t, tile_h, tile_w = tile_size
+    batch, heads, seq_len, dim = x.shape
+    if seq_len != canvas_t * canvas_h * canvas_w:
+        raise ValueError("STA tile input sequence length does not match canvas shape")
+    return (
+        x.view(
+            batch,
+            heads,
+            canvas_t // tile_t,
+            tile_t,
+            canvas_h // tile_h,
+            tile_h,
+            canvas_w // tile_w,
+            tile_w,
+            dim,
+        )
+        .permute(0, 1, 2, 4, 6, 3, 5, 7, 8)
+        .reshape(batch, heads, seq_len, dim)
+    )
+
+
+def _sta_untile_bhsd(x: torch.Tensor, canvas_shape, tile_size):
+    canvas_t, canvas_h, canvas_w = canvas_shape
+    tile_t, tile_h, tile_w = tile_size
+    batch, heads, seq_len, dim = x.shape
+    if seq_len != canvas_t * canvas_h * canvas_w:
+        raise ValueError("STA untile input sequence length does not match canvas shape")
+    return (
+        x.view(
+            batch,
+            heads,
+            canvas_t // tile_t,
+            canvas_h // tile_h,
+            canvas_w // tile_w,
+            tile_t,
+            tile_h,
+            tile_w,
+            dim,
+        )
+        .permute(0, 1, 2, 5, 3, 6, 4, 7, 8)
+        .reshape(batch, heads, seq_len, dim)
+    )
+
+
+def _load_mask_strategy(path):
+    if path is None:
+        return None
+    strategy_path = Path(str(path)).expanduser()
+    if not strategy_path.is_absolute():
+        strategy_path = Path.cwd() / strategy_path
+    if "training_free" in strategy_path.resolve().parts:
+        raise RuntimeError(f"Refusing to load STA mask strategy from training_free path: {strategy_path}")
+    with strategy_path.open("r", encoding="utf-8") as handle:
+        data = json.load(handle)
+    if not isinstance(data, dict):
+        raise TypeError(f"STA mask strategy must be a dict, got {type(data).__name__}")
+    return {str(key): _strategy_triple(value, f"mask_strategy[{key!r}]") for key, value in data.items()}
+
+
+def _sta_window_sizes(mask_strategy, step_idx, layer_idx, num_heads, default_window):
+    default = _strategy_triple(default_window, "window_size")
+    if mask_strategy is None:
+        return [default] * num_heads
+    windows = []
+    for head_idx in range(num_heads):
+        windows.append(mask_strategy.get(f"{int(step_idx)}_{int(layer_idx)}_{head_idx}", default))
+    return windows
+
+
+def _strategy_triple(value, name):
+    if not isinstance(value, (list, tuple)) or len(value) != 3:
+        raise ValueError(f"{name} must contain three integers")
+    return tuple(int(part) for part in value)

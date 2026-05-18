@@ -89,7 +89,7 @@ torch_extensions/
 # Experiment, benchmark, and generation outputs
 outputs/
 output/
-results/
+result/
 runs/
 logs/
 wandb/
@@ -120,4 +120,4 @@ benchmark_outputs/
 .agents
 .claude
 AGENTS.md
-CLAUDE.mdresult/
+CLAUDE.md

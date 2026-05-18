@@ -6,10 +6,162 @@ Pass 2: _fused_cocluster_assign_kernel — argmin in profile space without mater
 """
 from __future__ import annotations
 
+import json
+import os
+import threading
+
 import torch
-import torch.nn.functional as F
 import triton
 import triton.language as tl
+
+from .l2norm import triton_l2norm_forward
+
+
+def _env_int(name: str, default: int) -> int:
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    try:
+        return int(value)
+    except ValueError:
+        return default
+
+
+def _env_flag(name: str, default: bool = False) -> bool:
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    return value.lower() not in ("0", "", "false", "no", "off")
+
+
+def _maybe_autotune(configs, *, key):
+    if _env_flag("SVOO_TRITON_INPROCESS_AUTOTUNE", default=False):
+        return triton.autotune(configs, key=key)
+    return lambda fn: fn
+
+
+_TUNE_CACHE = None
+_TUNE_LOCK = threading.Lock()
+
+
+def _tune_mode() -> str:
+    return os.environ.get("SVOO_TRITON_TUNE", "fixed").strip().lower()
+
+
+def _tune_enabled() -> bool:
+    return _tune_mode() not in ("0", "false", "no", "off", "none", "fixed")
+
+
+def _tune_force() -> bool:
+    return _tune_mode() in ("1", "true", "yes", "on", "force", "retune")
+
+
+def _tune_cache_path() -> str:
+    explicit = os.environ.get("SVOO_TRITON_TUNE_CACHE")
+    if explicit:
+        return explicit
+    cache_root = os.environ.get("TRITON_CACHE_DIR") or os.path.join(os.getcwd(), ".triton_cache")
+    return os.path.join(cache_root, "svoo_tuning.json")
+
+
+def _load_tune_cache() -> dict:
+    global _TUNE_CACHE
+    if _TUNE_CACHE is not None:
+        return _TUNE_CACHE
+    path = _tune_cache_path()
+    try:
+        with open(path, "r") as f:
+            _TUNE_CACHE = json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        _TUNE_CACHE = {}
+    return _TUNE_CACHE
+
+
+def _save_tune_cache(cache: dict) -> None:
+    path = _tune_cache_path()
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    tmp_path = f"{path}.tmp"
+    with open(tmp_path, "w") as f:
+        json.dump(cache, f, indent=2, sort_keys=True)
+    os.replace(tmp_path, path)
+
+
+def _device_tune_key(device) -> str:
+    device = torch.device(device)
+    if device.type != "cuda":
+        return str(device)
+    index = device.index if device.index is not None else torch.cuda.current_device()
+    props = torch.cuda.get_device_properties(index)
+    return f"{props.name}|sm{props.major}{props.minor}|torch{torch.__version__}|triton{triton.__version__}"
+
+
+def _cache_key(kernel_name: str, device, dtype, **meta) -> str:
+    parts = {
+        "kernel": kernel_name,
+        "device": _device_tune_key(device),
+        "dtype": str(dtype),
+        **{k: int(v) for k, v in meta.items()},
+    }
+    return json.dumps(parts, sort_keys=True, separators=(",", ":"))
+
+
+def _config_candidates(configs, *, max_configs_env: str):
+    max_configs = _env_int(max_configs_env, 0)
+    if max_configs <= 0 or max_configs >= len(configs):
+        return configs
+    return configs[:max_configs]
+
+
+def _config_dict(config) -> dict:
+    data = {k: int(v) for k, v in config.kwargs.items()}
+    data["num_warps"] = int(config.num_warps)
+    data["num_stages"] = int(config.num_stages)
+    return data
+
+
+def _tune_or_load(kernel_name: str, cache_key: str, configs, bench_one, default: dict, *, max_configs_env: str) -> dict:
+    if not _tune_enabled():
+        return default
+
+    with _TUNE_LOCK:
+        cache = _load_tune_cache()
+        if not _tune_force() and cache_key in cache:
+            return {k: int(v) for k, v in cache[cache_key].items()}
+
+    candidates = _config_candidates(configs, max_configs_env=max_configs_env)
+    bench_warmup = _env_int("SVOO_TRITON_TUNE_WARMUP", 5)
+    bench_rep = _env_int("SVOO_TRITON_TUNE_REP", 20)
+
+    print(
+        f"[SVOO] Tuning {kernel_name}: {len(candidates)} configs "
+        f"(cache miss, mode={_tune_mode()})",
+        flush=True,
+    )
+    timings = []
+    for config in candidates:
+        meta = _config_dict(config)
+        try:
+            ms = triton.testing.do_bench(
+                lambda meta=meta: bench_one(meta),
+                warmup=bench_warmup,
+                rep=bench_rep,
+            )
+            timings.append((float(ms), meta))
+        except Exception as exc:
+            print(f"[SVOO]   skip {kernel_name} config {meta}: {type(exc).__name__}: {exc}", flush=True)
+
+    if timings:
+        _, best = min(timings, key=lambda item: item[0])
+    else:
+        best = default
+
+    with _TUNE_LOCK:
+        cache = _load_tune_cache()
+        cache[cache_key] = best
+        _save_tune_cache(cache)
+
+    print(f"[SVOO] Best {kernel_name} config: {best}", flush=True)
+    return best
 
 
 @triton.jit
@@ -107,6 +259,27 @@ def centroid_update_sorted_euclid(
     return centroids.to(x.dtype), centroid_counts.to(torch.long)
 
 
+_TUNE_PROFILE_NORM = [
+    triton.Config({"BLOCK_N": BN, "BLOCK_K": BK}, num_stages=ns, num_warps=wp)
+    for BN in [16, 32, 64, 128]
+    for BK in [16, 32]
+    for wp in [4, 8]
+    for ns in [1, 2]
+    if BN * BK >= 16 * 16
+]
+
+_TUNE_COCL_ASSIGN = [
+    triton.Config({"BLOCK_N": BN, "BLOCK_K": BK, "BLOCK_J": BJ}, num_stages=ns, num_warps=wp)
+    for BN in [16, 32, 64]
+    for BK in [16, 32]
+    for BJ in [16, 32]
+    for wp in [4, 8]
+    for ns in [1, 2]
+    if BK >= 16 and BJ >= 16
+]
+
+
+@_maybe_autotune(_TUNE_PROFILE_NORM, key=["K", "D"])
 @triton.jit
 def _profile_norm_kernel(
     X,       # [B, N, D]
@@ -151,6 +324,7 @@ def _profile_norm_kernel(
     tl.store(norm_ptrs, norms, mask=n_mask)
 
 
+@_maybe_autotune(_TUNE_COCL_ASSIGN, key=["K", "J", "D"])
 @triton.jit
 def _fused_cocluster_assign_kernel(
     X,      # [B, N, D]
@@ -225,7 +399,13 @@ def _fused_cocluster_assign_kernel(
     tl.store(out_ptrs, best_idx, mask=n_mask)
 
 
-def profile_norm(x: torch.Tensor, kcentroids: torch.Tensor) -> torch.Tensor:
+def profile_norm(
+    x: torch.Tensor,
+    kcentroids: torch.Tensor,
+    *,
+    BLOCK_N: int | None = None,
+    BLOCK_K: int | None = None,
+) -> torch.Tensor:
     """Compute profile row norms without materializing [B, N, K].
 
     norm[b, n] = ||x[b,n,:] @ kcentroids[b,:,:].T||_2
@@ -243,18 +423,42 @@ def profile_norm(x: torch.Tensor, kcentroids: torch.Tensor) -> torch.Tensor:
     kcentroids = kcentroids.contiguous()
     norms = torch.empty(B, N, device=x.device, dtype=torch.float32)
 
-    BLOCK_N = 32
-    BLOCK_K = max(16, min(32, triton.next_power_of_2(K)))
+    if BLOCK_N is None:
+        BLOCK_N = _env_int("SVOO_PROFILE_NORM_BLOCK_N", 32)
+    if BLOCK_K is None:
+        BLOCK_K = _env_int("SVOO_PROFILE_NORM_BLOCK_K", 32)
+    default_num_warps = 8 if K <= 256 else 4
+    default_meta = {
+        "BLOCK_N": int(BLOCK_N),
+        "BLOCK_K": int(BLOCK_K),
+        "num_warps": _env_int("SVOO_PROFILE_NORM_NUM_WARPS", default_num_warps),
+        "num_stages": _env_int("SVOO_PROFILE_NORM_NUM_STAGES", 2),
+    }
+    cache_key = _cache_key("profile_norm", x.device, x.dtype, K=K, D=D)
+    grid = lambda META: (triton.cdiv(N, META["BLOCK_N"]), B)
 
-    grid = (triton.cdiv(N, BLOCK_N), B)
-    _profile_norm_kernel[grid](
-        x, kcentroids, norms,
-        B, N, K=K, D=D,
-        stride_xb=x.stride(0), stride_xn=x.stride(1), stride_xd=x.stride(2),
-        stride_kcb=kcentroids.stride(0), stride_kck=kcentroids.stride(1), stride_kcd=kcentroids.stride(2),
-        stride_nb=norms.stride(0), stride_nn=norms.stride(1),
-        BLOCK_N=BLOCK_N, BLOCK_K=BLOCK_K,
+    def _run(meta):
+        _profile_norm_kernel[grid](
+            x, kcentroids, norms,
+            B, N, K=K, D=D,
+            stride_xb=x.stride(0), stride_xn=x.stride(1), stride_xd=x.stride(2),
+            stride_kcb=kcentroids.stride(0), stride_kck=kcentroids.stride(1), stride_kcd=kcentroids.stride(2),
+            stride_nb=norms.stride(0), stride_nn=norms.stride(1),
+            BLOCK_N=meta["BLOCK_N"],
+            BLOCK_K=meta["BLOCK_K"],
+            num_warps=meta["num_warps"],
+            num_stages=meta["num_stages"],
+        )
+
+    meta = _tune_or_load(
+        "profile_norm",
+        cache_key,
+        _TUNE_PROFILE_NORM,
+        _run,
+        default_meta,
+        max_configs_env="SVOO_PROFILE_NORM_TUNE_MAX_CONFIGS",
     )
+    _run(meta)
     return norms
 
 
@@ -263,6 +467,10 @@ def co_cluster_assign(
     kcentroids: torch.Tensor,
     profile_centroids: torch.Tensor,
     norms: torch.Tensor,
+    *,
+    BLOCK_N: int | None = None,
+    BLOCK_K: int | None = None,
+    BLOCK_J: int | None = None,
 ) -> torch.Tensor:
     """Fused profile-space nearest-centroid without materializing [B, N, K] or [B, N, J].
 
@@ -287,21 +495,47 @@ def co_cluster_assign(
 
     out = torch.empty(B, N, device=x.device, dtype=torch.int32)
 
-    BLOCK_N = 64
-    BLOCK_K = max(16, min(32, triton.next_power_of_2(K)))
-    BLOCK_J = max(16, min(32, triton.next_power_of_2(J)))
+    if BLOCK_N is None:
+        BLOCK_N = _env_int("SVOO_COCL_ASSIGN_BLOCK_N", 64)
+    if BLOCK_K is None:
+        BLOCK_K = _env_int("SVOO_COCL_ASSIGN_BLOCK_K", 32)
+    if BLOCK_J is None:
+        BLOCK_J = _env_int("SVOO_COCL_ASSIGN_BLOCK_J", 32)
+    default_meta = {
+        "BLOCK_N": int(BLOCK_N),
+        "BLOCK_K": int(BLOCK_K),
+        "BLOCK_J": int(BLOCK_J),
+        "num_warps": _env_int("SVOO_COCL_ASSIGN_NUM_WARPS", 4),
+        "num_stages": _env_int("SVOO_COCL_ASSIGN_NUM_STAGES", 2),
+    }
+    cache_key = _cache_key("cocluster_assign", x.device, x.dtype, K=K, J=J, D=D)
+    grid = lambda META: (triton.cdiv(N, META["BLOCK_N"]), B)
 
-    grid = (triton.cdiv(N, BLOCK_N), B)
-    _fused_cocluster_assign_kernel[grid](
-        x, kcentroids, profile_centroids, norms, out,
-        B, N, K=K, J=J, D=D,
-        stride_xb=x.stride(0), stride_xn=x.stride(1), stride_xd=x.stride(2),
-        stride_kcb=kcentroids.stride(0), stride_kck=kcentroids.stride(1), stride_kcd=kcentroids.stride(2),
-        stride_pcb=profile_centroids.stride(0), stride_pcj=profile_centroids.stride(1), stride_pck=profile_centroids.stride(2),
-        stride_nb=norms.stride(0), stride_nn=norms.stride(1),
-        stride_ob=out.stride(0), stride_on=out.stride(1),
-        BLOCK_N=BLOCK_N, BLOCK_K=BLOCK_K, BLOCK_J=BLOCK_J,
+    def _run(meta):
+        _fused_cocluster_assign_kernel[grid](
+            x, kcentroids, profile_centroids, norms, out,
+            B, N, K=K, J=J, D=D,
+            stride_xb=x.stride(0), stride_xn=x.stride(1), stride_xd=x.stride(2),
+            stride_kcb=kcentroids.stride(0), stride_kck=kcentroids.stride(1), stride_kcd=kcentroids.stride(2),
+            stride_pcb=profile_centroids.stride(0), stride_pcj=profile_centroids.stride(1), stride_pck=profile_centroids.stride(2),
+            stride_nb=norms.stride(0), stride_nn=norms.stride(1),
+            stride_ob=out.stride(0), stride_on=out.stride(1),
+            BLOCK_N=meta["BLOCK_N"],
+            BLOCK_K=meta["BLOCK_K"],
+            BLOCK_J=meta["BLOCK_J"],
+            num_warps=meta["num_warps"],
+            num_stages=meta["num_stages"],
+        )
+
+    meta = _tune_or_load(
+        "cocluster_assign",
+        cache_key,
+        _TUNE_COCL_ASSIGN,
+        _run,
+        default_meta,
+        max_configs_env="SVOO_COCL_ASSIGN_TUNE_MAX_CONFIGS",
     )
+    _run(meta)
     return out.long()
 
 
@@ -336,13 +570,13 @@ def co_cluster_tokens(
     q_labels = q_sizes = k_labels = k_sizes = None
     for _ in range(max_iters):
         profile_centroids_k = torch.matmul(k_centroids, q_centroids.transpose(-2, -1))
-        profile_centroids_k = F.normalize(profile_centroids_k.float(), p=2, dim=-1, eps=1e-8).contiguous()
+        profile_centroids_k = triton_l2norm_forward(profile_centroids_k, eps=1e-8).contiguous()
         k_norms = profile_norm(k_flat, q_centroids)
         k_labels = co_cluster_assign(k_flat, q_centroids, profile_centroids_k, k_norms)
         k_centroids, k_sizes = centroid_update_sorted_euclid(k_flat, k_labels, k_centroids, block_n=128)
 
         profile_centroids_q = torch.matmul(q_centroids, k_centroids.transpose(-2, -1))
-        profile_centroids_q = F.normalize(profile_centroids_q.float(), p=2, dim=-1, eps=1e-8).contiguous()
+        profile_centroids_q = triton_l2norm_forward(profile_centroids_q, eps=1e-8).contiguous()
         q_norms = profile_norm(q_flat, k_centroids)
         q_labels = co_cluster_assign(q_flat, k_centroids, profile_centroids_q, q_norms)
         q_centroids, q_sizes = centroid_update_sorted_euclid(q_flat, q_labels, q_centroids, block_n=128)

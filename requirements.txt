@@ -1,30 +1,5 @@
-torch>=2.0.0
-torchvision>=0.15.0
-numpy>=1.21.0
-scipy>=1.7.0
-scikit-learn>=1.0.0
-pillow>=9.0.0
-tqdm>=4.65.0
-matplotlib>=3.5.0
+# Minimal runtime requirements for `pip install sparsevideo`.
+# For full development/research env, see requirements-dev.txt.
+torch>=2.1.0
+diffusers>=0.30.0
 einops>=0.6.0
-ninja
-psutil
-hatchling
-editables
-setuptools>=77
-packaging>=24.2
-apache-tvm-ffi>=0.1.6,!=0.1.8,!=0.1.8.post0,<0.2
-diffusers==0.36.0
-transformers>=4.49.2
-accelerate>=1.7.0
-ftfy
-imageio
-imageio-ffmpeg
-IPython
-termcolor
-tabulate
-lpips
-scikit-image
-loguru
-pandas
-diffsynth

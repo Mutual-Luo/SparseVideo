@@ -8,6 +8,7 @@ from typing import Any, Iterator, List, Optional, Tuple
 class ModelInfo:
     model_type: str
     transformers: List[Any]
+    model_key: Optional[str] = None
     _self_attn_paths: List[Tuple[str, Any]] = field(default_factory=list)
 
     @property
@@ -34,7 +35,7 @@ def discover_model(pipe) -> ModelInfo:
 
     cls_name = type(transformers[0]).__name__
 
-    if "Wan" in cls_name:
+    if "Wan" in cls_name or "SkyReelsV2" in cls_name:
         model_type = "wan"
         attn_paths = _enumerate_wan(transformers)
     elif "HunyuanVideo" in cls_name:
@@ -49,8 +50,73 @@ def discover_model(pipe) -> ModelInfo:
     return ModelInfo(
         model_type=model_type,
         transformers=transformers,
+        model_key=_infer_model_key(pipe, transformers, model_type),
         _self_attn_paths=attn_paths,
     )
+
+
+def _infer_model_key(pipe, transformers, model_type: str) -> Optional[str]:
+    if model_type == "hunyuan_video":
+        cls_name = type(pipe).__name__
+        if "ImageToVideo" in cls_name or "I2V" in cls_name:
+            return "hunyuan-i2v"
+        return "hunyuan_video"
+    if model_type != "wan":
+        return None
+
+    text = " ".join(_iter_model_identity_strings([pipe, *transformers])).lower()
+    text = text.replace("_", "-")
+    is_i2v = "i2v" in text or "ImageToVideo" in type(pipe).__name__
+
+    if len(transformers) > 1:
+        return "wan22-i2v-a14b" if is_i2v else "wan22-t2v-a14b"
+    if "wan2.2" in text or "wan22" in text or "wan-2.2" in text:
+        if "a14b" in text or "14b" in text:
+            return "wan22-i2v-a14b" if is_i2v else "wan22-t2v-a14b"
+    if "skyreels" in text:
+        return "skyreels-v2-i2v-14b" if is_i2v else "skyreels-v2-t2v-14b"
+    if "1.3b" in text or "1-3b" in text:
+        return "wan21-t2v-1.3b"
+    if "14b" in text:
+        return "wan21-i2v-14b" if is_i2v else "wan21-t2v-14b"
+    return None
+
+
+def _iter_model_identity_strings(objects) -> Iterator[str]:
+    fields = (
+        "_name_or_path",
+        "name_or_path",
+        "model_name",
+        "model_id",
+        "pretrained_model_name_or_path",
+        "repo_id",
+    )
+    for obj in objects:
+        for field_name in fields:
+            value = getattr(obj, field_name, None)
+            if isinstance(value, str):
+                yield value
+        config = getattr(obj, "config", None)
+        if config is None:
+            continue
+        for field_name in fields:
+            value = _config_value(config, field_name)
+            if isinstance(value, str):
+                yield value
+
+
+def _config_value(config, field_name: str):
+    if isinstance(config, dict):
+        return config.get(field_name)
+    getter = getattr(config, "get", None)
+    if callable(getter):
+        try:
+            value = getter(field_name)
+        except Exception:
+            value = None
+        if value is not None:
+            return value
+    return getattr(config, field_name, None)
 
 
 def _enumerate_wan(transformers):

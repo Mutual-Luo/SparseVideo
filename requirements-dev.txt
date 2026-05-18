@@ -1,0 +1,30 @@
+# Development/research environment requirements.
+# For package install deps, see pyproject.toml [project.dependencies].
+# Install with: pip install -e ".[all,dev]" -r requirements-dev.txt
+
+# --- Pipeline runtime (needed for inference scripts) ---
+transformers>=4.44.0
+accelerate>=1.0.0
+imageio
+imageio-ffmpeg
+
+# --- Kernel build tools ---
+ninja
+packaging>=21.0
+
+# --- Evaluation and research (not needed for normal usage) ---
+torchvision>=0.15.0
+numpy>=1.21.0
+scipy>=1.7.0
+scikit-learn>=1.0.0
+pillow>=9.0.0
+tqdm>=4.65.0
+matplotlib>=3.5.0
+lpips
+scikit-image
+pandas
+tabulate
+termcolor
+loguru
+psutil
+ftfy

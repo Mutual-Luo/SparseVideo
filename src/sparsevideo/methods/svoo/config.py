@@ -1,3 +1,7 @@
+import os
+from pathlib import Path
+
+
 CONFIG_DEFAULTS = {
     "implementation": "native",
     "sparse_backend": "flashinfer",
@@ -11,6 +15,7 @@ CONFIG_DEFAULTS = {
     "kmeans_iter_init": 0,
     "kmeans_iter_step": 0,
     "zero_step_kmeans_init": False,
+    "enable_mem_save": True,
     "use_svoo": True,
     "start_reuse_step": None,
     "reuse_interval": 1,
@@ -34,6 +39,7 @@ CONFIG_DEFAULTS = {
     "mk1": None,
     "mq2": None,
     "mk2": None,
+    "use_fused_rope": True,
 }
 
 T2V_720P_DEFAULTS = {
@@ -55,6 +61,7 @@ T2V_720P_DEFAULTS = {
     "wan22-t2v-a14b": {
         "first_times_fp": 0.2,
         "first_layers_fp": 0.03,
+        "num_inference_steps": 40,
         "num_q_centroids": 256,
         "num_k_centroids": 1024,
         "top_p_kmeans": 0.90,
@@ -84,39 +91,42 @@ T2V_720P_DEFAULTS = {
     },
 }
 
-CONFIG_ALIASES = {
-    "budget": "top_p_kmeans",
-    "kmeans_iters": "kmeans_iter_step",
-    "skip_first_steps": "first_times_fp",
-    "skip_first_layers": "first_layers_fp",
-}
+CONFIG_ALIASES = {}
 
-UNPORTED_OPTION_DEFAULTS = {
-    "measure_attention_sparsity": CONFIG_DEFAULTS["measure_attention_sparsity"],
-    "sparsity_output_file": CONFIG_DEFAULTS["sparsity_output_file"],
-    "sparsity_batch_size": CONFIG_DEFAULTS["sparsity_batch_size"],
-    "sparsity_query_samples": CONFIG_DEFAULTS["sparsity_query_samples"],
-    "sparsity_threshold": CONFIG_DEFAULTS["sparsity_threshold"],
-    "sparsity_start_step": CONFIG_DEFAULTS["sparsity_start_step"],
-    "use_global_constraints": CONFIG_DEFAULTS["use_global_constraints"],
-    "lambda_schedule": CONFIG_DEFAULTS["lambda_schedule"],
-    "diverse_top_p_k": CONFIG_DEFAULTS["diverse_top_p_k"],
-    "use_routing_transformer_strategy": CONFIG_DEFAULTS["use_routing_transformer_strategy"],
-    "mq1": CONFIG_DEFAULTS["mq1"],
-    "mk1": CONFIG_DEFAULTS["mk1"],
-    "mq2": CONFIG_DEFAULTS["mq2"],
-    "mk2": CONFIG_DEFAULTS["mk2"],
-}
 
-UNPORTED_OPTIONS = tuple(UNPORTED_OPTION_DEFAULTS)
+def _env_bool(name, default):
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    return value not in ("0", "", "false", "False")
+
+def default_sparsity_csv_path(model_family=None, model_key=None):
+    profile_dir = Path(__file__).resolve().parent / "sparsity_profiles"
+    if model_key == "wan22-t2v-a14b":
+        return str(profile_dir / "sparsity_wan22_A14B_t2v.csv")
+    if model_key == "wan21-t2v-14b":
+        return str(profile_dir / "sparsity_wan_14B_t2v.csv")
+    if model_family == "hunyuan_video" or model_key == "hunyuan_video":
+        return str(profile_dir / "sparsity_hunyuan10_13B_t2v.csv")
+    if model_family == "wan" or model_key == "wan21-t2v-1.3b":
+        return str(profile_dir / "sparsity_wan_1.3B_t2v.csv")
+    return None
 
 
 def default_config(**context):
     config = dict(CONFIG_DEFAULTS)
+    config["enable_mem_save"] = _env_bool("SVOO_ENABLE_MEM_SAVE", config["enable_mem_save"])
     model_key = context.get("model_key")
     model_family = context.get("model_family")
     if model_key in T2V_720P_DEFAULTS:
         config.update(T2V_720P_DEFAULTS[model_key])
     elif model_family in T2V_720P_DEFAULTS:
         config.update(T2V_720P_DEFAULTS[model_family])
+    if (
+        config.get("use_dynamic_min_kc_ratio")
+        and config.get("sparsity_csv_path") == CONFIG_DEFAULTS["sparsity_csv_path"]
+    ):
+        profile = default_sparsity_csv_path(model_family=model_family, model_key=model_key)
+        if profile is not None:
+            config["sparsity_csv_path"] = profile
     return config

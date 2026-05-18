@@ -9,6 +9,9 @@ CONFIG_DEFAULTS = {
     "kmeans_iter_init": 0,
     "kmeans_iter_step": 0,
     "zero_step_kmeans_init": False,
+    "context_length": None,
+    "prompt_length": None,
+    "allow_triton_fallback": False,
 }
 
 T2V_720P_DEFAULTS = {
@@ -31,15 +34,13 @@ T2V_720P_DEFAULTS = {
         "min_kc_ratio": 0.10,
         "kmeans_iter_init": 50,
         "kmeans_iter_step": 2,
+        "zero_step_kmeans_init": True,
+        "context_length": 256,
+        "prompt_length": None,
     },
 }
 
-CONFIG_ALIASES = {
-    "budget": "top_p_kmeans",
-    "kmeans_iters": "kmeans_iter_step",
-    "skip_first_layers": "first_layers_fp",
-    "skip_first_steps": "first_times_fp",
-}
+CONFIG_ALIASES = {}
 
 
 def default_config(**context):

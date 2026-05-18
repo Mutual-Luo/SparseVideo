@@ -8,28 +8,81 @@ version = "0.1.0"
 description = "Plug-and-play sparse attention for video diffusion models"
 requires-python = ">=3.10"
 license = "Apache-2.0"
+readme = "README.md"
+keywords = ["sparse-attention", "video-diffusion", "inference", "triton", "cuda"]
+authors = [
+    { name = "SparseVideo Contributors" },
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
 dependencies = [
-    "torch>=2.0.0",
-    "diffusers>=0.36.0",
+    "torch>=2.1.0",
+    "diffusers>=0.30.0",
     "einops>=0.6.0",
 ]
 
+[project.urls]
+Repository = "https://github.com/sparsevideo/sparsevideo"
+
 [project.optional-dependencies]
-spargeattn = ["spas-sage-attn"]
-sta = ["triton"]
+spargeattn = ["triton>=2.2.0"]
+sta = ["triton>=2.2.0"]
 svg1 = []
-svoo = ["flashinfer-python", "triton"]
-svg2 = ["flashinfer-python", "triton"]
-radial = ["flashinfer-python"]
-draft = ["flashinfer-python", "triton"]
-adacluster = ["flashinfer-python", "triton"]
-flashomni = ["flashomni-python"]
-all = ["flashinfer-python", "flashomni-python", "spas-sage-attn", "triton"]
-dev = ["pytest", "ruff"]
+svg2 = ["triton>=2.2.0"]
+radial = []
+draft = ["triton>=2.2.0"]
+adacluster = ["triton>=2.2.0"]
+flashomni = []
+svoo = ["triton>=2.2.0"]
+flashinfer = ["flashinfer-python>=0.1.0"]
+all = ["triton>=2.2.0", "flashinfer-python>=0.1.0"]
+dev = ["pytest>=7.0", "ruff>=0.4.0"]
+
+[project.scripts]
+sparsevideo-build-kernels = "sparsevideo.kernels._build:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/sparsevideo"]
+artifacts = [
+    "src/sparsevideo/kernels/native/**/*.cu",
+    "src/sparsevideo/kernels/native/**/*.cuh",
+    "src/sparsevideo/kernels/native/**/*.cpp",
+    "src/sparsevideo/kernels/native/**/*.h",
+    "src/sparsevideo/kernels/native/**/*.json",
+    "src/sparsevideo/kernels/native/**/setup.py",
+    "src/sparsevideo/kernels/native/**/build.py",
+    "src/sparsevideo/kernels/native/**/Makefile",
+    "src/sparsevideo/kernels/native/**/CMakeLists.txt",
+    "src/sparsevideo/methods/sta/*.json",
+]
+
+[tool.hatch.build.targets.sdist]
+exclude = [
+    "training_free/",
+    "build/",
+    "result/",
+    "*.egg-info",
+    "__pycache__",
+    "src/sparsevideo/kernels/native/build/",
+    "src/sparsevideo/kernels/native/**/*.so",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 python_files = ["test_*.py"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I"]
+ignore = ["E501"]

@@ -31,6 +31,13 @@ _NATIVE_KERNELS_CHECKED = False
 _NATIVE_KERNELS = None
 _NATIVE_KERNELS_ERROR = None
 _NATIVE_NARROW_NORM_DIMS = {32, 64, 128, 256}
+_EXPECTED_NATIVE_KERNEL_OPS = {
+    "apply_qk_rope_inplace_cossin",
+    "apply_qk_rope_inplace_cossin_complex",
+    "apply_qk_rope_inplace_cossin_txtlast",
+    "layer_norm_forward",
+    "rms_norm_forward",
+}
 
 
 def _kernel_backend() -> str:
@@ -45,7 +52,13 @@ def _kernel_backend() -> str:
 def _candidate_native_kernel_dirs():
     env_root = os.environ.get("SPARSEVIDEO_NATIVE_KERNEL_ROOT")
     if env_root:
-        yield Path(env_root).expanduser()
+        env_path = Path(env_root).expanduser().resolve()
+        if "training_free" in env_path.parts:
+            raise RuntimeError(
+                "Refusing SPARSEVIDEO_NATIVE_KERNEL_ROOT inside training_free; "
+                "SparseVideo native kernels must be built under src/sparsevideo."
+            )
+        yield env_path
 
     repo_root = Path(__file__).resolve().parents[3]
     yield repo_root / "src" / "sparsevideo" / "kernels" / "native" / "build"
@@ -64,16 +77,33 @@ def _load_native_kernels(required: bool = False):
         return _NATIVE_KERNELS
 
     _NATIVE_KERNELS_CHECKED = True
-    candidate_dirs = list(_candidate_native_kernel_dirs())
-    search_dirs = [str(path) for path in candidate_dirs]
-    for path in reversed(candidate_dirs):
-        if path.exists() and str(path) not in sys.path:
-            sys.path.insert(0, str(path))
-
     try:
-        _NATIVE_KERNELS = importlib.import_module("_kernels")
+        candidate_dirs = list(_candidate_native_kernel_dirs())
+        search_dirs = [str(path) for path in candidate_dirs]
+        for path in reversed(candidate_dirs):
+            if path.exists() and str(path) not in sys.path:
+                sys.path.insert(0, str(path))
+
+        native = importlib.import_module("_kernels")
+        module_file = getattr(native, "__file__", None)
+        if module_file is None:
+            raise ImportError("Imported _kernels module has no __file__; cannot verify package ownership")
+        module_path = Path(module_file).resolve()
+        if not any(module_path.is_relative_to(path.resolve()) for path in candidate_dirs if path.exists()):
+            raise ImportError(
+                "Imported _kernels from outside SparseVideo native dirs: "
+                f"{module_path}. Candidate dirs: {search_dirs}"
+            )
+        missing_ops = sorted(_EXPECTED_NATIVE_KERNEL_OPS - set(dir(native)))
+        if missing_ops:
+            raise ImportError(
+                "SparseVideo `_kernels` is missing expected fused ops: "
+                f"{missing_ops}"
+            )
+        _NATIVE_KERNELS = native
     except Exception as exc:
         _NATIVE_KERNELS = None
+        search_dirs = locals().get("search_dirs", [])
         _NATIVE_KERNELS_ERROR = (
             "Could not import SparseVideo-owned `_kernels` extension. Build it "
             "under src/sparsevideo/kernels/native/build, or set "
@@ -95,6 +125,23 @@ def _native_required() -> bool:
 
 def _native_rmsnorm_supported(hidden_dim: int) -> bool:
     return int(hidden_dim) in _NATIVE_NARROW_NORM_DIMS
+
+
+def _requires_cuda_backend(backend: str) -> bool:
+    return backend in {"native", "triton"}
+
+
+def _raise_cuda_required(backend: str, op_name: str) -> None:
+    raise RuntimeError(
+        f"SPARSEVIDEO_FUSED_KERNEL_BACKEND={backend} requires CUDA tensors for {op_name}; "
+        "set SPARSEVIDEO_FUSED_KERNEL_BACKEND=auto or pytorch only for CPU/debug fallback"
+    )
+
+
+def _to_device(tensor: torch.Tensor, device: torch.device, *, dtype: torch.dtype | None = None) -> torch.Tensor:
+    if tensor.device == device and (dtype is None or tensor.dtype == dtype):
+        return tensor
+    return tensor.to(device=device, dtype=dtype, non_blocking=True)
 
 
 # ---------------------------------------------------------------------------
@@ -140,12 +187,17 @@ def triton_rmsnorm_inplace(x: torch.Tensor, weight: torch.Tensor, eps: float) ->
     weight: [D]
     """
     backend = _kernel_backend()
-    if not x.is_cuda or backend == "pytorch":
+    if backend == "pytorch":
+        return _rmsnorm_pytorch(x, weight, eps)
+    if not x.is_cuda:
+        if _requires_cuda_backend(backend):
+            _raise_cuda_required(backend, "RMSNorm")
         return _rmsnorm_pytorch(x, weight, eps)
 
     orig_shape = x.shape
     D = orig_shape[-1]
     x_2d = x.reshape(-1, D).contiguous()
+    weight = _to_device(weight, x_2d.device)
 
     if _should_try_native():
         native = _load_native_kernels(required=_native_required())
@@ -157,9 +209,10 @@ def triton_rmsnorm_inplace(x: torch.Tensor, weight: torch.Tensor, eps: float) ->
                 if _native_required():
                     raise
         elif native is not None and _native_required():
-            # Upstream WAN SVG/SVOO uses Triton RMSNorm for full hidden dims
-            # such as 1536; the C++ narrow kernel only covers per-head dims.
-            pass
+            raise RuntimeError(
+                "SparseVideo `_kernels` RMSNorm does not support hidden_dim="
+                f"{D}; set SPARSEVIDEO_FUSED_KERNEL_BACKEND=triton only for an explicit Triton run"
+            )
 
     M = x_2d.shape[0]
 
@@ -182,9 +235,10 @@ def triton_rmsnorm_inplace(x: torch.Tensor, weight: torch.Tensor, eps: float) ->
 def _rmsnorm_pytorch(x, weight, eps):
     orig_dtype = x.dtype
     x_f = x.float()
+    weight_f = _to_device(weight, x.device, dtype=torch.float32)
     var = (x_f * x_f).mean(-1, keepdim=True)
     x_norm = x_f / (var + eps).sqrt()
-    return (x_norm * weight.float()).to(orig_dtype)
+    return (x_norm * weight_f).to(orig_dtype)
 
 
 # ---------------------------------------------------------------------------
@@ -253,7 +307,11 @@ def triton_rope_wan_inplace(
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Apply WAN RoPE inplace to q and k.  Returns (q, k) (same tensors, modified)."""
     backend = _kernel_backend()
-    if not q.is_cuda or backend == "pytorch":
+    if backend == "pytorch":
+        return _rope_wan_pytorch(q, k, freqs_cos, freqs_sin)
+    if not q.is_cuda:
+        if _requires_cuda_backend(backend):
+            _raise_cuda_required(backend, "WAN RoPE")
         return _rope_wan_pytorch(q, k, freqs_cos, freqs_sin)
 
     q = q.contiguous()
@@ -262,8 +320,8 @@ def triton_rope_wan_inplace(
     D2 = D // 2
 
     # Normalise cos/sin to [S, D] regardless of input shape ([1,S,1,D] or [S,D])
-    cos = freqs_cos.reshape(S, -1).contiguous().float()
-    sin = freqs_sin.reshape(S, -1).contiguous().float()
+    cos = _to_device(freqs_cos.reshape(S, -1).contiguous(), q.device, dtype=torch.float32)
+    sin = _to_device(freqs_sin.reshape(S, -1).contiguous(), q.device, dtype=torch.float32)
 
     if _should_try_native():
         native = _load_native_kernels(required=_native_required())
@@ -309,8 +367,16 @@ def _rope_wan_pytorch(q, k, freqs_cos, freqs_sin):
     # freqs_cos/sin: any shape broadcastable to [B, S, H, D//2] after extracting pairs
     # Normalise to [S, D] then unsqueeze to [1, S, 1, D//2] for broadcasting
     S = q.shape[1]
-    cos = freqs_cos.reshape(S, -1)[..., 0::2].unsqueeze(0).unsqueeze(2)  # [1, S, 1, D//2]
-    sin = freqs_sin.reshape(S, -1)[..., 1::2].unsqueeze(0).unsqueeze(2)
+    cos = _to_device(
+        freqs_cos.reshape(S, -1)[..., 0::2].unsqueeze(0).unsqueeze(2),
+        q.device,
+        dtype=torch.float32,
+    )  # [1, S, 1, D//2]
+    sin = _to_device(
+        freqs_sin.reshape(S, -1)[..., 1::2].unsqueeze(0).unsqueeze(2),
+        q.device,
+        dtype=torch.float32,
+    )
     def _apply(hidden):
         x1, x2 = hidden.unflatten(-1, (-1, 2)).unbind(-1)  # [B, S, H, D//2]
         out = torch.empty_like(hidden)
@@ -328,21 +394,97 @@ def _rope_wan_pytorch(q, k, freqs_cos, freqs_sin):
 # Text tokens at the END are NOT rotated (hence "txt-last").
 # ---------------------------------------------------------------------------
 
+@triton.jit
+def _rope_hyvideo_inplace_kernel(
+    Q, K,              # [B, S, H, D]
+    Cos, Sin,          # [S, D] full-dimension cos/sin cache
+    B, S, H,
+    D: tl.constexpr,
+    D2: tl.constexpr,
+    stride_qb, stride_qs, stride_qh,
+    stride_cs,
+    BLOCK_S: tl.constexpr,
+):
+    # grid: (B * H, ceil(S / BLOCK_S))
+    pid_bh = tl.program_id(0)
+    pid_s = tl.program_id(1)
+    b = pid_bh // H
+    h = pid_bh % H
+
+    s_offs = pid_s * BLOCK_S + tl.arange(0, BLOCK_S)
+    s_mask = s_offs < S
+    d2_offs = tl.arange(0, D2)
+    cs_mask = s_mask[:, None]
+
+    cos_even = tl.load(Cos + s_offs[:, None] * stride_cs + d2_offs[None, :] * 2, mask=cs_mask, other=0.0).to(tl.float32)
+    sin_even = tl.load(Sin + s_offs[:, None] * stride_cs + d2_offs[None, :] * 2, mask=cs_mask, other=0.0).to(tl.float32)
+    cos_odd = tl.load(Cos + s_offs[:, None] * stride_cs + d2_offs[None, :] * 2 + 1, mask=cs_mask, other=0.0).to(tl.float32)
+    sin_odd = tl.load(Sin + s_offs[:, None] * stride_cs + d2_offs[None, :] * 2 + 1, mask=cs_mask, other=0.0).to(tl.float32)
+
+    for buf in range(2):
+        base = Q if buf == 0 else K
+        base_ptr = base + b * stride_qb + s_offs[:, None] * stride_qs + h * stride_qh
+
+        x1_ptr = base_ptr + d2_offs[None, :] * 2
+        x2_ptr = base_ptr + d2_offs[None, :] * 2 + 1
+        x1 = tl.load(x1_ptr, mask=cs_mask, other=0.0).to(tl.float32)
+        x2 = tl.load(x2_ptr, mask=cs_mask, other=0.0).to(tl.float32)
+
+        y1 = x1 * cos_even - x2 * sin_even
+        y2 = x2 * cos_odd + x1 * sin_odd
+
+        tl.store(x1_ptr, y1.to(base.type.element_ty), mask=cs_mask)
+        tl.store(x2_ptr, y2.to(base.type.element_ty), mask=cs_mask)
+
+
+def _triton_rope_hyvideo_full_inplace(q, k, cos, sin):
+    q = q.contiguous()
+    k = k.contiguous()
+    B, S, H, D = q.shape
+    D2 = D // 2
+    cos_2d = _to_device(cos.reshape(S, -1).contiguous(), q.device, dtype=torch.float32)
+    sin_2d = _to_device(sin.reshape(S, -1).contiguous(), q.device, dtype=torch.float32)
+    if cos_2d.shape[1] != D or sin_2d.shape[1] != D:
+        raise RuntimeError(
+            "SparseVideo HunyuanVideo Triton RoPE expects full-dimension cos/sin "
+            f"with width {D}; got {cos_2d.shape[1]} and {sin_2d.shape[1]}"
+        )
+
+    BLOCK_S = min(64, triton.next_power_of_2(S))
+    grid = (B * H, triton.cdiv(S, BLOCK_S))
+    _rope_hyvideo_inplace_kernel[grid](
+        q, k, cos_2d, sin_2d,
+        B, S, H, D, D2,
+        q.stride(0), q.stride(1), q.stride(2),
+        cos_2d.stride(0),
+        BLOCK_S=BLOCK_S,
+        num_warps=4,
+    )
+    return q, k
 
 
 def triton_rope_hyvideo_inplace(q, k, cos, sin, txt_len=0):
     backend = _kernel_backend()
-    if not q.is_cuda or backend == "pytorch":
+    if backend == "pytorch":
+        return _rope_hyvideo_pytorch(q, k, cos, sin, txt_len)
+    if not q.is_cuda:
+        if _requires_cuda_backend(backend):
+            _raise_cuda_required(backend, "HunyuanVideo RoPE")
         return _rope_hyvideo_pytorch(q, k, cos, sin, txt_len)
     S = q.shape[1]
     S_vid = S - txt_len
 
-    if _should_try_native():
+    # The native SVOO-style Hunyuan RoPE op expects [B,H,S,D], while Diffusers
+    # and SparseVideo processors keep Hunyuan Q/K in [B,S,H,D]. In auto mode the
+    # layout conversion costs two full Q/K copies and can OOM 720p/129f Hunyuan
+    # on an 80GB A100. Use the BSHD Triton kernel unless native was explicitly
+    # requested for debugging/parity checks.
+    if _native_required():
         native = _load_native_kernels(required=_native_required())
         if native is not None:
             D = q.shape[-1]
-            cos_2d = cos.reshape(S_vid, -1).contiguous().float()
-            sin_2d = sin.reshape(S_vid, -1).contiguous().float()
+            cos_2d = _to_device(cos.reshape(S_vid, -1).contiguous(), q.device, dtype=torch.float32)
+            sin_2d = _to_device(sin.reshape(S_vid, -1).contiguous(), q.device, dtype=torch.float32)
             if cos_2d.shape[1] != D or sin_2d.shape[1] != D:
                 if _native_required():
                     raise RuntimeError(
@@ -359,27 +501,33 @@ def triton_rope_hyvideo_inplace(q, k, cos, sin, txt_len=0):
                 )
 
     if txt_len > 0:
-        q_vid, k_vid = triton_rope_wan_inplace(
+        q_vid, k_vid = _triton_rope_hyvideo_full_inplace(
             q[:, :S_vid].contiguous(), k[:, :S_vid].contiguous(), cos, sin,
         )
-        q = torch.cat([q_vid, q[:, S_vid:]], dim=1)
-        k = torch.cat([k_vid, k[:, S_vid:]], dim=1)
-    else:
-        q, k = triton_rope_wan_inplace(q, k, cos, sin)
-    return q, k
+        return torch.cat([q_vid, q[:, S_vid:]], dim=1), torch.cat([k_vid, k[:, S_vid:]], dim=1)
+    return _triton_rope_hyvideo_full_inplace(q, k, cos, sin)
 
 
 def _rope_hyvideo_pytorch(q, k, cos, sin, txt_len):
-    # Reuse WAN's pytorch path — same formula, just limit to video tokens
     S = q.shape[1]
     S_vid = S - txt_len
-    # Reshape cos/sin to [S_vid, D] for _rope_wan_pytorch
-    cos_2d = cos.reshape(S_vid, -1)
-    sin_2d = sin.reshape(S_vid, -1)
+    cos_2d = _to_device(cos.reshape(S_vid, -1), q.device, dtype=torch.float32)
+    sin_2d = _to_device(sin.reshape(S_vid, -1), q.device, dtype=torch.float32)
+
+    def _apply(hidden):
+        x_real, x_imag = hidden.reshape(*hidden.shape[:-1], -1, 2).unbind(-1)
+        x_rotated = torch.stack([-x_imag, x_real], dim=-1).flatten(3)
+        return (
+            hidden.float() * cos_2d[None, :, None, :]
+            + x_rotated.float() * sin_2d[None, :, None, :]
+        ).to(hidden.dtype)
+
     if txt_len > 0:
-        qr, kr = _rope_wan_pytorch(q[:, :S_vid].clone(), k[:, :S_vid].clone(), cos_2d, sin_2d)
+        qr = _apply(q[:, :S_vid])
+        kr = _apply(k[:, :S_vid])
         q = torch.cat([qr, q[:, S_vid:]], dim=1)
         k = torch.cat([kr, k[:, S_vid:]], dim=1)
     else:
-        q, k = _rope_wan_pytorch(q, k, cos_2d, sin_2d)
+        q = _apply(q)
+        k = _apply(k)
     return q, k

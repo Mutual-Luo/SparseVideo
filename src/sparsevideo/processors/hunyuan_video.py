@@ -17,6 +17,15 @@ except Exception:
     _HAS_FUSED_KERNELS = False
 
 
+def _norm_weight_is_materialized(norm) -> bool:
+    weight = getattr(norm, "weight", None)
+    return weight is not None and not bool(getattr(weight, "is_meta", False))
+
+
+def _can_use_fused_qk_norm(norm_q, norm_k) -> bool:
+    return _norm_weight_is_materialized(norm_q) and _norm_weight_is_materialized(norm_k)
+
+
 class SparseHunyuanVideoAttnProcessor:
     """Drop-in replacement for HunyuanVideoAttnProcessor2_0 with pluggable sparse attention.
 
@@ -33,10 +42,20 @@ class SparseHunyuanVideoAttnProcessor:
         attn_fn: Callable,
         layer_idx: int,
         step_tracker: "StepTracker",
+        use_fused_qk_norm_rope: bool = True,
+        use_fused_qk_norm: Optional[bool] = None,
+        use_fused_rope: Optional[bool] = None,
+        query_projection_fn: Optional[Callable] = None,
+        output_projection_fn: Optional[Callable] = None,
     ):
         self.attn_fn = attn_fn
         self.layer_idx = layer_idx
         self.step_tracker = step_tracker
+        self.use_fused_qk_norm = use_fused_qk_norm_rope if use_fused_qk_norm is None else use_fused_qk_norm
+        self.use_fused_rope = use_fused_qk_norm_rope if use_fused_rope is None else use_fused_rope
+        self.use_fused_qk_norm_rope = self.use_fused_qk_norm and self.use_fused_rope
+        self.query_projection_fn = query_projection_fn
+        self.output_projection_fn = output_projection_fn
 
     def __call__(
         self,
@@ -45,13 +64,20 @@ class SparseHunyuanVideoAttnProcessor:
         encoder_hidden_states: Optional[torch.Tensor] = None,
         attention_mask: Optional[torch.Tensor] = None,
         image_rotary_emb: Optional[torch.Tensor] = None,
+        timestep: Optional[torch.Tensor] = None,
+        cache_dic: Optional[dict] = None,
+        current: Optional[dict] = None,
+        **kwargs,
     ) -> torch.Tensor:
         # Single blocks: concatenate encoder before projection
         if attn.add_q_proj is None and encoder_hidden_states is not None:
             hidden_states = torch.cat([hidden_states, encoder_hidden_states], dim=1)
 
         # 1. QKV projections
-        query = attn.to_q(hidden_states)
+        if self.query_projection_fn is not None and attn.add_q_proj is None:
+            query = self.query_projection_fn(attn.to_q, hidden_states, attn.heads)
+        else:
+            query = attn.to_q(hidden_states)
         key = attn.to_k(hidden_states)
         value = attn.to_v(hidden_states)
 
@@ -60,7 +86,12 @@ class SparseHunyuanVideoAttnProcessor:
         value = value.unflatten(2, (attn.heads, -1))
 
         # 2. QK normalization — Triton inplace when available
-        if _HAS_FUSED_KERNELS and query.is_cuda:
+        if (
+            self.use_fused_qk_norm
+            and _HAS_FUSED_KERNELS
+            and query.is_cuda
+            and _can_use_fused_qk_norm(attn.norm_q, attn.norm_k)
+        ):
             query = triton_rmsnorm_inplace(query, attn.norm_q.weight, attn.norm_q.eps)
             key   = triton_rmsnorm_inplace(key,   attn.norm_k.weight, attn.norm_k.eps)
         else:
@@ -71,7 +102,7 @@ class SparseHunyuanVideoAttnProcessor:
 
         # 3. RoPE (selective: single blocks apply only to video portion)
         if image_rotary_emb is not None:
-            if _HAS_FUSED_KERNELS and query.is_cuda:
+            if self.use_fused_rope and _HAS_FUSED_KERNELS and query.is_cuda:
                 cos, sin = image_rotary_emb
                 if attn.add_q_proj is None and encoder_hidden_states is not None:
                     # Single block: text tokens at end, skip them for RoPE
@@ -129,7 +160,20 @@ class SparseHunyuanVideoAttnProcessor:
 
         # 5. Attention (sparse or dense via attn_fn)
         text_len = encoder_hidden_states.shape[1] if encoder_hidden_states is not None else 0
-        hidden_states = self.attn_fn(query, key, value, attention_mask, text_len=text_len)
+        prompt_length = _prompt_length_from_attention_mask(attention_mask, query.shape[1], text_len)
+        method_kwargs = {
+            "text_len": text_len,
+            "prompt_length": prompt_length,
+            "timestep": timestep,
+        }
+        if cache_dic is not None:
+            method_kwargs["cache_dic"] = cache_dic
+        if current is not None:
+            method_kwargs["current"] = current
+        hidden_states = self.attn_fn(
+            query, key, value, attention_mask,
+            **method_kwargs,
+        )
 
         # 6. Output projection and split
         hidden_states = hidden_states.flatten(2, 3)
@@ -142,10 +186,38 @@ class SparseHunyuanVideoAttnProcessor:
             )
 
             if getattr(attn, "to_out", None) is not None:
-                hidden_states = attn.to_out[0](hidden_states)
+                if self.output_projection_fn is not None:
+                    hidden_states = self.output_projection_fn(attn.to_out[0], hidden_states, attn.heads)
+                else:
+                    hidden_states = attn.to_out[0](hidden_states)
                 hidden_states = attn.to_out[1](hidden_states)
 
             if getattr(attn, "to_add_out", None) is not None:
                 encoder_hidden_states = attn.to_add_out(encoder_hidden_states)
 
         return hidden_states, encoder_hidden_states
+
+
+def _prompt_length_from_attention_mask(
+    attention_mask: Optional[torch.Tensor],
+    total_seq_len: int,
+    text_len: int,
+) -> Optional[int]:
+    if text_len <= 0:
+        return 0
+    if attention_mask is None:
+        return None
+
+    if attention_mask.shape[-1] == int(text_len):
+        flat_mask = attention_mask.reshape(attention_mask.shape[0], -1)
+        prompt_lengths = flat_mask.to(torch.int64).sum(dim=-1).clamp(min=0, max=int(text_len))
+        return int(prompt_lengths.min().item())
+
+    if attention_mask.shape[-1] != total_seq_len:
+        return None
+
+    video_len = max(0, int(total_seq_len) - int(text_len))
+    flat_mask = attention_mask.reshape(attention_mask.shape[0], -1)
+    valid_lengths = flat_mask.to(torch.int64).sum(dim=-1)
+    prompt_lengths = (valid_lengths - video_len).clamp(min=0, max=int(text_len))
+    return int(prompt_lengths.min().item())

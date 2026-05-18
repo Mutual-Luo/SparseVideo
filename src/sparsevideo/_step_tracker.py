@@ -53,8 +53,10 @@ class StepTracker:
     def _to_float(self, candidate) -> Optional[float]:
         if isinstance(candidate, (int, float)):
             return float(candidate)
-        if isinstance(candidate, torch.Tensor) and candidate.numel() <= 16:
-            return candidate.flatten()[0].item()
+        if isinstance(candidate, torch.Tensor) and candidate.numel() > 0:
+            # Some Diffusers models can expand one scheduler timestep over many
+            # tokens. The denoising step still follows the first scalar value.
+            return float(candidate.detach().flatten()[0].item())
         return None
 
     def reset(self):

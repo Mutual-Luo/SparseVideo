@@ -12,6 +12,9 @@ Ported from:
 from __future__ import annotations
 
 import os
+from pathlib import Path
+import shutil
+import sys
 from typing import Optional, Tuple, Union
 
 import torch
@@ -24,6 +27,85 @@ try:
     HAS_FLASHINFER = True
 except ImportError:
     HAS_FLASHINFER = False
+
+
+def _env_int_first(names: tuple[str, ...], default: int) -> int:
+    for name in names:
+        value = os.environ.get(name)
+        if value is None:
+            continue
+        try:
+            return int(value)
+        except ValueError:
+            return default
+    return default
+
+
+def _env_str_first(names: tuple[str, ...], default: str) -> str:
+    for name in names:
+        value = os.environ.get(name)
+        if value:
+            return value
+    return default
+
+
+def _env_flag_first(names: tuple[str, ...], default: bool) -> bool:
+    for name in names:
+        value = os.environ.get(name)
+        if value is None:
+            continue
+        return value.lower() not in ("0", "", "false", "no", "off")
+    return default
+
+
+def _cuda_root_has_toolkit(root: Path) -> bool:
+    return (
+        (root / "bin" / "nvcc").exists()
+        and (
+            (root / "include" / "cuda_runtime.h").exists()
+            or (root / "targets" / "x86_64-linux" / "include" / "cuda_runtime.h").exists()
+        )
+    )
+
+
+def _candidate_cuda_roots():
+    for name in ("CUDA_HOME", "CUDA_PATH"):
+        value = os.environ.get(name)
+        if value:
+            yield Path(value).expanduser()
+
+    nvcc = shutil.which("nvcc")
+    if nvcc:
+        yield Path(nvcc).resolve().parents[1]
+
+    prefixes = [Path(sys.prefix).resolve()]
+    base_prefix = Path(getattr(sys, "base_prefix", sys.prefix)).resolve()
+    if base_prefix not in prefixes:
+        prefixes.append(base_prefix)
+    prefixes.extend(Path(sys.executable).resolve().parents)
+    prefixes.append(Path("/usr/local/cuda"))
+
+    seen = set()
+    for root in prefixes:
+        if root in seen:
+            continue
+        seen.add(root)
+        yield root
+
+
+def _ensure_cuda_home_for_flashinfer_jit() -> None:
+    if os.environ.get("CUDA_HOME") or os.environ.get("CUDA_PATH"):
+        return
+
+    for root in _candidate_cuda_roots():
+        if _cuda_root_has_toolkit(root):
+            os.environ["CUDA_HOME"] = str(root)
+            os.environ.setdefault("CUDA_PATH", str(root))
+            bin_dir = str(root / "bin")
+            path = os.environ.get("PATH", "")
+            if bin_dir not in path.split(os.pathsep):
+                os.environ["PATH"] = bin_dir + os.pathsep + path
+            return
 
 
 # ---------------------------------------------------------------------------
@@ -272,7 +354,10 @@ def _patch_variable_block_sparse_wrapper(flashinfer_sparse) -> None:
     original_plan = cls.plan
 
     def plan(self, *args, **kwargs):
-        if os.environ.get("SV_FLASHINFER_MEM_EFFICIENT_PLAN", "1") not in ("0", "false", "False"):
+        if _env_flag_first(
+            ("SVOO_FLASHINFER_MEM_EFFICIENT_PLAN", "SV_FLASHINFER_MEM_EFFICIENT_PLAN"),
+            True,
+        ):
             return _memory_efficient_plan(self, flashinfer_sparse, *args, **kwargs)
         return original_plan(self, *args, **kwargs)
 
@@ -320,16 +405,86 @@ def variable_block_sparse_attn(
     q_sizes_dev = q_sizes.to(torch.int32).to(dev)
     k_sizes_dev = k_sizes.to(torch.int32).to(dev)
 
-    workspace_bytes = int(os.environ.get("SV_FLASHINFER_WORKSPACE_BYTES", str(128 * 1024 * 1024)))
+    workspace_bytes = _env_int_first(
+        ("SVOO_FLASHINFER_SPARSE_WORKSPACE_BYTES", "SV_FLASHINFER_WORKSPACE_BYTES"),
+        128 * 1024 * 1024,
+    )
     f_buffer = torch.empty((workspace_bytes,), dtype=torch.uint8, device=dev)
-    backend = os.environ.get("SV_FLASHINFER_BACKEND", "auto").lower()
+    backend = _env_str_first(
+        ("SVOO_FLASHINFER_SPARSE_BACKEND", "SV_FLASHINFER_BACKEND"),
+        "auto",
+    ).lower()
 
+    _ensure_cuda_home_for_flashinfer_jit()
     wrapper = _make_variable_block_sparse_wrapper(f_buffer, backend=backend)
+    int_workspace_bytes = _env_int_first(
+        ("SVOO_FLASHINFER_SPARSE_INT_WORKSPACE_BYTES", "SV_FLASHINFER_INT_WORKSPACE_BYTES"),
+        0,
+    )
+    i_buffer = None
+    if int_workspace_bytes > 0:
+        i_buffer = torch.empty((int_workspace_bytes,), dtype=torch.uint8, device=dev)
+        wrapper.reset_workspace_buffer(
+            float_workspace_buffer=f_buffer,
+            int_workspace_buffer=i_buffer,
+        )
 
     wrapper.plan(
         block_mask_map=dynamic_map_dev,
         block_row_sz=q_sizes_dev,
         block_col_sz=k_sizes_dev,
+        num_qo_heads=BH,
+        num_kv_heads=BH,
+        head_dim=D,
+        q_data_type=q.dtype,
+        kv_data_type=k.dtype,
+    )
+
+    o = wrapper.run(q, k, v)
+    del wrapper, f_buffer, i_buffer
+    return o
+
+
+def hunyuan_flashinfer_varlen_attn(
+    q: torch.Tensor,             # [BH, S, D]
+    k: torch.Tensor,             # [BH, S, D]
+    v: torch.Tensor,             # [BH, S, D]
+    valid_len: int,
+) -> torch.Tensor:               # [BH, S, D]
+    """HunyuanVideo two-segment varlen attention via FlashInfer.
+
+    Ported from SVOO/svoo/models/hunyuan10/attention.py::flashinfer_varlen_func.
+    The first segment contains valid video+prompt tokens; the second segment
+    contains padded prompt tokens that only attend to themselves.
+    """
+    if not HAS_FLASHINFER:
+        raise ImportError("flashinfer is required for hunyuan_flashinfer_varlen_attn")
+
+    BH, S, D = q.shape
+    valid = max(0, min(int(valid_len), int(S)))
+    padded = int(S) - valid
+    dev = q.device
+
+    block_mask_map = torch.tensor(
+        [[True, False], [False, True]],
+        device=dev,
+        dtype=torch.bool,
+    ).expand(BH, 2, 2).contiguous()
+    block_sizes = torch.tensor([valid, padded], device=dev, dtype=torch.int32)
+    block_sizes = block_sizes.expand(BH, 2).contiguous()
+
+    workspace_bytes = _env_int_first(
+        ("SVOO_FLASHINFER_VARLEN_WORKSPACE_BYTES", "SV_FLASHINFER_VARLEN_WORKSPACE_BYTES"),
+        128 * 1024 * 1024,
+    )
+    f_buffer = torch.empty((workspace_bytes,), dtype=torch.uint8, device=dev)
+
+    _ensure_cuda_home_for_flashinfer_jit()
+    wrapper = _make_variable_block_sparse_wrapper(f_buffer, backend="auto")
+    wrapper.plan(
+        block_mask_map=block_mask_map,
+        block_row_sz=block_sizes,
+        block_col_sz=block_sizes,
         num_qo_heads=BH,
         num_kv_heads=BH,
         head_dim=D,
@@ -393,7 +548,10 @@ def build_bsr_from_mask(
     num_row = mask.shape[0]
     row_nnz = mask.to(dtype_i).sum(dim=1)
     indptr = torch.cat(
-        [torch.zeros(1, dtype=dtype_i), torch.cumsum(row_nnz, 0, dtype=dtype_i)],
+        [
+            torch.zeros(1, dtype=dtype_i, device=row_nnz.device),
+            torch.cumsum(row_nnz, 0, dtype=dtype_i),
+        ],
         dim=0,
     ).to(device)
     indices = mask.nonzero(as_tuple=False)[:, 1].to(dtype_i).to(device)

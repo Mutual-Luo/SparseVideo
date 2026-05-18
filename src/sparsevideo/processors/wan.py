@@ -21,6 +21,15 @@ except Exception:
     _HAS_FUSED_KERNELS = False
 
 
+def _norm_weight_is_materialized(norm) -> bool:
+    weight = getattr(norm, "weight", None)
+    return weight is not None and not bool(getattr(weight, "is_meta", False))
+
+
+def _can_use_fused_qk_norm(norm_q, norm_k) -> bool:
+    return _norm_weight_is_materialized(norm_q) and _norm_weight_is_materialized(norm_k)
+
+
 class SparseWanAttnProcessor:
     _attention_backend = None
     _parallel_config = None
@@ -30,10 +39,20 @@ class SparseWanAttnProcessor:
         attn_fn: Callable,
         layer_idx: int,
         step_tracker: "StepTracker",
+        use_fused_qk_norm_rope: bool = True,
+        use_fused_qk_norm: Optional[bool] = None,
+        use_fused_rope: Optional[bool] = None,
+        query_projection_fn: Optional[Callable] = None,
+        output_projection_fn: Optional[Callable] = None,
     ):
         self.attn_fn = attn_fn
         self.layer_idx = layer_idx
         self.step_tracker = step_tracker
+        self.use_fused_qk_norm = use_fused_qk_norm_rope if use_fused_qk_norm is None else use_fused_qk_norm
+        self.use_fused_rope = use_fused_qk_norm_rope if use_fused_rope is None else use_fused_rope
+        self.use_fused_qk_norm_rope = self.use_fused_qk_norm and self.use_fused_rope
+        self.query_projection_fn = query_projection_fn
+        self.output_projection_fn = output_projection_fn
 
     def __call__(
         self,
@@ -42,6 +61,7 @@ class SparseWanAttnProcessor:
         encoder_hidden_states: Optional[torch.Tensor] = None,
         attention_mask: Optional[torch.Tensor] = None,
         rotary_emb: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
+        **kwargs,
     ) -> torch.Tensor:
         # --- I2V image context split (identical to stock WanAttnProcessor) ---
         encoder_hidden_states_img = None
@@ -51,8 +71,21 @@ class SparseWanAttnProcessor:
             encoder_hidden_states = encoder_hidden_states[:, image_context_length:]
 
         # --- QKV projection + norm ---
-        query, key, value = _get_qkv_projections(attn, hidden_states, encoder_hidden_states)
-        if _HAS_FUSED_KERNELS and query.is_cuda:
+        if self.query_projection_fn is None:
+            query, key, value = _get_qkv_projections(attn, hidden_states, encoder_hidden_states)
+        else:
+            query, key, value = _get_qkv_projections_with_query_hook(
+                attn,
+                hidden_states,
+                encoder_hidden_states,
+                self.query_projection_fn,
+            )
+        if (
+            self.use_fused_qk_norm
+            and _HAS_FUSED_KERNELS
+            and query.is_cuda
+            and _can_use_fused_qk_norm(attn.norm_q, attn.norm_k)
+        ):
             query = triton_rmsnorm_inplace(query, attn.norm_q.weight, attn.norm_q.eps)
             key   = triton_rmsnorm_inplace(key,   attn.norm_k.weight, attn.norm_k.eps)
         else:
@@ -65,7 +98,7 @@ class SparseWanAttnProcessor:
 
         # --- RoPE ---
         if rotary_emb is not None:
-            if _HAS_FUSED_KERNELS and query.is_cuda:
+            if self.use_fused_rope and _HAS_FUSED_KERNELS and query.is_cuda:
                 query, key = triton_rope_wan_inplace(query, key, rotary_emb[0], rotary_emb[1])
             else:
                 def _apply_rotary_emb_pytorch(hidden_states, freqs_cos, freqs_sin):
@@ -97,7 +130,7 @@ class SparseWanAttnProcessor:
             hidden_states_img = hidden_states_img.type_as(query)
 
         # === SPARSE ATTENTION (the only part that changes per method) ===
-        hidden_states = self.attn_fn(query, key, value, attention_mask)
+        hidden_states = self.attn_fn(query, key, value, attention_mask, **kwargs)
 
         # --- Output projection ---
         hidden_states = hidden_states.flatten(2, 3)
@@ -106,6 +139,26 @@ class SparseWanAttnProcessor:
         if hidden_states_img is not None:
             hidden_states = hidden_states + hidden_states_img
 
-        hidden_states = attn.to_out[0](hidden_states)
+        if self.output_projection_fn is not None and hidden_states_img is None:
+            hidden_states = self.output_projection_fn(attn.to_out[0], hidden_states, attn.heads)
+        else:
+            hidden_states = attn.to_out[0](hidden_states)
         hidden_states = attn.to_out[1](hidden_states)
         return hidden_states
+
+
+def _get_qkv_projections_with_query_hook(attn, hidden_states, encoder_hidden_states, query_projection_fn):
+    if encoder_hidden_states is None:
+        encoder_hidden_states = hidden_states
+
+    if attn.fused_projections:
+        if attn.cross_attention_dim_head is None:
+            query, key, value = attn.to_qkv(hidden_states).chunk(3, dim=-1)
+        else:
+            query = query_projection_fn(attn.to_q, hidden_states, attn.heads)
+            key, value = attn.to_kv(encoder_hidden_states).chunk(2, dim=-1)
+    else:
+        query = query_projection_fn(attn.to_q, hidden_states, attn.heads)
+        key = attn.to_k(encoder_hidden_states)
+        value = attn.to_v(encoder_hidden_states)
+    return query, key, value
