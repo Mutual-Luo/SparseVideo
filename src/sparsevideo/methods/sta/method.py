@@ -9,8 +9,13 @@ import torch.nn.functional as F
 
 from .._base import SparseMethod
 from .._layout import infer_video_frame_shape, infer_video_token_layout
+from ...processors.allegro import SparseAllegroAttnProcessor
+from ...processors.cogvideox import SparseCogVideoXAttnProcessor
+from ...processors.easyanimate import SparseEasyAnimateAttnProcessor
 from ...processors.wan import SparseWanAttnProcessor
 from ...processors.hunyuan_video import SparseHunyuanVideoAttnProcessor
+from ...processors.ltx_video import SparseLTXVideoAttnProcessor
+from ...processors.mochi import SparseMochiAttnProcessor
 from . import config as method_config
 from .ops import STA_SUPPORTED_SEQ_SHAPES, STA_TILE_SIZE
 
@@ -30,7 +35,15 @@ class STAMethod(SparseMethod):
         self._mask_strategy = _load_mask_strategy(self.config.get("mask_strategy_file_path"))
 
     def create_processor(self, layer_idx, total_layers, original_processor, step_tracker):
-        if self.model_info.model_type not in ("wan", "hunyuan_video"):
+        if self.model_info.model_type not in (
+            "wan",
+            "hunyuan_video",
+            "cogvideox",
+            "ltx_video",
+            "allegro",
+            "mochi",
+            "easyanimate",
+        ):
             raise NotImplementedError(f"sta not yet supported for {self.model_info.model_type}")
 
         tile_size = tuple(self.config["tile_size"])
@@ -63,9 +76,19 @@ class STAMethod(SparseMethod):
             return SparseWanAttnProcessor(
                 attn_fn=attn_fn, layer_idx=layer_idx, step_tracker=step_tracker,
             )
-        return SparseHunyuanVideoAttnProcessor(
-            attn_fn=attn_fn, layer_idx=layer_idx, step_tracker=step_tracker,
-        )
+        if self.model_info.model_type == "hunyuan_video":
+            return SparseHunyuanVideoAttnProcessor(
+                attn_fn=attn_fn, layer_idx=layer_idx, step_tracker=step_tracker,
+            )
+        if self.model_info.model_type == "cogvideox":
+            return SparseCogVideoXAttnProcessor(attn_fn=attn_fn, layer_idx=layer_idx, step_tracker=step_tracker)
+        if self.model_info.model_type == "ltx_video":
+            return SparseLTXVideoAttnProcessor(attn_fn=attn_fn, layer_idx=layer_idx, step_tracker=step_tracker)
+        if self.model_info.model_type == "allegro":
+            return SparseAllegroAttnProcessor(attn_fn=attn_fn, layer_idx=layer_idx, step_tracker=step_tracker)
+        if self.model_info.model_type == "mochi":
+            return SparseMochiAttnProcessor(attn_fn=attn_fn, layer_idx=layer_idx, step_tracker=step_tracker)
+        return SparseEasyAnimateAttnProcessor(attn_fn=attn_fn, layer_idx=layer_idx, step_tracker=step_tracker)
 
 
 def _sta_backend_name(query):
@@ -124,7 +147,7 @@ def _sta_attention(query, key, value, tile_size, kernel_size, model_type="wan",
             "SparseVideo does not silently run the non-upstream generalized STA fallback for parity runs."
         )
 
-    if not _is_supported_fastvideo_shape((T_pad, H_pad, W_pad)):
+    if model_type in ("wan", "hunyuan_video") and not _is_supported_fastvideo_shape((T_pad, H_pad, W_pad)):
         raise RuntimeError(
             "sta sparse path only supports FastVideo STA native padded seq_shape values "
             f"{sorted(STA_SUPPORTED_SEQ_SHAPES)}; got {T_pad}x{H_pad}x{W_pad}. "
@@ -160,7 +183,7 @@ def _sta_sparsevideo_fastvideo_path(query, key, value, B, N, H, D,
 
     vid_end = vid_start + video_len
 
-    seq_shape = seq_shape_override or f"{T_pad}x{H_pad}x{W_pad}"
+    seq_shape = f"{T_pad}x{H_pad}x{W_pad}"
 
     window_size = _sta_window_sizes(mask_strategy, step_idx, layer_idx, H, kernel_size)
 

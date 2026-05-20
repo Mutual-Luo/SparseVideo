@@ -21,6 +21,7 @@ from sparsevideo.methods.sta.method import (
 )
 from sparsevideo.methods.sta.ops import (
     STA_SUPPORTED_SEQ_SHAPES,
+    _sta_triton_head_dim,
     _can_use_h100_sta,
     _owned_fastvideo_sta_triton,
     _patch_a100_triton_autotune,
@@ -70,6 +71,8 @@ def test_sta_owned_fastvideo_runtime_sources_match_upstream_references():
     repo = Path(__file__).resolve().parents[1]
     owned_root = repo / "src/sparsevideo/kernels/native/sta_h100"
     upstream_root = repo / "training_free/FastVideo/fastvideo-kernel"
+    generalized_triton = Path("python/fastvideo_kernel/triton_kernels/st_attn_triton.py")
+    generalized_triton_under_python = Path("fastvideo_kernel/triton_kernels/st_attn_triton.py")
 
     for rel in ["LICENSE", "MANIFEST.in", "pyproject.toml"]:
         assert (owned_root / rel).read_bytes() == (upstream_root / rel).read_bytes()
@@ -86,7 +89,27 @@ def test_sta_owned_fastvideo_runtime_sources_match_upstream_references():
         owned_files = _source_files(owned)
         assert owned_files == _source_files(upstream)
         for source in owned_files:
+            if rel == "python" and source == generalized_triton_under_python:
+                continue
             assert (owned / source).read_bytes() == (upstream / source).read_bytes()
+
+    owned_triton = (owned_root / generalized_triton).read_text(encoding="utf-8")
+    upstream_triton = (upstream_root / generalized_triton).read_text(encoding="utf-8")
+    assert owned_triton != upstream_triton
+    for token in [
+        "def sliding_tile_attention_triton",
+        "if dit_seq_shape == '30x48x80'",
+        "elif dit_seq_shape == '36x48x48'",
+        "elif dit_seq_shape == '18x48x80'",
+        "assert q.shape[1] == len(window_size)",
+    ]:
+        assert token in owned_triton
+    for token in [
+        "dit_seq_shape='30x48x80', sm_scale=None",
+        'parts = str(dit_seq_shape).lower().split("x")',
+        "img_seq_len = canvas_t * canvas_h * canvas_w",
+    ]:
+        assert token in owned_triton
 
 
 def test_sta_dispatches_to_owned_triton_when_h100_is_unavailable(monkeypatch):
@@ -184,7 +207,7 @@ def test_sta_text_full_window_requires_exact_text_length_for_dense_fast_path(mon
     calls = {}
 
     def fake_load():
-        def fake_triton(q, k, v, window_size, text_length, has_text, seq_shape):
+        def fake_triton(q, k, v, window_size, text_length, has_text, seq_shape, sm_scale=None):
             calls["used"] = True
             return q
 
@@ -205,6 +228,38 @@ def test_sta_text_full_window_requires_exact_text_length_for_dense_fast_path(mon
 
     assert out is q
     assert calls == {"used": True}
+
+
+def test_sta_triton_pads_non_power_of_two_head_dim(monkeypatch):
+    calls = {}
+
+    def fake_load():
+        def fake_triton(q, k, v, window_size, text_length, has_text, seq_shape, sm_scale=None):
+            calls["q_shape"] = tuple(q.shape)
+            calls["sm_scale"] = sm_scale
+            return torch.zeros_like(q)
+
+        return fake_triton
+
+    monkeypatch.setattr(sta_ops, "_owned_fastvideo_sta_triton", fake_load)
+    q = torch.randn(1, 2, 768, 96)
+
+    out = _sliding_tile_attention_triton(
+        q,
+        q,
+        q,
+        window_size=[(1, 1, 1), (1, 1, 1)],
+        text_length=0,
+        has_text=False,
+        seq_shape="6x8x16",
+    )
+
+    assert _sta_triton_head_dim(96) == 128
+    assert calls == {
+        "q_shape": (1, 2, 768, 128),
+        "sm_scale": pytest.approx(96 ** -0.5),
+    }
+    assert out.shape == q.shape
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="STA device backend check requires CUDA")

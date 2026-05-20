@@ -233,10 +233,27 @@ def triton_sta_kernel(
 def sliding_tile_attention_triton(
     q: torch.Tensor, k: torch.Tensor, v: torch.Tensor,
     window_size, text_length: int,
-    has_text=True, dit_seq_shape='30x48x80') -> torch.Tensor:
+    has_text=True, dit_seq_shape='30x48x80', sm_scale=None) -> torch.Tensor:
     seq_length = q.shape[2]
+    if dit_seq_shape == '30x48x80': # Hunyuan
+        canvas_t, canvas_h, canvas_w = 30, 48, 80
+    elif dit_seq_shape == '36x48x48': # Stepvideo
+        canvas_t, canvas_h, canvas_w = 36, 48, 48
+    elif dit_seq_shape == '18x48x80': # Wan
+        canvas_t, canvas_h, canvas_w = 18, 48, 80
+    else:
+        parts = str(dit_seq_shape).lower().split("x")
+        if len(parts) != 3:
+            raise ValueError(f"Unsupported {dit_seq_shape}, expected TxHxW")
+        canvas_t, canvas_h, canvas_w = (int(part) for part in parts)
+    tile_t, tile_h, tile_w = 6, 8, 8
+    img_seq_len = canvas_t * canvas_h * canvas_w
+    total_tile_size = tile_t * tile_h * tile_w
     if has_text:
-        assert q.shape[2] >= 115200 and q.shape[2] <= 115456, f"Unsupported {dit_seq_shape}, current shape is {q.shape}, only support '30x48x80' for HunyuanVideo"
+        if dit_seq_shape == '30x48x80':
+            assert q.shape[2] >= 115200 and q.shape[2] <= 115456, f"Unsupported {dit_seq_shape}, current shape is {q.shape}, only support '30x48x80' for HunyuanVideo"
+        else:
+            assert q.shape[2] >= img_seq_len and q.shape[2] <= img_seq_len + total_tile_size, f"Unsupported {dit_seq_shape}, current shape is {q.shape}, only support image tokens plus up to one STA tile of text"
         target_size = math.ceil(seq_length / 384) * 384
         pad_size = target_size - seq_length
         if pad_size > 0:
@@ -249,28 +266,15 @@ def sliding_tile_attention_triton(
         elif dit_seq_shape == '18x48x80': # Wan
             assert q.shape[2] == 69120
         else:
-            raise ValueError(f"Unsupported {dit_seq_shape}, current shape is {q.shape}, only support '36x48x48' for Stepvideo and '18x48x80' for Wan")
+            assert q.shape[2] == img_seq_len, f"Unsupported {dit_seq_shape}, current shape is {q.shape}, expected exactly {img_seq_len} image tokens"
     assert q.shape[1] == len(window_size), "Number of heads must match the number of window sizes"
 
     batch_size, num_heads, seq_len, head_dim = q.shape
-    if dit_seq_shape == '30x48x80': # Hunyuan
-        canvas_t, canvas_h, canvas_w = 30, 48, 80
-        tile_t, tile_h, tile_w = 6, 8, 8
-    elif dit_seq_shape == '36x48x48': # Stepvideo
-        canvas_t, canvas_h, canvas_w = 36, 48, 48
-        tile_t, tile_h, tile_w = 6, 8, 8
-    elif dit_seq_shape == '18x48x80': # Wan
-        canvas_t, canvas_h, canvas_w = 18, 48, 80
-        tile_t, tile_h, tile_w = 6, 8, 8
-
-    img_seq_len = canvas_t * canvas_h * canvas_w
 
     num_tiles_t = canvas_t // tile_t
     num_tiles_h = canvas_h // tile_h
     num_tiles_w = canvas_w // tile_w
     num_tiles = num_tiles_t * num_tiles_h * num_tiles_w
-
-    total_tile_size = tile_t * tile_h * tile_w
 
     # BLOCK_Q=128
     # BLOCK_KV=128
@@ -298,7 +302,7 @@ def sliding_tile_attention_triton(
                 canvas_t, canvas_h, canvas_w,
                 kernel_t, kernel_h, kernel_w,
                 tile_t, tile_h, tile_w,
-                scale=1.0 / (head_dim ** 0.5),
+                scale=(1.0 / (head_dim ** 0.5)) if sm_scale is None else sm_scale,
                 has_text=has_text,
                 text_q=False,
                 # BLOCK_Q=BLOCK_Q,
@@ -320,7 +324,7 @@ def sliding_tile_attention_triton(
             3, 3, 3,
             #kernel_t, kernel_h, kernel_w,
             tile_t, tile_h, tile_w,
-            scale=1.0 / (head_dim ** 0.5),
+            scale=(1.0 / (head_dim ** 0.5)) if sm_scale is None else sm_scale,
             has_text=has_text,
             text_q=True,
             # BLOCK_Q=BLOCK_Q,

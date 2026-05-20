@@ -24,10 +24,10 @@ def infer_video_token_layout(num_tokens: int, model_type: str, text_len: int = 0
     if text_len < 0 or text_len > num_tokens:
         raise ValueError(f"Invalid text_len={text_len} for sequence length {num_tokens}")
 
-    if model_type == "hunyuan_video":
+    if model_type in ("hunyuan_video", "cogvideox", "mochi", "easyanimate"):
         return TokenLayout(context_len=0, video_len=num_tokens - text_len, tail_len=text_len)
 
-    # SparseVideo patches Wan attn1 self-attention only, whose sequence is video tokens.
+    # SparseVideo patches self-attention only for Wan and LTX, whose sequence is video tokens.
     return TokenLayout(context_len=0, video_len=num_tokens, tail_len=0)
 
 
@@ -65,22 +65,28 @@ def infer_video_frame_shape(
     known_shapes = {
         "wan": ((21, 45, 80), (18, 48, 80), (33, 45, 80)),
         "hunyuan_video": ((33, 45, 80), (30, 48, 80), (21, 45, 80)),
+        "cogvideox": ((13, 30, 45), (13, 45, 80), (25, 45, 80)),
+        "ltx_video": ((21, 16, 22), (21, 22, 40)),
+        "easyanimate": ((13, 16, 16), (13, 30, 45), (25, 45, 80)),
     }
     for shape in known_shapes.get(model_type, ()):
         if shape[0] * shape[1] * shape[2] == video_len:
             return shape
 
     frame_order = {
-        "wan": (21, 18, 33, 17, 13, 9, 5, 25),
-        "hunyuan_video": (33, 30, 21, 17, 13, 9, 5, 25, 18),
+        "wan": (21, 18, 33, 17, 13, 9, 5, 25, 2, 1),
+        "hunyuan_video": (33, 30, 21, 17, 13, 9, 5, 25, 18, 2, 1),
+        "cogvideox": (13, 25, 17, 9, 5, 21, 33, 2, 1),
+        "ltx_video": (21, 17, 13, 9, 5, 25, 33, 2, 1),
+        "easyanimate": (13, 17, 9, 5, 25, 21, 33, 2, 1),
     }.get(model_type, (33, 30, 21, 18, 17, 13, 9, 5, 25))
     for frames in frame_order:
         if video_len % frames == 0:
             height, width = _factor_spatial_grid(video_len // frames)
             return frames, height, width
 
-    frames = 13
-    spatial = max(1, video_len // frames)
+    frames = 1
+    spatial = max(1, video_len)
     height, width = _factor_spatial_grid(spatial)
     return frames, height, width
 

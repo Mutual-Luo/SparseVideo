@@ -9,8 +9,13 @@ import torch.nn.functional as F
 from diffusers.models.attention_dispatch import dispatch_attention_fn
 
 from .._base import SparseMethod
+from ...processors.allegro import SparseAllegroAttnProcessor
+from ...processors.cogvideox import SparseCogVideoXAttnProcessor
+from ...processors.easyanimate import SparseEasyAnimateAttnProcessor
 from ...processors.wan import SparseWanAttnProcessor
 from ...processors.hunyuan_video import SparseHunyuanVideoAttnProcessor
+from ...processors.ltx_video import SparseLTXVideoAttnProcessor
+from ...processors.mochi import SparseMochiAttnProcessor
 from ...kernels.spas_sage_runtime import (
     _clear_spas_sage_modules,
     _has_spas_sage_extensions,
@@ -79,7 +84,9 @@ class SpargeAttnMethod(SparseMethod):
                 raise ValueError("spargeattn mode='block_sparse' requires upstream mask_id")
 
     def create_processor(self, layer_idx, total_layers, original_processor, step_tracker):
-        if self.model_info.model_type not in ("wan", "hunyuan_video"):
+        if self.model_info.model_type not in (
+            "wan", "hunyuan_video", "cogvideox", "ltx_video", "allegro", "mochi", "easyanimate",
+        ):
             raise NotImplementedError(f"spargeattn not yet supported for {self.model_info.model_type}")
 
         mode = self.config["mode"]
@@ -115,15 +122,14 @@ class SpargeAttnMethod(SparseMethod):
                     "spargeattn sparse path requires the upstream spas_sage_attn CUDA kernels; "
                     f"{rejection_reason}. Use mode=full for the dense baseline."
                 )
-            if query.shape[0] != 1:
-                raise RuntimeError(
-                    "spargeattn follows the upstream video wrappers and currently requires batch size 1"
-                )
 
             # Diffusers layout: [B, N, H, D] → SpargeAttn layout: [B, H, N, D]
+            original_head_dim = query.shape[-1]
+            kernel_head_dim = _sparge_kernel_head_dim(original_head_dim)
             q_hnd = query.permute(0, 2, 1, 3).contiguous()
             k_hnd = key.permute(0, 2, 1, 3).contiguous()
             v_hnd = value.permute(0, 2, 1, 3).contiguous()
+            q_hnd, k_hnd, v_hnd = _pad_sparge_head_dim(q_hnd, k_hnd, v_hnd, kernel_head_dim)
 
             if tuned_attention is not None:
                 _move_tuned_state_to_device(tuned_attention, q_hnd.device)
@@ -137,26 +143,28 @@ class SpargeAttnMethod(SparseMethod):
                         tune_mode=tune,
                     )
             elif mode == "cdfthreshd":
-                kwargs = dict(common_kwargs)
+                kwargs = _sparge_kernel_kwargs_for_head_dim(common_kwargs, original_head_dim, kernel_head_dim)
                 kwargs["cdfthreshd"] = cdfthreshd
                 if self.config["simthreshd1"] is not None:
                     kwargs["simthreshd1"] = self.config["simthreshd1"]
                 o_hnd = sparge_cdf_fn(q_hnd, k_hnd, v_hnd, **kwargs)
             elif mode == "topk":
-                kwargs = dict(common_kwargs)
+                kwargs = _sparge_kernel_kwargs_for_head_dim(common_kwargs, original_head_dim, kernel_head_dim)
                 kwargs["topk"] = topk
                 if self.config["simthreshd1"] is not None:
                     kwargs["simthreshd1"] = self.config["simthreshd1"]
                 o_hnd = sparge_topk_fn(q_hnd, k_hnd, v_hnd, **kwargs)
             else:
+                kwargs = _sparge_kernel_kwargs_for_head_dim(block_sparse_kwargs, original_head_dim, kernel_head_dim)
                 o_hnd = sparge_block_sparse_fn(
                     q_hnd,
                     k_hnd,
                     v_hnd,
                     mask_id=_move_mask_id_to_device(self.config["mask_id"], q_hnd.device),
-                    **block_sparse_kwargs,
+                    **kwargs,
                 )
 
+            o_hnd = o_hnd[..., :original_head_dim].contiguous()
             out = o_hnd.permute(0, 2, 1, 3).contiguous()  # [B, N, H, D]
             self.record_runtime_dispatch(
                 "sparse",
@@ -171,6 +179,26 @@ class SpargeAttnMethod(SparseMethod):
             return SparseWanAttnProcessor(
                 attn_fn=attn_fn, layer_idx=layer_idx, step_tracker=step_tracker,
                 use_fused_qk_norm_rope=fused,
+            )
+        if self.model_info.model_type == "cogvideox":
+            return SparseCogVideoXAttnProcessor(
+                attn_fn=attn_fn, layer_idx=layer_idx, step_tracker=step_tracker,
+            )
+        if self.model_info.model_type == "ltx_video":
+            return SparseLTXVideoAttnProcessor(
+                attn_fn=attn_fn, layer_idx=layer_idx, step_tracker=step_tracker,
+            )
+        if self.model_info.model_type == "allegro":
+            return SparseAllegroAttnProcessor(
+                attn_fn=attn_fn, layer_idx=layer_idx, step_tracker=step_tracker,
+            )
+        if self.model_info.model_type == "mochi":
+            return SparseMochiAttnProcessor(
+                attn_fn=attn_fn, layer_idx=layer_idx, step_tracker=step_tracker,
+            )
+        if self.model_info.model_type == "easyanimate":
+            return SparseEasyAnimateAttnProcessor(
+                attn_fn=attn_fn, layer_idx=layer_idx, step_tracker=step_tracker,
             )
         return SparseHunyuanVideoAttnProcessor(
             attn_fn=attn_fn, layer_idx=layer_idx, step_tracker=step_tracker,
@@ -238,11 +266,34 @@ def _sparge_sparse_rejection_reason(query, attention_mask):
         return "query/key/value are not CUDA tensors"
     if query.shape[1] < 128:
         return f"sequence length {query.shape[1]} is smaller than 128"
-    if query.shape[-1] not in (64, 128):
-        return f"head_dim {query.shape[-1]} is not 64 or 128"
+    if query.shape[-1] > 128:
+        return f"head_dim {query.shape[-1]} is larger than the supported padded head_dim 128"
     if attention_mask is not None:
         return "attention_mask is not supported by the sparse kernel path"
     return None
+
+
+def _sparge_kernel_head_dim(head_dim: int) -> int:
+    if head_dim <= 64:
+        return 64
+    if head_dim <= 128:
+        return 128
+    raise RuntimeError(f"spargeattn cannot pad head_dim={head_dim} to a supported kernel width")
+
+
+def _pad_sparge_head_dim(query, key, value, kernel_head_dim: int):
+    head_dim = query.shape[-1]
+    if head_dim == kernel_head_dim:
+        return query, key, value
+    pad = (0, kernel_head_dim - head_dim)
+    return F.pad(query, pad), F.pad(key, pad), F.pad(value, pad)
+
+
+def _sparge_kernel_kwargs_for_head_dim(base_kwargs, original_head_dim: int, kernel_head_dim: int):
+    kwargs = dict(base_kwargs)
+    if original_head_dim != kernel_head_dim and kwargs.get("scale") is None:
+        kwargs["scale"] = original_head_dim ** -0.5
+    return kwargs
 
 
 def _sparge_dense_attention(query, key, value, attention_mask, *, model_type: str):

@@ -44,6 +44,39 @@ def discover_model(pipe) -> ModelInfo:
     elif "CogVideoX" in cls_name:
         model_type = "cogvideox"
         attn_paths = _enumerate_cogvideox(transformers)
+    elif "Motif" in cls_name:
+        raise ValueError(
+            "MotifVideo is not available in this Diffusers installation; no "
+            "processor-swap path can be verified without the target transformer class."
+        )
+    elif "LTXVideo2" in cls_name or "LTX2" in cls_name:
+        raise ValueError(
+            "LTX Video 2 is not available in this Diffusers installation; the "
+            "plain LTXVideo processor must not be applied to an unverified audio/video transformer."
+        )
+    elif "LTXVideo" in cls_name:
+        model_type = "ltx_video"
+        attn_paths = _enumerate_ltx_video(transformers)
+    elif "Allegro" in cls_name:
+        model_type = "allegro"
+        attn_paths = _enumerate_allegro(transformers)
+    elif "Mochi" in cls_name:
+        model_type = "mochi"
+        attn_paths = _enumerate_mochi(transformers)
+    elif "EasyAnimate" in cls_name:
+        model_type = "easyanimate"
+        attn_paths = _enumerate_easyanimate(transformers)
+    elif "SanaVideo" in cls_name:
+        raise ValueError(
+            "SanaVideo uses Diffusers' SanaLinearAttnProcessor3_0 linear attention, "
+            "not softmax QK^T V attention; current SparseVideo sparse-softmax methods "
+            "are incompatible."
+        )
+    elif "Kandinsky5" in cls_name:
+        raise ValueError(
+            "Kandinsky5 exposes native sparse attention controls through transformer "
+            "sparse_params/window parameters, so it is not a processor-swap target."
+        )
     else:
         raise ValueError(f"Unsupported transformer type: {cls_name}")
 
@@ -61,13 +94,32 @@ def _infer_model_key(pipe, transformers, model_type: str) -> Optional[str]:
         if "ImageToVideo" in cls_name or "I2V" in cls_name:
             return "hunyuan-i2v"
         return "hunyuan_video"
+    if model_type == "cogvideox":
+        cls_name = type(pipe).__name__
+        return "cogvideox-i2v" if "ImageToVideo" in cls_name or "I2V" in cls_name else "cogvideox-t2v"
+    if model_type == "ltx_video":
+        cls_name = type(pipe).__name__
+        return "ltx-video-i2v" if "ImageToVideo" in cls_name or "I2V" in cls_name else "ltx-video"
+    if model_type == "allegro":
+        return "allegro"
+    if model_type == "mochi":
+        return "mochi-1"
+    if model_type == "easyanimate":
+        return "easyanimate-v5-t2v-12b"
     if model_type != "wan":
         return None
 
-    text = " ".join(_iter_model_identity_strings([pipe, *transformers])).lower()
+    objects = [pipe, *transformers]
+    text = " ".join(_iter_model_identity_strings(objects)).lower()
+    class_text = " ".join(type(obj).__name__ for obj in objects).lower()
+    text = f"{class_text} {text}"
     text = text.replace("_", "-")
     is_i2v = "i2v" in text or "ImageToVideo" in type(pipe).__name__
 
+    if "wananimate" in text or "wan-animate" in text:
+        return "wan22-animate-14b"
+    if "vace" in text:
+        return "wan21-vace-14b" if "14b" in text else "wan21-vace-1.3b"
     if len(transformers) > 1:
         return "wan22-i2v-a14b" if is_i2v else "wan22-t2v-a14b"
     if "wan2.2" in text or "wan22" in text or "wan-2.2" in text:
@@ -144,6 +196,42 @@ def _enumerate_hunyuan(transformers):
 
 
 def _enumerate_cogvideox(transformers):
+    paths = []
+    for transformer in transformers:
+        for i, block in enumerate(transformer.transformer_blocks):
+            path = f"transformer.transformer_blocks.{i}.attn1"
+            paths.append((path, block.attn1))
+    return paths
+
+
+def _enumerate_ltx_video(transformers):
+    paths = []
+    for transformer in transformers:
+        for i, block in enumerate(transformer.transformer_blocks):
+            path = f"transformer.transformer_blocks.{i}.attn1"
+            paths.append((path, block.attn1))
+    return paths
+
+
+def _enumerate_allegro(transformers):
+    paths = []
+    for transformer in transformers:
+        for i, block in enumerate(transformer.transformer_blocks):
+            path = f"transformer.transformer_blocks.{i}.attn1"
+            paths.append((path, block.attn1))
+    return paths
+
+
+def _enumerate_mochi(transformers):
+    paths = []
+    for transformer in transformers:
+        for i, block in enumerate(transformer.transformer_blocks):
+            path = f"transformer.transformer_blocks.{i}.attn1"
+            paths.append((path, block.attn1))
+    return paths
+
+
+def _enumerate_easyanimate(transformers):
     paths = []
     for transformer in transformers:
         for i, block in enumerate(transformer.transformer_blocks):

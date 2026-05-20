@@ -16,6 +16,7 @@ from sparsevideo.methods.adacluster.method import (
     _adacluster_attention,
     _adacluster_dense_attention,
     _adacluster_hunyuan_kv_length,
+    _adacluster_kernel_head_dim,
     _adacluster_reuse_policy,
     _adacluster_thresholded_kmeans_count,
     _adacluster_hunyuan_uses_dense,
@@ -454,7 +455,7 @@ def test_wan_adacluster_uses_thresholded_kernel_selection_on_first_call(monkeypa
             "distance_threshold": 5.5,
             "max_iterations": 10,
             "num_heads": 2,
-            "shape": (2, 8, 4),
+            "shape": (2, 8, _adacluster_kernel_head_dim(4)),
         },
         {
             "initial_clusters": 50,
@@ -462,7 +463,7 @@ def test_wan_adacluster_uses_thresholded_kernel_selection_on_first_call(monkeypa
             "distance_threshold": 9.0,
             "max_iterations": 10,
             "num_heads": 2,
-            "shape": (2, 8, 4),
+            "shape": (2, 8, _adacluster_kernel_head_dim(4)),
         },
     ]
     assert state["q_kernel_num"] == 3
@@ -500,6 +501,61 @@ def test_adacluster_owned_upstream_triton_path_executes_cuda():
     assert torch.isfinite(out).all()
     assert state["centroids_init"] is True
     assert state["prev_q_centroids"].shape == (1, 1, 4, 64)
+
+
+def test_adacluster_sparse_path_pads_non_kernel_head_dim(monkeypatch):
+    import sparsevideo.methods.adacluster.method as adacluster_method
+
+    kmeans_calls = []
+    attn_calls = {}
+
+    def fake_flash_kmeans_single(kernel, data, iter_time):
+        kmeans_calls.append((tuple(kernel.shape), tuple(data.shape), iter_time))
+        n_clusters = kernel.shape[2]
+        labels = torch.arange(data.shape[2], device=data.device).remainder(n_clusters)
+        labels = labels.expand(data.shape[0], data.shape[1], -1).int()
+        centroids = torch.zeros_like(kernel)
+        sizes = torch.zeros(data.shape[0], data.shape[1], n_clusters, 1, dtype=torch.int32, device=data.device)
+        sizes.scatter_add_(2, labels.long().unsqueeze(-1), torch.ones_like(labels, dtype=torch.int32).unsqueeze(-1))
+        return centroids, sizes, labels
+
+    def fake_cluster_sparse_attn(query, key, value, compressed_attn_mask, q_counts, kv_counts, sm_scale):
+        attn_calls["query_shape"] = tuple(query.shape)
+        attn_calls["scale"] = sm_scale
+        return query
+
+    monkeypatch.setattr(adacluster_method, "_adacluster_flash_kmeans_single", fake_flash_kmeans_single)
+    monkeypatch.setattr(adacluster_method, "_adacluster_cluster_sparse_attn", fake_cluster_sparse_attn)
+    monkeypatch.setattr(torch, "randperm", lambda n, device=None: torch.arange(n, device=device))
+
+    query = torch.randn(1, 8, 2, 96)
+    state = {
+        "centroids_init": False,
+        "prev_q_centroids": None,
+        "prev_k_centroids": None,
+        "use_full_attention": False,
+    }
+
+    out = _adacluster_attention(
+        query,
+        query,
+        query,
+        topk_num=2,
+        q_kernel_num=4,
+        kv_kernel_num=4,
+        kmeans_iter_init=1,
+        kmeans_iter_step=1,
+        state=state,
+    )
+
+    assert _adacluster_kernel_head_dim(96) == 128
+    assert kmeans_calls[0][0] == (1, 2, 4, 128)
+    assert kmeans_calls[0][1] == (1, 2, 8, 128)
+    assert attn_calls == {
+        "query_shape": (1, 2, 8, 128),
+        "scale": 96 ** -0.5,
+    }
+    assert out.shape == query.shape
 
 
 def test_wan_adacluster_thresholded_selection_can_request_full_attention(monkeypatch):

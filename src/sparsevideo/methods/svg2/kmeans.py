@@ -5,6 +5,19 @@ import triton
 import triton.language as tl
 
 
+def _next_pow2(n: int) -> int:
+    return 1 << (max(1, int(n)) - 1).bit_length()
+
+
+def _block_d(head_dim: int) -> int:
+    block = _next_pow2(head_dim)
+    if block < 16:
+        block = 16
+    if block > 256:
+        raise AssertionError(f"head_dim {head_dim} not supported, must be <= 256")
+    return block
+
+
 @triton.jit
 def _centroid_update_chunk_kernel(
     x_ptr,
@@ -15,6 +28,7 @@ def _centroid_update_chunk_kernel(
     B,
     N,
     D: tl.constexpr,
+    BLOCK_D: tl.constexpr,
     K: tl.constexpr,
     BLOCK_N: tl.constexpr,
 ):
@@ -31,7 +45,8 @@ def _centroid_update_chunk_kernel(
     x_batch_base = x_ptr + b * N * D
 
     offs_token = tl.arange(0, BLOCK_N)
-    offs_dim = tl.arange(0, D)
+    offs_dim = tl.arange(0, BLOCK_D)
+    dim_mask = offs_dim < D
 
     token_idx = chunk_start + offs_token
     valid_tok = token_idx < N
@@ -51,12 +66,12 @@ def _centroid_update_chunk_kernel(
         if cluster_size != 0:
             cluster_feats = tl.load(
                 x_batch_base + load_mask,
-                mask=cluster_mask[:, None],
+                mask=(cluster_mask[:, None] & dim_mask[None, :]),
                 other=0.0,
             ).to(tl.float32)
             sum_feats = tl.sum(cluster_feats, axis=0)
             dest_ptr = sum_ptr + (b * K + cid) * D + offs_dim
-            tl.atomic_add(dest_ptr, sum_feats)
+            tl.atomic_add(dest_ptr, sum_feats, mask=dim_mask)
             tl.atomic_add(count_ptr + b * K + cid, cluster_size)
 
 
@@ -71,6 +86,7 @@ def triton_centroid_update_sorted_euclid(
     assert x.is_cuda and cluster_ids.is_cuda, "Inputs must be on CUDA device"
     B, N, D = x.shape
     K = old_centroids.shape[1]
+    BLOCK_D = _block_d(D)
 
     sorted_cluster_ids, sorted_idx = torch.sort(cluster_ids, dim=-1)
     sorted_idx_int = sorted_idx.to(torch.int32)
@@ -88,6 +104,7 @@ def triton_centroid_update_sorted_euclid(
         B,
         N,
         D,
+        BLOCK_D,
         K,
         BLOCK_N=BLOCK_N,
     )
@@ -129,6 +146,7 @@ def _euclid_assign_kernel(
     N,
     K,
     D: tl.constexpr,
+    BLOCK_D: tl.constexpr,
     stride_x_b,
     stride_x_n,
     stride_x_d,
@@ -148,7 +166,8 @@ def _euclid_assign_kernel(
     n_start = pid_n * BLOCK_N
     n_offsets = n_start + tl.arange(0, BLOCK_N)
     n_mask = n_offsets < N
-    offs_d = tl.arange(0, D)
+    offs_d = tl.arange(0, BLOCK_D)
+    d_mask = offs_d < D
 
     x_ptrs = (
         x_ptr
@@ -156,7 +175,7 @@ def _euclid_assign_kernel(
         + n_offsets[:, None] * stride_x_n
         + offs_d[None, :] * stride_x_d
     )
-    x_tile = tl.load(x_ptrs, mask=n_mask[:, None], other=0.0)
+    x_tile = tl.load(x_ptrs, mask=(n_mask[:, None] & d_mask[None, :]), other=0.0)
 
     xsq_ptrs = x_sq_ptr + pid_b * stride_xsq_b + n_offsets * stride_xsq_n
     x_sq_tile = tl.load(xsq_ptrs, mask=n_mask, other=0.0).to(tl.float32)
@@ -174,7 +193,7 @@ def _euclid_assign_kernel(
             + k_offsets[None, :] * stride_c_k
             + offs_d[:, None] * stride_c_d
         )
-        c_tile = tl.load(c_ptrs, mask=k_mask[None, :], other=0.0)
+        c_tile = tl.load(c_ptrs, mask=(d_mask[:, None] & k_mask[None, :]), other=0.0)
 
         cent_sq = tl.sum(c_tile * c_tile, axis=0).to(tl.float32)
         cross = tl.dot(x_tile, c_tile).to(tl.float32)
@@ -202,6 +221,7 @@ def euclid_assign_triton(
     assert x.is_cuda and centroids.is_cuda and x_sq.is_cuda, "All tensors must be on CUDA"
     B, N, D = x.shape
     K = centroids.shape[1]
+    BLOCK_D = _block_d(D)
     assert centroids.shape == (B, K, D), "centroids shape mismatch"
     assert x_sq.shape == (B, N), "x_sq shape mismatch"
 
@@ -218,6 +238,7 @@ def euclid_assign_triton(
         N,
         K,
         D,
+        BLOCK_D,
         x.stride(0),
         x.stride(1),
         x.stride(2),
@@ -302,8 +323,7 @@ def triton_kmeans(
     """SparseVideo adapter around Sparse-VideoGen's SAP k-means call pattern."""
     B, N, D = x.shape
     K = min(int(n_clusters), N) if clamp_clusters else int(n_clusters)
-    if D not in (16, 32, 64, 128, 256):
-        raise AssertionError(f"head_dim {D} not supported, must be power of 2 in [16..256]")
+    _block_d(D)
 
     labels, centroids, sizes, _ = batch_kmeans_Euclid(
         x,

@@ -5,8 +5,13 @@ import torch.nn.functional as F
 
 from .._base import SparseMethod
 from .._layout import infer_video_frame_shape, infer_video_token_layout
+from ...processors.allegro import SparseAllegroAttnProcessor
+from ...processors.cogvideox import SparseCogVideoXAttnProcessor
+from ...processors.easyanimate import SparseEasyAnimateAttnProcessor
 from ...processors.wan import SparseWanAttnProcessor
 from ...processors.hunyuan_video import SparseHunyuanVideoAttnProcessor
+from ...processors.ltx_video import SparseLTXVideoAttnProcessor
+from ...processors.mochi import SparseMochiAttnProcessor
 from . import config as method_config
 
 
@@ -36,7 +41,15 @@ class DraftMethod(SparseMethod):
             )
 
     def create_processor(self, layer_idx, total_layers, original_processor, step_tracker):
-        if self.model_info.model_type not in ("wan", "hunyuan_video"):
+        if self.model_info.model_type not in (
+            "wan",
+            "hunyuan_video",
+            "cogvideox",
+            "ltx_video",
+            "allegro",
+            "mochi",
+            "easyanimate",
+        ):
             raise NotImplementedError(f"draft not yet supported for {self.model_info.model_type}")
 
         cfg = self.config
@@ -99,9 +112,19 @@ class DraftMethod(SparseMethod):
             return SparseWanAttnProcessor(
                 attn_fn=attn_fn, layer_idx=layer_idx, step_tracker=step_tracker,
             )
-        return SparseHunyuanVideoAttnProcessor(
-            attn_fn=attn_fn, layer_idx=layer_idx, step_tracker=step_tracker,
-        )
+        if self.model_info.model_type == "hunyuan_video":
+            return SparseHunyuanVideoAttnProcessor(
+                attn_fn=attn_fn, layer_idx=layer_idx, step_tracker=step_tracker,
+            )
+        if self.model_info.model_type == "cogvideox":
+            return SparseCogVideoXAttnProcessor(attn_fn=attn_fn, layer_idx=layer_idx, step_tracker=step_tracker)
+        if self.model_info.model_type == "ltx_video":
+            return SparseLTXVideoAttnProcessor(attn_fn=attn_fn, layer_idx=layer_idx, step_tracker=step_tracker)
+        if self.model_info.model_type == "allegro":
+            return SparseAllegroAttnProcessor(attn_fn=attn_fn, layer_idx=layer_idx, step_tracker=step_tracker)
+        if self.model_info.model_type == "mochi":
+            return SparseMochiAttnProcessor(attn_fn=attn_fn, layer_idx=layer_idx, step_tracker=step_tracker)
+        return SparseEasyAnimateAttnProcessor(attn_fn=attn_fn, layer_idx=layer_idx, step_tracker=step_tracker)
 
 
 def _draft_dense_attention(query, key, value, attention_mask=None, model_type="wan", text_len=0,
@@ -192,11 +215,23 @@ def _draft_attention(query, key, value, sparsity_ratio, pool_h, pool_w,
     _validate_configured_int("batch_size", batch_size, B)
 
     try:
-        T, frame_h, frame_w = infer_video_frame_shape(video_len, model_type=model_type)
+        T, frame_h, frame_w = _infer_draft_frame_shape(
+            video_len,
+            model_type=model_type,
+            latent_h=latent_h,
+            latent_w=latent_w,
+        )
         _validate_configured_int("latent_h", latent_h, frame_h)
         _validate_configured_int("latent_w", latent_w, frame_w)
+        canvas_h = frame_h
+        canvas_w = frame_w
+        canvas_video_len = video_len
+        if model_type not in ("wan", "hunyuan_video"):
+            canvas_h = _ceil_to_multiple(frame_h, pool_h)
+            canvas_w = _ceil_to_multiple(frame_w, pool_w)
+            canvas_video_len = T * canvas_h * canvas_w
         _validate_upstream_draft_layout(
-            video_len, frame_h, frame_w, pool_h, pool_w, model_type, text_len=tail_len
+            canvas_video_len, canvas_h, canvas_w, pool_h, pool_w, model_type, text_len=tail_len
         )
     except (AssertionError, ValueError, RuntimeError) as exc:
         raise RuntimeError(
@@ -207,12 +242,32 @@ def _draft_attention(query, key, value, sparsity_ratio, pool_h, pool_w,
 
     frame_size = frame_h * frame_w
     video_end = context_len + T * frame_size
+    kernel_query, kernel_key, kernel_value = query, key, value
+    kernel_N = N
+    kernel_frame_h = canvas_h
+    kernel_frame_w = canvas_w
+    kernel_frame_size = canvas_h * canvas_w
+    kernel_video_end = context_len + canvas_video_len
+    padded_canvas = (canvas_h != frame_h or canvas_w != frame_w)
+    if padded_canvas:
+        kernel_query, kernel_key, kernel_value = _pad_draft_video_canvas(
+            query, key, value,
+            context_len=context_len,
+            video_end=video_end,
+            tail_len=tail_len,
+            T=T,
+            frame_h=frame_h,
+            frame_w=frame_w,
+            canvas_h=canvas_h,
+            canvas_w=canvas_w,
+        )
+        kernel_N = kernel_query.shape[1]
     reorg_idx, restore_idx = _generate_reorg_restore_indices(
         pool_h=pool_h,
         pool_w=pool_w,
-        latent_h=frame_h,
-        latent_w=frame_w,
-        visual_len=video_len,
+        latent_h=canvas_h,
+        latent_w=canvas_w,
+        visual_len=canvas_video_len,
         text_len=tail_len,
         device=query.device,
     )
@@ -220,11 +275,22 @@ def _draft_attention(query, key, value, sparsity_ratio, pool_h, pool_w,
     if query.is_cuda:
         try:
             out = _draft_mit_path(
-                query, key, value, B, N, H, D,
-                context_len, video_end, T, frame_h, frame_w, frame_size,
+                kernel_query, kernel_key, kernel_value, B, kernel_N, H, D,
+                context_len, kernel_video_end, T, kernel_frame_h, kernel_frame_w, kernel_frame_size,
                 sparsity_ratio, pool_h, pool_w, reorg_idx, restore_idx,
                 attention_mask=attention_mask,
             )
+            if padded_canvas:
+                out = _crop_draft_video_canvas(
+                    out,
+                    context_len=context_len,
+                    tail_len=tail_len,
+                    T=T,
+                    frame_h=frame_h,
+                    frame_w=frame_w,
+                    canvas_h=canvas_h,
+                    canvas_w=canvas_w,
+                )
             if backend_trace is not None:
                 backend_trace.append("mit_block_sparse")
             return out
@@ -236,10 +302,21 @@ def _draft_attention(query, key, value, sparsity_ratio, pool_h, pool_w,
                 ) from exc
         try:
             out = _draft_triton_path(
-                query, key, value, B, N, H, D, scale,
-                context_len, video_end, T, frame_h, frame_w, frame_size,
+                kernel_query, kernel_key, kernel_value, B, kernel_N, H, D, scale,
+                context_len, kernel_video_end, T, kernel_frame_h, kernel_frame_w, kernel_frame_size,
                 sparsity_ratio, pool_h, pool_w, reorg_idx, restore_idx,
             )
+            if padded_canvas:
+                out = _crop_draft_video_canvas(
+                    out,
+                    context_len=context_len,
+                    tail_len=tail_len,
+                    T=T,
+                    frame_h=frame_h,
+                    frame_w=frame_w,
+                    canvas_h=canvas_h,
+                    canvas_w=canvas_w,
+                )
             if backend_trace is not None:
                 backend_trace.append("triton_debug_fallback")
             return out
@@ -266,11 +343,16 @@ def _draft_mit_path(query, key, value, B, N, H, D,
     """Upstream Draft path backed by MIT Han Lab Block-Sparse-Attention."""
     from ...kernels.draft_block_sparse_runtime import load_block_sparse_attn_func
 
-    if D != 128:
-        raise RuntimeError(
-            "draft MIT Block-Sparse-Attention path requires head_dim=128; "
-            f"got head_dim={D}"
-        )
+    original_D = D
+    kernel_D = _draft_mit_head_dim(D)
+    softmax_scale = None
+    if kernel_D != D:
+        pad_dim = kernel_D - D
+        query = F.pad(query, (0, pad_dim))
+        key = F.pad(key, (0, pad_dim))
+        value = F.pad(value, (0, pad_dim))
+        D = kernel_D
+        softmax_scale = original_D ** -0.5
 
     video_len = video_end - context_len
     q_vid = query[:, context_len:video_end, :, :]
@@ -322,13 +404,16 @@ def _draft_mit_path(query, key, value, B, N, H, D,
         N,
         0.0,
         deterministic=False,
-        softmax_scale=None,
+        softmax_scale=softmax_scale,
         is_causal=False,
         exact_streaming=False,
         return_attn_probs=False,
     )
     out = out.reshape(B, N, H, D)
-    return out.index_select(1, restore_idx)
+    out = out.index_select(1, restore_idx)
+    if D != original_D:
+        out = out[..., :original_D]
+    return out
 
 
 def _draft_cu_seqlens(attention_mask, batch_size, total_len, video_len, text_len, device):
@@ -422,6 +507,96 @@ def _draft_is_dense_layer_or_timestep(model_type, layer_idx, timestep):
     if model_type == "hunyuan_video":
         return layer_idx < 2 or timestep > 945
     return False
+
+
+def _draft_mit_head_dim(head_dim):
+    head_dim = int(head_dim)
+    if head_dim == 128:
+        return 128
+    if head_dim < 128:
+        return 128
+    raise RuntimeError(
+        "draft MIT Block-Sparse-Attention path requires head_dim <= 128; "
+        f"got head_dim={head_dim}"
+    )
+
+
+def _ceil_to_multiple(value, multiple):
+    value = int(value)
+    multiple = int(multiple)
+    if multiple <= 0:
+        raise RuntimeError("draft pool_h and pool_w must be positive")
+    return ((value + multiple - 1) // multiple) * multiple
+
+
+def _pad_draft_video_canvas(query, key, value, *, context_len, video_end, tail_len,
+                            T, frame_h, frame_w, canvas_h, canvas_w):
+    return tuple(
+        _pad_draft_tensor_video_canvas(
+            tensor,
+            context_len=context_len,
+            video_end=video_end,
+            tail_len=tail_len,
+            T=T,
+            frame_h=frame_h,
+            frame_w=frame_w,
+            canvas_h=canvas_h,
+            canvas_w=canvas_w,
+        )
+        for tensor in (query, key, value)
+    )
+
+
+def _pad_draft_tensor_video_canvas(tensor, *, context_len, video_end, tail_len,
+                                   T, frame_h, frame_w, canvas_h, canvas_w):
+    B, _, H, D = tensor.shape
+    prefix = tensor[:, :context_len, :, :] if context_len else None
+    video = tensor[:, context_len:video_end, :, :]
+    tail = tensor[:, video_end:video_end + tail_len, :, :] if tail_len else None
+    video = video.view(B, T, frame_h, frame_w, H, D)
+    video = F.pad(video, (0, 0, 0, 0, 0, canvas_w - frame_w, 0, canvas_h - frame_h))
+    video = video.reshape(B, T * canvas_h * canvas_w, H, D)
+    parts = []
+    if prefix is not None:
+        parts.append(prefix)
+    parts.append(video)
+    if tail is not None:
+        parts.append(tail)
+    return torch.cat(parts, dim=1)
+
+
+def _crop_draft_video_canvas(out, *, context_len, tail_len, T, frame_h, frame_w, canvas_h, canvas_w):
+    B, _, H, D = out.shape
+    prefix = out[:, :context_len, :, :] if context_len else None
+    video_len = T * frame_h * frame_w
+    canvas_video_len = T * canvas_h * canvas_w
+    video = out[:, context_len:context_len + canvas_video_len, :, :]
+    video = video.view(B, T, canvas_h, canvas_w, H, D)
+    video = video[:, :, :frame_h, :frame_w, :, :].reshape(B, video_len, H, D)
+    tail = out[:, context_len + canvas_video_len:context_len + canvas_video_len + tail_len, :, :] if tail_len else None
+    parts = []
+    if prefix is not None:
+        parts.append(prefix)
+    parts.append(video)
+    if tail is not None:
+        parts.append(tail)
+    return torch.cat(parts, dim=1)
+
+
+def _infer_draft_frame_shape(video_len, model_type="wan", latent_h=None, latent_w=None):
+    if latent_h is not None and latent_w is not None:
+        frame_h = int(latent_h)
+        frame_w = int(latent_w)
+        if frame_h <= 0 or frame_w <= 0:
+            raise RuntimeError("draft latent_h and latent_w must be positive")
+        frame_size = frame_h * frame_w
+        if video_len % frame_size != 0:
+            raise RuntimeError(
+                f"draft configured latent_h/latent_w={frame_h}x{frame_w} do not divide "
+                f"video_len={video_len}"
+            )
+        return video_len // frame_size, frame_h, frame_w
+    return infer_video_frame_shape(video_len, model_type=model_type)
 
 
 def _validate_upstream_draft_layout(video_len, frame_h, frame_w, pool_h, pool_w, model_type, text_len=None):

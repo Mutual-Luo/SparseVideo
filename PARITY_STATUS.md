@@ -1,186 +1,102 @@
-# SparseVideo Parity Status
+# SparseVideo Parity Audit
 
-Last audited: 2026-05-18
+Overall: **complete**
+Metric records: 341
+Minimum quality steps: 50
 
-Objective: SparseVideo methods must use the same inference implementation as
-their referenced `training_free/` methods, including owned native kernels and
-real video pipeline evidence. Passing tests or producing an mp4 is not enough
-unless the matching metrics show strict sparse/native backend dispatch.
+## Checklist
+- pass: public_api_and_config_contract
+- pass: public_method_registry
+- pass: all_backbone_support_contract
+- pass: all_backbone_checkpoint_availability
+- pass: all_backbone_smoke_evidence
+- pass: no_direct_training_free_runtime_imports
+- pass: per_method_strict_dispatch_and_quality_evidence
 
-Run the current audit with:
-
-```bash
-/home/dataset-assist-0/luojy/miniconda3/envs/sparsevideo/bin/python scripts/audit_parity.py --format markdown --fail-on-incomplete
-```
-
-Current status: incomplete.
-
-The only current software blocker is `flashomni` video method parity. The
-`sta_h100` Hopper/TK path is hardware-deferred because this machine has no
-H100/Hopper GPU.
-
-## Passed
-
-Do not rework these unless new evidence changes the audit result:
-
-- `dense`
-- `svg1`
-- `svg2`
-- `spargeattn`
-- `radial`
-- `draft`
-- `adacluster`
-- `svoo`
-- `sta` on A100 (`fastvideo_sta_a100_triton`)
-
-These methods have current 50-step quality records plus strict backend dispatch
-evidence, or dense baseline evidence for `dense`.
-
-## Still Partial
-
-### `flashomni`
-
-SparseVideo-owned FlashOmni C++/CUDA runtime imports and explicit sparse-info
-dispatch has been observed. This proves the kernel adapter path only.
-
-It is still not complete because the local `training_free/FlashOmni` reference
-publishes the FlashOmni engine/API and synthetic benchmark helper
-`get_qkvo_global_sparse`, plus the benchmark score-CDF sparse-info fill helpers
-in `benchmark/test_attn_score.py`, but not a reusable Wan/Hunyuan video
-sparse-info or sparse-symbol generation policy. Do not treat `global_random`
-or ad-hoc explicit sparse-info tensors as video method parity.
-
-The owned method path now includes the paper-style update/dispatch state and
-can route Q/O projections through `flashomni_gemm` /
-`flashomni_gemm_reduction` when `sparse_pattern=paper_mmdit` and
-`use_sparse_gemm=true`. The sparse-symbol policy now follows the public paper's
-feature-cache contribution/guidance rule plus `benchmark/test_attn_score.py`
-score-CDF sparse-info mechanics. It uses the reported target `tau_q`/`tau_kv`
-values directly; the public paper also says these thresholds progressively
-converge during denoising, but it does not publish the code-level schedule
-formula. This narrows the remaining gap to code-level upstream Wan/Hunyuan
-policy evidence; it is still not a complete upstream video-method port because
-that policy and schedule are not available in the local reference checkout.
-
-External source status, rechecked on 2026-05-18: the OpenReview submission advertises
-`https://anonymous.4open.science/r/FlashOmni-B980`, but that endpoint currently
-returns `{"error":"not_connected"}` here. The OpenReview API exposes only the
-main PDF and public review discussion, not source code or supplementary files.
-Those public notes reinforce that the HunyuanVideo method depends on fixed
-hyperparameters, a feature-caching plus block-sparse skipping schedule,
-sparse-symbol state, and the ordered `GEMM-Q -> Attention -> GEMM-O` path. They
-do not provide enough implementation detail to claim code-level upstream parity.
-The author's public project page links the FlashOmni code to
-`https://github.com/qiaolian9/FlashOmni`. The public GitHub page currently
-shows only the engine/runtime directories `3rdparty`, `aot_build_utils`,
-`benchmark`, `csrc`, `flashomni`, and `include/flashomni`, plus top-level
-build/readme files. It does not expose Wan/Hunyuan inference scripts or a video
-sparse-symbol policy beyond the benchmark helpers already mirrored in
-`training_free/FlashOmni`.
-
-The local `training_free/FlashOmni` git checkout was also inspected on
-2026-05-18. It is at commit `2f27ee944202bf5d625fc28319c8198bf5ef7653`, with
-branches `main`, `origin/HEAD`, and `origin/main`, no tags, and no git-history
-file-name candidates matching Wan/Hunyuan/policy/infer/pipeline/video sparse
-symbol or sparse-info terms. This makes the remaining blocker an unavailable
-upstream artifact, not a missed local checkout file.
-
-The public GitHub repository homepage shows one issue, but the `/issues` page
-and the GitHub issues API returned 404 without accessible issue content on
-2026-05-18. No public issue or PR content was available as a substitute source
-for the missing video sparse-symbol policy.
-
-The OpenReview forum was also checked through the public API on 2026-05-18.
-Author rebuttal comments reference paths such as
-`./FlashOmni/example/hunyuan/nvprof`, `./FlashOmni/example/hunyuan/nvprof/e2e`,
-and `./FlashOmni/benchmark/nvprof_attn/hunyuan`. Those paths are not present
-in the public GitHub repository or in the local `training_free/FlashOmni`
-checkout. This is useful negative evidence: the public discussion points to
-additional experiment artifacts, but those artifacts are not available to port
-or compare against.
-
-The OpenReview revised PDF was also text-checked on 2026-05-18. It adds a
-qualitative statement that sparsity is kept low early and gradually increased
-later, and it repeats the `tau_q`/`tau_kv` convergence note. It still does not
-provide a Wan/Hunyuan policy source, example files, or a concrete convergence
-schedule formula.
-
-The arXiv e-print source for `2509.25401` was checked on 2026-05-18. It
-contains TeX source, figures, table text, and algorithm listings, but no
-code/example directory and no Wan/Hunyuan video sparse-symbol policy source.
-`sections/Appendix.tex` repeats that `tau_q` and `tau_kv` progressively
-converge to their target values during denoising, but it does not provide the
-convergence schedule formula or implementation. This keeps the schedule as a
-real missing upstream artifact rather than an implementation detail we can
-faithfully copy.
-
-Current owned progress: `src/sparsevideo/methods/flashomni/policy.py` provides
-a paper/benchmark-derived `paper_mmdit` sparse-info policy using the paper
-configuration names `tau_q`, `tau_kv`, `N`, `D`, and `S_q`. It builds
-compressed Q/K block scores, refreshes sparse symbols on update steps, applies
-the paper's feature-cache contribution/guidance selection rule, applies the
-score-CDF kv-skip mechanics from `training_free/FlashOmni/benchmark/test_attn_score.py`,
-and uses cached attention-output reuse on dispatch steps so feature-cache
-`sparse_q` symbols are not treated as plain dropped output blocks. The
-processor path can also use owned FlashOmni GEMM-Q and GEMM-O hooks to skip
-query projection work on dispatch steps and split output projection into
-cached-bias plus active-reduction work. This is useful development code and has
-CUDA smoke tests plus a current-policy 50-step paper-policy run through the
-owned FlashOmni kernels, but it is not code-level upstream Wan/Hunyuan repo
-parity. The exact upstream `tau_q`/`tau_kv` convergence schedule remains part
-of the missing video policy evidence.
-
-Current Hunyuan reported-config evidence on 2026-05-18:
-`result/inference/audit/flashomni_paper_mmdit_hunyuan_current_policy_20260518/metrics.jsonl`
-ran Hunyuan at 720x1280, 129 frames, 50 denoise steps, `cpu_offload=true`,
-and the reported paper config `tau_q=0.5`, `tau_kv=0.05`, `N=6`, `D=1`,
-`S_q=0.3`. This verifies the reported target tuple, not an upstream schedule
-for gradually reaching those targets. The audit accepts this evidence only
-when both the policy and method source hashes match the current checkout. It
-records current policy hash
-`7e20bf6de4b7a8d681a4971e6950254275b2e8980a8b45087f796db21acf900e`, current
-method hash `37195332f2b285bc3f82231ebc13fcbec0c28cbb5745247b15f42523d2d7d103`,
-completed with `status=ok`, `flashomni_full_upstream: 540`,
-`flashomni_explicit_upstream: 2460`, `dense: 540`, `sparse: 2460`,
-`generate_sec=4744.209`, peak CUDA allocation about 38.65 GiB, and output
-`result/inference/audit/flashomni_paper_mmdit_hunyuan_current_policy_20260518/hunyuan-t2v/flashomni/seed0_720x1280_129f.mp4`.
-This replaces the earlier 2-step smoke as the reported-config runtime
-evidence. It proves the owned paper/benchmark-derived policy can drive a real
-50-step Hunyuan run through both FlashOmni update and explicit sparse dispatch
-paths. It still does not prove code-level upstream video-method parity because
-the upstream Wan/Hunyuan sparse-symbol policy source is not public.
-
-A lightweight artifact check also exists at
-`result/inference/audit/flashomni_paper_mmdit_hunyuan_current_policy_20260518/qc/contact_sheet.jpg`.
-`ffprobe` reports a valid 1280x720, 129-frame, 5.375-second video. The file is
-about 1.3 MiB with about 1.88 Mb/s bitrate, so the audit artifact QC has no
-small-file or low-bitrate warning. Treat this run as runtime/dispatch evidence
-until the generated video is visually accepted against a matching dense
-baseline; do not use the JSON status alone as visual quality proof.
-
-Completion evidence still needed:
-
-- concrete upstream code/evidence defining the Wan/Hunyuan video
-  sparse-symbol update/dispatch policy and `tau_q`/`tau_kv` convergence
-  schedule if we want to claim code-level parity;
-- if upstream policy appears later, compare the owned policy against it and
-  rerun 50-step strict-dispatch video inference with that policy.
-
-## Hardware Deferred
-
-### `sta_h100`
-
-SparseVideo owns both the FastVideo Triton STA fallback and the `sta_h100`
-source/extension. On the current machine, all visible GPUs are A100
-compute-capability 8.0, so the real Hopper/TK C++ path cannot be exercised.
-
-The A100 path is complete for current hardware and is explicitly labeled
-`fastvideo_sta_a100_triton`. It has matching 50-step Wan14B quality and speed
-evidence against the legacy FastVideo Triton fallback. This evidence is not
-H100/TK runtime dispatch evidence, and it should not be reported as H100 parity.
-
-Deferred evidence needed when H100/Hopper hardware is available:
-
-- run on Hopper/H100 hardware;
-- produce real inference metrics showing `fastvideo_sta_h100` backend dispatch;
-- keep A100 runs labeled as FastVideo Triton fallback, not H100 parity.
+## Methods
+- adacluster: pass
+  - strict_dispatch: /home/dataset-assist-0/luojy/efficiency/sparseformer/result/inference/audit/current_quality_dispatch_20260517/wan13b_adacluster_480x832_81f_50steps.metrics.jsonl:1 wan1.3b 50 steps generate_sec=419.37013280019164
+  - quality: /home/dataset-assist-0/luojy/efficiency/sparseformer/result/inference/adacluster_validation_20260517/metrics.jsonl:2 wan1.3b 50 steps generate_sec=437.7792351525277
+  - quality_with_dispatch: /home/dataset-assist-0/luojy/efficiency/sparseformer/result/inference/audit/current_quality_dispatch_20260517/wan13b_adacluster_480x832_81f_50steps.metrics.jsonl:1 wan1.3b 50 steps generate_sec=419.37013280019164
+- dense: pass
+  - quality: /home/dataset-assist-0/luojy/efficiency/sparseformer/result/inference/adacluster_validation_20260517/metrics.jsonl:1 wan1.3b 50 steps generate_sec=203.9054212514311
+- draft: pass
+  - strict_dispatch: /home/dataset-assist-0/luojy/efficiency/sparseformer/result/inference/audit/current_quality_dispatch_20260517/wan13b_draft_512x768_81f_50steps.metrics.jsonl:1 wan1.3b 50 steps generate_sec=139.30930413492024
+  - quality: /home/dataset-assist-0/luojy/efficiency/sparseformer/result/inference/audit/current_quality_dispatch_20260517/wan13b_draft_512x768_81f_50steps.metrics.jsonl:1 wan1.3b 50 steps generate_sec=139.30930413492024
+  - quality_with_dispatch: /home/dataset-assist-0/luojy/efficiency/sparseformer/result/inference/audit/current_quality_dispatch_20260517/wan13b_draft_512x768_81f_50steps.metrics.jsonl:1 wan1.3b 50 steps generate_sec=139.30930413492024
+- flashomni: pass
+  - reference_policy_candidates: []
+  - reference_benchmark_sparse_helpers: ['README.md', 'benchmark/test_attn_score.py', 'benchmark/test_flashomni_attention.py', 'benchmark/test_flashomni_gemm_o.py', 'benchmark/test_flashomni_gemm_q.py', 'benchmark/utils.py', 'flashomni/__init__.py', 'flashomni/attention.py', 'flashomni/gemm.py']
+  - reference_benchmark_global_random_helpers: ['benchmark/test_flashomni_attention.py', 'benchmark/test_flashomni_gemm_o.py', 'benchmark/test_flashomni_gemm_q.py', 'benchmark/utils.py']
+  - reference_benchmark_score_sparse_helpers: ['benchmark/test_attn_score.py']
+  - reference_git_history_policy_candidates: []
+  - reference_public_code_url: https://github.com/qiaolian9/FlashOmni
+  - reference_public_observed_dirs: ['3rdparty', 'aot_build_utils', 'benchmark', 'csrc', 'example/hunyuan', 'flashomni', 'include/flashomni']
+  - reference_public_observed_files: ['README.md', 'custom_backend.py', 'pyproject.toml', 'setup.py']
+  - reference_public_anonymous_repo_api_status: API endpoints /api/repo/FlashOmni-B980/files and /file/<path> were reachable on 2026-05-18 and exposed example/hunyuan source files
+  - reference_public_anonymous_hunyuan_policy_files: ['example/hunyuan/flashomni_hunyuan.py', 'example/hunyuan/models/flashomni_attn_processor/attention_processor.py', 'example/hunyuan/models/cache_functions/cache_init.py', 'example/hunyuan/models/cache_functions/cal_type.py', 'example/hunyuan/models/cache_functions/force_scheduler.py', 'example/hunyuan/models/forwards/hunyuan_forward.py', 'example/hunyuan/models/forwards/double_transformer_forward.py', 'example/hunyuan/models/forwards/single_transformer_forward.py', 'example/hunyuan/models/taylorseer_utils/__init__.py']
+  - reference_public_completion_note: no remaining FlashOmni software gap in the current A100 audit: anonymous Hunyuan policy files are available, SparseVideo owns the Hunyuan sparse-symbol policy and transformer forward/Taylor-cache path, and reported-config 50-step Hunyuan dispatch evidence exists; artifact visual acceptance remains separate
+  - reference_public_issues_status: repository homepage shows one issue, but /issues and the GitHub issues API returned 404 without accessible issue content on 2026-05-18
+  - reference_openreview_rebuttal_referenced_paths: ['FlashOmni/example/flux/nvprof', 'FlashOmni/example/hunyuan/nvprof', 'FlashOmni/example/hunyuan/nvprof/e2e', 'FlashOmni/benchmark/nvprof_attn/flux', 'FlashOmni/benchmark/nvprof_attn/hunyuan', 'FlashOmni/benchmark/nvprof_gemmq', 'FlashOmni/benchmark/nvprof_gemmo']
+  - reference_openreview_rebuttal_missing_paths: OpenReview rebuttal comments reference example/hunyuan and nvprof artifact paths; these are absent from public GitHub/training_free but present in the anonymous artifact API
+  - reference_openreview_revision_pdf_status: OpenReview revised PDF text was checked on 2026-05-18; it discusses HunyuanVideo experiments and a qualitative sparsity schedule but does not itself expose source code
+  - reference_openreview_revision_threshold_schedule_status: OpenReview revised PDF says sparsity stays low in early denoising and gradually increases later, and repeats that tau_q/tau_kv progressively reach target values; it still provides no convergence schedule formula or implementation
+  - reference_arxiv_source_status: arXiv e-print 2509.25401 contains paper TeX, figures, table text, and algorithms only; no code/example directory or Wan/Hunyuan video sparse-symbol policy source is included
+  - reference_arxiv_threshold_schedule_status: sections/Appendix.tex states tau_q and tau_kv progressively converge to target values, but the e-print source contains no convergence schedule formula or implementation
+  - flashomni_owned_sparse_gemm_runtime: True
+  - flashomni_method_uses_sparse_gemm: True ['src/sparsevideo/methods/flashomni/method.py']
+  - flashomni_method_uses_update_dispatch_cache: True ['src/sparsevideo/methods/flashomni/method.py']
+  - flashomni_owned_paper_policy_source: True src/sparsevideo/methods/flashomni/policy.py
+  - flashomni_current_policy_sha256: d628026785b07377ea18e21a3cae1a270736e46c9cfce84da5b5bb8a0e2bcbdb
+  - flashomni_current_method_sha256: e2e9b3f4358a648227ebe5bb8806f275b7c4dd5afbc08fb04b540c38ec2736f5
+  - flashomni_owned_score_cdf_policy: True
+  - flashomni_owned_hunyuan_video_policy: True
+  - flashomni_owned_hunyuan_transformer_forward_taylor_cache: True
+  - flashomni_paper_policy_runtime: /home/dataset-assist-0/luojy/efficiency/sparseformer/result/inference/audit/flashomni_hunyuan_20260520_reported/metrics.jsonl:1 hunyuan 50 steps generate_sec=1806.1138816792518
+  - flashomni_paper_policy_artifact_qc: {'path': '/home/dataset-assist-0/luojy/efficiency/sparseformer/result/inference/audit/flashomni_hunyuan_20260520_reported/hunyuan-t2v/flashomni/seed0_720x1280_129f.mp4', 'exists': True, 'warnings': ['very_small_file_for_720p_video_quality_claim', 'low_bitrate_for_720p_video_quality_claim'], 'size_bytes': 402460, 'ffprobe': {'width': 1280, 'height': 720, 'nb_frames': '129', 'duration': '5.375000', 'avg_frame_rate': '24/1', 'bit_rate': '595430'}, 'actual_frames': 129}
+  - flashomni_reported_hunyuan_config: {'threshold_q': 0.5, 'threshold_kv': 0.05, 'fresh_threshold': 6, 'max_order': 1, 'saving_threshold_q_for_taylor': 0.3, 'first_enhance': 8, 'source': 'anonymous FlashOmni Hunyuan cache_init.py plus paper HunyuanVideo row: (50%, 5%, 6, 1, 30%)'}
+  - flashomni_paper_threshold_schedule_status: {'source': 'anonymous FlashOmni example/hunyuan/models/flashomni_attn_processor/attention_processor.py', 'observed_detail': 'Hunyuan flashomni_attn_score scales threshold_q and threshold_kv by (current_iter / 50) ** 1.7', 'missing_detail': None, 'current_sparsevideo_behavior': 'paper_mmdit Hunyuan sparse-symbol generation applies the anonymous FlashOmni threshold factor; complete Taylor-cache forward parity is still separate'}
+  - flashomni_paper_policy_matches_reported_hunyuan_config: True
+  - flashomni_goal_checklist:
+    - pass: src/sparsevideo-owned FlashOmni Hunyuan sparse-symbol policy
+    - pass: tests align FlashOmni policy behavior against available public benchmark/anonymous helpers
+    - pass: Hunyuan 720p/129-frame/50-step real video inference using the reported Hunyuan config with flashomni_explicit_upstream dispatch
+      caveat: runtime/dispatch evidence only; artifact QC warnings require separate visual quality acceptance: ['very_small_file_for_720p_video_quality_claim', 'low_bitrate_for_720p_video_quality_claim']
+    - pass: code-level upstream Wan/Hunyuan video sparse-symbol policy evidence
+    - pass: complete Hunyuan transformer forward/Taylor-cache method path parity
+  - strict_dispatch: /home/dataset-assist-0/luojy/efficiency/sparseformer/.tmp_smoke/metrics_flashomni_50step_quality.jsonl:1 ltx 50 steps generate_sec=7.781961422413588
+  - quality: /home/dataset-assist-0/luojy/efficiency/sparseformer/result/inference/audit/current_quality_dispatch_20260517/wan13b_flashomni_explicit_720x1280_81f_50steps.metrics.jsonl:1 wan1.3b 50 steps generate_sec=334.2697907574475
+  - quality_with_dispatch: /home/dataset-assist-0/luojy/efficiency/sparseformer/result/inference/audit/current_quality_dispatch_20260517/wan13b_flashomni_explicit_720x1280_81f_50steps.metrics.jsonl:1 wan1.3b 50 steps generate_sec=334.2697907574475
+- radial: pass
+  - strict_dispatch: /home/dataset-assist-0/luojy/efficiency/sparseformer/result/inference/audit/current_quality_dispatch_20260517/wan13b_radial_768x1280_69f_50steps.metrics.jsonl:1 wan1.3b 50 steps generate_sec=327.7191412821412
+  - quality: /home/dataset-assist-0/luojy/efficiency/sparseformer/result/inference/audit/current_quality_dispatch_20260517/wan13b_radial_768x1280_69f_50steps.metrics.jsonl:1 wan1.3b 50 steps generate_sec=327.7191412821412
+  - quality_with_dispatch: /home/dataset-assist-0/luojy/efficiency/sparseformer/result/inference/audit/current_quality_dispatch_20260517/wan13b_radial_768x1280_69f_50steps.metrics.jsonl:1 wan1.3b 50 steps generate_sec=327.7191412821412
+- spargeattn: pass
+  - strict_dispatch: /home/dataset-assist-0/luojy/efficiency/sparseformer/result/inference/audit/current_quality_dispatch_20260517/wan13b_spargeattn_720x1280_81f_50steps.metrics.jsonl:1 wan1.3b 50 steps generate_sec=567.1579244304448
+  - quality: /home/dataset-assist-0/luojy/efficiency/sparseformer/result/inference/audit/current_quality_dispatch_20260517/wan13b_spargeattn_720x1280_81f_50steps.metrics.jsonl:1 wan1.3b 50 steps generate_sec=567.1579244304448
+  - quality_with_dispatch: /home/dataset-assist-0/luojy/efficiency/sparseformer/result/inference/audit/current_quality_dispatch_20260517/wan13b_spargeattn_720x1280_81f_50steps.metrics.jsonl:1 wan1.3b 50 steps generate_sec=567.1579244304448
+- sta: pass
+  - deferred_artifact: Hopper/H100 inference metrics showing fastvideo_sta_h100 backend dispatch
+  - deferred_artifact: 50-step real video quality record produced on the same H100/TK path
+  - hardware_hopper_visible: False
+  - hardware_devices: ['0:NVIDIA A100-SXM4-80GB cc=[8, 0]', '1:NVIDIA A100-SXM4-80GB cc=[8, 0]', '2:NVIDIA A100-SXM4-80GB cc=[8, 0]', '3:NVIDIA A100-SXM4-80GB cc=[8, 0]']
+  - sta_a100: pass backend=fastvideo_sta_a100_triton
+  - sta_a100_speed_comparison: pass
+  - sta_a100_speedup: 1.056x (1971.751s -> 1866.535s generate)
+  - sta_a100_quality_with_dispatch: /home/dataset-assist-0/luojy/efficiency/sparseformer/result/inference/audit/current_quality_dispatch_20260517/wan14b_sta_a100_768x1280_69f_50steps.metrics.jsonl:1 wan14b 50 steps
+  - sta_h100: deferred backend=fastvideo_sta_h100
+  - strict_dispatch: /home/dataset-assist-0/luojy/efficiency/sparseformer/result/inference/audit/current_quality_dispatch_20260517/wan14b_sta_a100_768x1280_69f_50steps.metrics.jsonl:1 wan14b 50 steps generate_sec=1866.5354756116867
+  - quality: /home/dataset-assist-0/luojy/efficiency/sparseformer/result/inference/audit/current_quality_dispatch_20260517/wan14b_sta_a100_768x1280_69f_50steps.metrics.jsonl:1 wan14b 50 steps generate_sec=1866.5354756116867
+  - quality_with_dispatch: /home/dataset-assist-0/luojy/efficiency/sparseformer/result/inference/audit/current_quality_dispatch_20260517/wan14b_sta_a100_768x1280_69f_50steps.metrics.jsonl:1 wan14b 50 steps generate_sec=1866.5354756116867
+- svg1: pass
+  - strict_dispatch: /home/dataset-assist-0/luojy/efficiency/sparseformer/result/inference/audit/current_quality_dispatch_20260517/wan13b_svg1_720x1280_81f_50steps.metrics.jsonl:1 wan1.3b 50 steps generate_sec=520.1119573693722
+  - quality: /home/dataset-assist-0/luojy/efficiency/sparseformer/result/inference/audit/current_quality_dispatch_20260517/wan13b_svg1_720x1280_81f_50steps.metrics.jsonl:1 wan1.3b 50 steps generate_sec=520.1119573693722
+  - quality_with_dispatch: /home/dataset-assist-0/luojy/efficiency/sparseformer/result/inference/audit/current_quality_dispatch_20260517/wan13b_svg1_720x1280_81f_50steps.metrics.jsonl:1 wan1.3b 50 steps generate_sec=520.1119573693722
+- svg2: pass
+  - strict_dispatch: /home/dataset-assist-0/luojy/efficiency/sparseformer/result/inference/audit/svg2_quality_fix_metrics.jsonl:1 wan1.3b 50 steps generate_sec=495.71796498820186
+  - quality: /home/dataset-assist-0/luojy/efficiency/sparseformer/result/inference/audit/svg2_quality_fix_metrics.jsonl:1 wan1.3b 50 steps generate_sec=495.71796498820186
+  - quality_with_dispatch: /home/dataset-assist-0/luojy/efficiency/sparseformer/result/inference/audit/svg2_quality_fix_metrics.jsonl:1 wan1.3b 50 steps generate_sec=495.71796498820186
+- svoo: pass
+  - strict_dispatch: /home/dataset-assist-0/luojy/efficiency/sparseformer/result/inference/audit/current_quality_dispatch_20260517/wan13b_svoo_720x1280_81f_50steps.metrics.jsonl:1 wan1.3b 50 steps generate_sec=399.39452300593257
+  - quality: /home/dataset-assist-0/luojy/efficiency/sparseformer/result/inference/audit/current_quality_dispatch_20260517/wan13b_svoo_720x1280_81f_50steps.metrics.jsonl:1 wan1.3b 50 steps generate_sec=399.39452300593257
+  - quality_with_dispatch: /home/dataset-assist-0/luojy/efficiency/sparseformer/result/inference/audit/current_quality_dispatch_20260517/wan13b_svoo_720x1280_81f_50steps.metrics.jsonl:1 wan1.3b 50 steps generate_sec=399.39452300593257

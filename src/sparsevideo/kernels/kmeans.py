@@ -10,12 +10,26 @@ import triton
 import triton.language as tl
 
 
+def _next_pow2(n: int) -> int:
+    return 1 << (max(1, int(n)) - 1).bit_length()
+
+
+def _block_d(head_dim: int) -> int:
+    block = _next_pow2(head_dim)
+    if block < 16:
+        block = 16
+    if block > 256:
+        raise AssertionError(f"head_dim {head_dim} not supported, must be <= 256")
+    return block
+
+
 @triton.jit
 def _norm_sq_kernel(
     Centroids,
     Norms,
     B, K,
     D: tl.constexpr,
+    BLOCK_D: tl.constexpr,
     stride_cb, stride_ck, stride_cd,
     stride_nb, stride_nk,
     BLOCK_K: tl.constexpr,
@@ -27,10 +41,11 @@ def _norm_sq_kernel(
 
     k_offs = block_k * BLOCK_K + tl.arange(0, BLOCK_K)
     k_mask = k_offs < K
-    d_offs = tl.arange(0, D)
+    d_offs = tl.arange(0, BLOCK_D)
+    d_mask = d_offs < D
 
     c_ptrs = Centroids + bid * stride_cb + k_offs[:, None] * stride_ck + d_offs[None, :] * stride_cd
-    c = tl.load(c_ptrs, mask=k_mask[:, None], other=0.0).to(tl.float32)
+    c = tl.load(c_ptrs, mask=(k_mask[:, None] & d_mask[None, :]), other=0.0).to(tl.float32)
     norms = tl.sum(c * c, axis=1)
 
     n_ptrs = Norms + bid * stride_nb + k_offs * stride_nk
@@ -45,6 +60,7 @@ def _assign_kernel(
     Labels,
     B, N, K,
     D: tl.constexpr,
+    BLOCK_D: tl.constexpr,
     stride_xb, stride_xn, stride_xd,
     stride_cb, stride_ck, stride_cd,
     stride_nb, stride_nk,
@@ -59,10 +75,11 @@ def _assign_kernel(
 
     n_offs = block_n * BLOCK_N + tl.arange(0, BLOCK_N)
     n_mask = n_offs < N
-    d_offs = tl.arange(0, D)
+    d_offs = tl.arange(0, BLOCK_D)
+    d_mask = d_offs < D
 
     x_ptrs = X + bid * stride_xb + n_offs[:, None] * stride_xn + d_offs[None, :] * stride_xd
-    x = tl.load(x_ptrs, mask=n_mask[:, None], other=0.0).to(tl.float32)
+    x = tl.load(x_ptrs, mask=(n_mask[:, None] & d_mask[None, :]), other=0.0).to(tl.float32)
 
     min_dist = tl.full([BLOCK_N], float("inf"), dtype=tl.float32)
     min_idx = tl.zeros([BLOCK_N], dtype=tl.int32)
@@ -73,7 +90,7 @@ def _assign_kernel(
 
         # Load centroids transposed: [D, BLOCK_K]
         c_ptrs = Centroids + bid * stride_cb + d_offs[:, None] * stride_cd + k_offs[None, :] * stride_ck
-        c_t = tl.load(c_ptrs, mask=k_mask[None, :], other=0.0).to(tl.float32)
+        c_t = tl.load(c_ptrs, mask=(d_mask[:, None] & k_mask[None, :]), other=0.0).to(tl.float32)
 
         # Load norms
         norm_ptrs = CentroidNorms + bid * stride_nb + k_offs * stride_nk
@@ -103,6 +120,7 @@ def _update_centroids_kernel(
     Counts,
     B, N, K,
     D: tl.constexpr,
+    BLOCK_D: tl.constexpr,
     stride_xb, stride_xn, stride_xd,
     stride_lb, stride_ln,
     stride_cb, stride_ck, stride_cd,
@@ -118,12 +136,13 @@ def _update_centroids_kernel(
     l_ptrs = Labels + bid * stride_lb + n_range * stride_ln
     labels = tl.load(l_ptrs, mask=n_mask, other=0)
 
-    d_range = tl.arange(0, D)
+    d_range = tl.arange(0, BLOCK_D)
+    d_mask = d_range < D
     x_ptrs = X + bid * stride_xb + n_range[:, None] * stride_xn + d_range[None, :] * stride_xd
-    x = tl.load(x_ptrs, mask=n_mask[:, None], other=0.0)
+    x = tl.load(x_ptrs, mask=(n_mask[:, None] & d_mask[None, :]), other=0.0)
 
     c_ptrs = NewCentroids + bid * stride_cb + labels[:, None] * stride_ck + d_range[None, :] * stride_cd
-    tl.atomic_add(c_ptrs, x.to(NewCentroids.type.element_ty), mask=n_mask[:, None])
+    tl.atomic_add(c_ptrs, x.to(NewCentroids.type.element_ty), mask=(n_mask[:, None] & d_mask[None, :]))
 
     ct_ptrs = Counts + bid * stride_ctb + labels * stride_ctk
     tl.atomic_add(ct_ptrs, tl.full([BLOCK_N], 1, dtype=tl.int32), mask=n_mask)
@@ -166,7 +185,7 @@ def triton_kmeans(
     K = min(n_clusters, N) if clamp_clusters else int(n_clusters)
     device = x.device
 
-    assert D in (16, 32, 64, 128, 256), f"head_dim {D} not supported, must be power of 2 in [16..256]"
+    BLOCK_D = _block_d(D)
 
     if init_centroids is not None and init_centroids.shape == (B, K, D):
         centroids = init_centroids.to(device=device, dtype=x.dtype).contiguous()
@@ -190,7 +209,7 @@ def triton_kmeans(
         grid_norm = (triton.cdiv(K, BLOCK_K_NORM), B)
         _norm_sq_kernel[grid_norm](
             centroids, norms,
-            B, K, D=D,
+            B, K, D=D, BLOCK_D=BLOCK_D,
             stride_cb=centroids.stride(0), stride_ck=centroids.stride(1), stride_cd=centroids.stride(2),
             stride_nb=norms.stride(0), stride_nk=norms.stride(1),
             BLOCK_K=BLOCK_K_NORM,
@@ -200,7 +219,7 @@ def triton_kmeans(
         grid_assign = (triton.cdiv(N, BLOCK_N), B)
         _assign_kernel[grid_assign](
             x, centroids, norms, labels,
-            B, N, K, D=D,
+            B, N, K, D=D, BLOCK_D=BLOCK_D,
             stride_xb=x.stride(0), stride_xn=x.stride(1), stride_xd=x.stride(2),
             stride_cb=centroids.stride(0), stride_ck=centroids.stride(1), stride_cd=centroids.stride(2),
             stride_nb=norms.stride(0), stride_nk=norms.stride(1),
@@ -215,7 +234,7 @@ def triton_kmeans(
         grid_update = (triton.cdiv(N, BLOCK_N), B)
         _update_centroids_kernel[grid_update](
             x, labels, new_centroids, counts,
-            B, N, K, D=D,
+            B, N, K, D=D, BLOCK_D=BLOCK_D,
             stride_xb=x.stride(0), stride_xn=x.stride(1), stride_xd=x.stride(2),
             stride_lb=labels.stride(0), stride_ln=labels.stride(1),
             stride_cb=new_centroids.stride(0), stride_ck=new_centroids.stride(1), stride_cd=new_centroids.stride(2),
@@ -241,14 +260,14 @@ def triton_kmeans(
     # Final assignment with converged centroids
     _norm_sq_kernel[(triton.cdiv(K, BLOCK_K_NORM), B)](
         centroids, norms,
-        B, K, D=D,
+        B, K, D=D, BLOCK_D=BLOCK_D,
         stride_cb=centroids.stride(0), stride_ck=centroids.stride(1), stride_cd=centroids.stride(2),
         stride_nb=norms.stride(0), stride_nk=norms.stride(1),
         BLOCK_K=BLOCK_K_NORM,
     )
     _assign_kernel[(triton.cdiv(N, BLOCK_N), B)](
         x, centroids, norms, labels,
-        B, N, K, D=D,
+        B, N, K, D=D, BLOCK_D=BLOCK_D,
         stride_xb=x.stride(0), stride_xn=x.stride(1), stride_xd=x.stride(2),
         stride_cb=centroids.stride(0), stride_ck=centroids.stride(1), stride_cd=centroids.stride(2),
         stride_nb=norms.stride(0), stride_nk=norms.stride(1),

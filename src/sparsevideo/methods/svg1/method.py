@@ -8,11 +8,17 @@ import torch.nn.functional as F
 from .._base import SparseMethod
 from .._layout import infer_video_frame_count, infer_video_token_layout
 from .._schedule import first_times_fp_requires_dense, resolve_first_layers, scheduler_timestep_from_tracker
+from ...processors.allegro import SparseAllegroAttnProcessor
+from ...processors.cogvideox import SparseCogVideoXAttnProcessor
+from ...processors.easyanimate import SparseEasyAnimateAttnProcessor
+from ...processors.ltx_video import SparseLTXVideoAttnProcessor
+from ...processors.mochi import SparseMochiAttnProcessor
 from ...processors.wan import SparseWanAttnProcessor
 from ...processors.hunyuan_video import SparseHunyuanVideoAttnProcessor
 from . import config as method_config
 
 _SVG_FLEX_ATTENTION = {}
+_TEXT_TAIL_MODELS = {"hunyuan_video", "cogvideox", "mochi", "easyanimate"}
 
 
 class SVG1Method(SparseMethod):
@@ -29,7 +35,9 @@ class SVG1Method(SparseMethod):
         return method_config.default_config(**context)
 
     def create_processor(self, layer_idx, total_layers, original_processor, step_tracker):
-        if self.model_info.model_type not in ("wan", "hunyuan_video"):
+        if self.model_info.model_type not in (
+            "wan", "hunyuan_video", "cogvideox", "ltx_video", "allegro", "mochi", "easyanimate",
+        ):
             raise NotImplementedError(f"svg1 not yet supported for {self.model_info.model_type}")
 
         cfg = self.config
@@ -66,7 +74,7 @@ class SVG1Method(SparseMethod):
                 return out
             if not query.is_cuda:
                 raise RuntimeError("svg1 sparse path requires CUDA self-attention without an attention mask")
-            if attention_mask is not None and model_type != "hunyuan_video":
+            if attention_mask is not None and model_type not in _TEXT_TAIL_MODELS:
                 raise RuntimeError("svg1 sparse path requires CUDA self-attention without an attention mask")
             out = _svg_attention(
                 query, key, value,
@@ -90,6 +98,26 @@ class SVG1Method(SparseMethod):
 
         if self.model_info.model_type == "wan":
             return SparseWanAttnProcessor(
+                attn_fn=attn_fn, layer_idx=layer_idx, step_tracker=step_tracker,
+            )
+        if self.model_info.model_type == "cogvideox":
+            return SparseCogVideoXAttnProcessor(
+                attn_fn=attn_fn, layer_idx=layer_idx, step_tracker=step_tracker,
+            )
+        if self.model_info.model_type == "ltx_video":
+            return SparseLTXVideoAttnProcessor(
+                attn_fn=attn_fn, layer_idx=layer_idx, step_tracker=step_tracker,
+            )
+        if self.model_info.model_type == "allegro":
+            return SparseAllegroAttnProcessor(
+                attn_fn=attn_fn, layer_idx=layer_idx, step_tracker=step_tracker,
+            )
+        if self.model_info.model_type == "mochi":
+            return SparseMochiAttnProcessor(
+                attn_fn=attn_fn, layer_idx=layer_idx, step_tracker=step_tracker,
+            )
+        if self.model_info.model_type == "easyanimate":
+            return SparseEasyAnimateAttnProcessor(
                 attn_fn=attn_fn, layer_idx=layer_idx, step_tracker=step_tracker,
             )
         return SparseHunyuanVideoAttnProcessor(
@@ -120,10 +148,10 @@ def _svg_attention(query, key, value, sparsity, num_sampled_rows,
     context_len = layout.context_len
     tail_len = layout.tail_len
     video_len = layout.video_len
-    if model_type == "hunyuan_video" and tail_len > 0:
+    if model_type in _TEXT_TAIL_MODELS and tail_len > 0:
         if context_length is not None and int(context_length) != tail_len:
             raise RuntimeError(
-                "svg1 Hunyuan context_length must match the text token tail length "
+                "svg1 context_length must match the text token tail length "
                 f"seen by the processor; got context_length={int(context_length)}, text_len={tail_len}"
             )
 
@@ -314,7 +342,7 @@ def _svg_profile_mask_rows(mask_name, q_idx, all_idx, context_len, video_end,
         raise ValueError(f"Unknown svg1 profiling mask {mask_name!r}")
 
     block_size = 128
-    if model_type == "hunyuan_video":
+    if model_type in _TEXT_TAIL_MODELS:
         block_thres = frame_size * 1.5
         is_sink = torch.zeros_like(k_in_video)
     else:
@@ -366,7 +394,7 @@ def _svg_kv_blocks(N, video_len, frame_size, window_width,
         q_start = q_block * block_size
         q_end = min(N, (q_block + 1) * block_size) - 1
         blocks: set[int] = set()
-        if model_type == "hunyuan_video":
+        if model_type in _TEXT_TAIL_MODELS:
             _add_hunyuan_svg_blocks(
                 blocks, q_start, q_end, N, video_len, int(prompt_length or 0),
                 window_width, block_size, num_kv_blocks,
@@ -406,7 +434,7 @@ def _svg_kv_block_partitions(N, video_len, frame_size, window_width,
         q_start = q_block * block_size
         q_end = min(N, (q_block + 1) * block_size) - 1
         candidates = set()
-        if model_type == "hunyuan_video":
+        if model_type in _TEXT_TAIL_MODELS:
             _add_hunyuan_svg_blocks(
                 candidates, q_start, q_end, N, video_len, int(prompt_length or 0),
                 window_width, block_size, num_kv_blocks,
@@ -462,7 +490,7 @@ def _svg_block_is_full(q_start, q_end, kv_start, kv_end, N, video_len, frame_siz
     if q_end - q_start + 1 != block_size or kv_end - kv_start + 1 != block_size:
         return False
 
-    if model_type == "hunyuan_video":
+    if model_type in _TEXT_TAIL_MODELS:
         real_length = min(N, video_len + int(prompt_length or 0))
         q_fake_full = q_start >= real_length
         kv_fake_full = kv_start >= real_length
@@ -521,7 +549,7 @@ def _add_block_range(blocks, token_start, token_end, block_size, num_blocks):
 
 def _svg_common_mask(q_idx, kv_idx, video_len, frame_size, window_width,
                      model_type="wan", prompt_length=0):
-    if model_type == "hunyuan_video":
+    if model_type in _TEXT_TAIL_MODELS:
         real_length = video_len + int(prompt_length or 0)
         real_mask = (kv_idx < real_length) & (q_idx < real_length)
         fake_mask = (kv_idx >= real_length) & (q_idx >= real_length)
@@ -536,10 +564,14 @@ def _svg_common_mask(q_idx, kv_idx, video_len, frame_size, window_width,
 
 
 def _place_svg_heads(query, key, value, head_choices, video_len, num_frames, frame_size, context_length=0):
-    if query.is_cuda:
+    if query.is_cuda and _svg_placement_triton_supported(query):
         from .placement import sparse_head_placement
 
         return sparse_head_placement(query, key, value, head_choices, context_length, num_frames, frame_size)
+    return _place_svg_heads_pytorch(query, key, value, head_choices, video_len, num_frames, frame_size)
+
+
+def _place_svg_heads_pytorch(query, key, value, head_choices, video_len, num_frames, frame_size):
     return tuple(
         _select_temporal_heads(
             tensor,
@@ -551,15 +583,24 @@ def _place_svg_heads(query, key, value, head_choices, video_len, num_frames, fra
 
 
 def _restore_svg_heads(hidden_states, head_choices, video_len, num_frames, frame_size, context_length=0):
-    if hidden_states.is_cuda:
+    if hidden_states.is_cuda and _svg_placement_triton_supported(hidden_states):
         from .placement import hidden_states_placement
 
         return hidden_states_placement(hidden_states, head_choices, context_length, num_frames, frame_size)
+    return _restore_svg_heads_pytorch(hidden_states, head_choices, video_len, num_frames, frame_size)
+
+
+def _restore_svg_heads_pytorch(hidden_states, head_choices, video_len, num_frames, frame_size):
     return _select_temporal_heads(
         hidden_states,
         _to_frame_major(hidden_states, video_len, num_frames, frame_size),
         head_choices,
     )
+
+
+def _svg_placement_triton_supported(tensor):
+    head_dim = int(tensor.shape[-1])
+    return head_dim > 0 and (head_dim & (head_dim - 1)) == 0
 
 
 def _select_temporal_heads(spatial_tensor, temporal_tensor, head_choices):
@@ -597,7 +638,7 @@ def _round_svg_window_width(window_width, model_type="wan"):
 
 
 def _svg_window_width(sparsity, model_type, tail_len, num_frames, frame_size):
-    context_length = int(tail_len or 0) if model_type == "hunyuan_video" else 0
+    context_length = int(tail_len or 0) if model_type in _TEXT_TAIL_MODELS else 0
     return _round_svg_window_width(
         _sparsity_to_width(sparsity, context_length, num_frames, frame_size) * frame_size,
         model_type=model_type,

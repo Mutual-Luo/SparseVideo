@@ -10,6 +10,17 @@ import triton
 import triton.language as tl
 
 
+def _next_pow2(n: int) -> int:
+    return 1 << (int(n) - 1).bit_length()
+
+
+def _block_d(head_dim: int) -> int:
+    block = max(16, _next_pow2(head_dim))
+    if block > 256:
+        raise AssertionError(f"head_dim {head_dim} not supported, must be <= 256")
+    return block
+
+
 @triton.jit
 def _block_sparse_fwd_kernel(
     Q, K, V, Out,
@@ -22,7 +33,7 @@ def _block_sparse_fwd_kernel(
     stride_db, stride_dq, stride_dk,
     stride_qcb, stride_qcq,
     stride_kcb, stride_kck,
-    S, D: tl.constexpr, scale,
+    S, D: tl.constexpr, BLOCK_D: tl.constexpr, scale,
     QC_NUM: tl.constexpr,
     KC_NUM: tl.constexpr,
     BLOCK_M: tl.constexpr,
@@ -48,18 +59,19 @@ def _block_sparse_fwd_kernel(
     kcs_base = KCumSize + b * stride_kcb
 
     offs_m = tl.arange(0, BLOCK_M)
-    offs_d = tl.arange(0, D)
+    offs_d = tl.arange(0, BLOCK_D)
+    dim_mask = offs_d < D
 
     for q_chunk_start in range(0, q_block_size, BLOCK_M):
         q_rows = offs_m + q_chunk_start
         q_mask = q_rows < q_block_size
 
         q_ptrs = q_base + q_rows[:, None] * stride_qs + offs_d[None, :] * stride_qd
-        q_chunk = tl.load(q_ptrs, mask=q_mask[:, None], other=0.0)
+        q_chunk = tl.load(q_ptrs, mask=q_mask[:, None] & dim_mask[None, :], other=0.0)
 
         m_i = tl.full([BLOCK_M], float("-inf"), dtype=tl.float32)
         l_i = tl.zeros([BLOCK_M], dtype=tl.float32)
-        acc = tl.zeros([BLOCK_M, D], dtype=tl.float32)
+        acc = tl.zeros([BLOCK_M, BLOCK_D], dtype=tl.float32)
 
         for ki in range(KC_NUM):
             is_active = tl.load(dmap_base + ki * stride_dk)
@@ -79,8 +91,9 @@ def _block_sparse_fwd_kernel(
 
                         k_ptrs = k_block_base + k_rows[:, None] * stride_ks + offs_d[None, :] * stride_kd
                         v_ptrs = v_block_base + k_rows[:, None] * stride_vs + offs_d[None, :] * stride_vd
-                        k_chunk = tl.load(k_ptrs, mask=k_mask[:, None], other=0.0)
-                        v_chunk = tl.load(v_ptrs, mask=k_mask[:, None], other=0.0)
+                        chunk_mask = k_mask[:, None] & dim_mask[None, :]
+                        k_chunk = tl.load(k_ptrs, mask=chunk_mask, other=0.0)
+                        v_chunk = tl.load(v_ptrs, mask=chunk_mask, other=0.0)
 
                         s_ij = tl.dot(q_chunk, k_chunk.T) * scale
                         s_ij = tl.where(k_mask[None, :], s_ij, float("-inf"))
@@ -104,7 +117,7 @@ def _block_sparse_fwd_kernel(
         out_chunk = tl.where(l_i[:, None] == 0, 0.0, out_chunk)
 
         o_ptrs = o_base + q_rows[:, None] * stride_os + offs_d[None, :] * stride_od
-        tl.store(o_ptrs, out_chunk.to(Out.dtype.element_ty), mask=q_mask[:, None])
+        tl.store(o_ptrs, out_chunk.to(Out.dtype.element_ty), mask=q_mask[:, None] & dim_mask[None, :])
 
 
 def block_sparse_attention(
@@ -137,7 +150,7 @@ def block_sparse_attention(
     nqc = q_sizes.shape[1]
     nkc = k_sizes.shape[1]
 
-    assert D in (16, 32, 64, 128), f"D={D} not supported"
+    BLOCK_D = _block_d(D)
 
     qc_cum = torch.cumsum(
         torch.cat([torch.zeros(B, 1, dtype=q_sizes.dtype, device=q_sizes.device), q_sizes], dim=1),
@@ -170,7 +183,7 @@ def block_sparse_attention(
         dynamic_map.stride(0), dynamic_map.stride(1), dynamic_map.stride(2),
         qc_cum.stride(0), qc_cum.stride(1),
         kc_cum.stride(0), kc_cum.stride(1),
-        N, D, scale,
+        N, D, BLOCK_D, scale,
         QC_NUM=nqc, KC_NUM=nkc,
         BLOCK_M=BLOCK_M, BLOCK_N=BLOCK_N,
     )

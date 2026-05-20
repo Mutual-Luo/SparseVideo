@@ -13,6 +13,7 @@ from sparsevideo.methods.spargeattn.method import (
     _is_training_free_runtime,
     _load_spas_sage_attn_functions,
     _resolve_torch_dtype,
+    _sparge_kernel_head_dim,
     _sparge_sparse_rejection_reason,
 )
 from sparsevideo.kernels.spas_sage_runtime import _candidate_spas_sage_attn_roots, load_spas_sage_attn_module
@@ -318,9 +319,12 @@ def test_spargeattn_topk_path_forwards_upstream_kernel_names(monkeypatch):
     assert calls["is_causal"] is False
 
 
-def test_spargeattn_sparse_path_rejects_batch_size_above_one_like_upstream(monkeypatch):
+def test_spargeattn_sparse_path_forwards_cfg_batches(monkeypatch):
+    calls = {}
+
     def fake_topk(q, k, v, **kwargs):
-        raise AssertionError("topk sparse path should not run for unsupported batch size")
+        calls["shape"] = tuple(q.shape)
+        return torch.empty_like(q)
 
     monkeypatch.setattr(
         "sparsevideo.methods.spargeattn.method._load_spas_sage_attn_functions",
@@ -342,8 +346,45 @@ def test_spargeattn_sparse_path_rejects_batch_size_above_one_like_upstream(monke
     )
     query = torch.randn(2, 128, 2, 64)
 
-    with pytest.raises(RuntimeError, match="requires batch size 1"):
-        processor.attn_fn(query, query, query, None)
+    processor.attn_fn(query, query, query, None)
+
+    assert calls["shape"] == (2, 2, 128, 64)
+
+
+def test_spargeattn_sparse_path_pads_non_kernel_head_dim(monkeypatch):
+    calls = {}
+
+    def fake_topk(q, k, v, **kwargs):
+        calls["shape"] = tuple(q.shape)
+        calls["scale"] = kwargs["scale"]
+        return torch.empty_like(q)
+
+    monkeypatch.setattr(
+        "sparsevideo.methods.spargeattn.method._load_spas_sage_attn_functions",
+        lambda: (
+            lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("cdf path should not run")),
+            fake_topk,
+        ),
+    )
+    monkeypatch.setattr(torch.Tensor, "is_cuda", property(lambda self: True))
+    method = SpargeAttnMethod(
+        config={"mode": "topk"},
+        model_info=SimpleNamespace(model_type="wan", transformers=[]),
+    )
+    processor = method.create_processor(
+        layer_idx=0,
+        total_layers=1,
+        original_processor=None,
+        step_tracker=SimpleNamespace(step=1),
+    )
+    query = torch.randn(1, 128, 2, 96)
+
+    out = processor.attn_fn(query, query, query, None)
+
+    assert _sparge_kernel_head_dim(96) == 128
+    assert calls["shape"] == (1, 2, 128, 128)
+    assert calls["scale"] == 96 ** -0.5
+    assert out.shape == query.shape
 
 
 def test_spargeattn_block_sparse_path_forwards_mask_id(monkeypatch):

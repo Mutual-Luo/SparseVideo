@@ -32,4 +32,10 @@ def default_config(**context):
         config["has_text"] = True
         config["window_size"] = [5, 6, 10]
         config["mask_strategy_file_path"] = _HUNYUAN_MASK_STRATEGY
+    elif context.get("model_family") in ("cogvideox", "mochi", "easyanimate"):
+        config["has_text"] = True
+        config["window_size"] = [1, 1, 1]
+    elif context.get("model_family") in ("ltx_video", "allegro"):
+        config["has_text"] = False
+        config["window_size"] = [1, 1, 1]
     return config

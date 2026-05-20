@@ -31,6 +31,7 @@ from sparsevideo.methods.flashomni.method import (
     _flashomni_trim_prefix_key_value_mask,
     _flashomni_upstream_attention,
     _flashomni_import,
+    _flashomni_native_head_dim,
     _has_flashomni_extension,
     _is_training_free_runtime,
 )
@@ -1504,6 +1505,68 @@ def test_flashomni_upstream_attention_forwards_gqa_and_value_dim_to_plan(monkeyp
     }
     assert calls["is_full"] is True
     assert out.shape == (1, 4, 6, 16)
+
+
+def test_flashomni_upstream_attention_pads_non_native_head_dim(monkeypatch):
+    calls = {}
+
+    class _Wrapper:
+        def __init__(self, workspace, kv_layout, backend):
+            pass
+
+        def plan(self, qo_indptr, kv_indptr, **kwargs):
+            calls["plan_kwargs"] = dict(kwargs)
+            q_blocks = torch.ceil(
+                (qo_indptr[1:] - qo_indptr[:-1]) / kwargs["sparse_block_size_for_q"]
+            ).to(torch.int32)
+            kv_blocks = torch.ceil(
+                (kv_indptr[1:] - kv_indptr[:-1]) / kwargs["sparse_block_size_for_kv"]
+            ).to(torch.int32)
+            self._sparse_info_indptr_base = torch.zeros_like(qo_indptr)
+            self._sparse_info_indptr_base[1:] = torch.cumsum(q_blocks * kwargs["num_qo_heads"], 0)
+            self._sparse_kv_info_indptr_base = torch.zeros_like(qo_indptr)
+            self._sparse_kv_info_indptr_base[1:] = torch.cumsum(
+                q_blocks * kv_blocks * kwargs["num_qo_heads"], 0
+            )
+
+        def run(self, q, k, v, *args):
+            calls["run_shapes"] = {
+                "q": tuple(q.shape),
+                "k": tuple(k.shape),
+                "v": tuple(v.shape),
+            }
+            return torch.zeros(q.shape[0], q.shape[1], v.shape[-1], dtype=v.dtype)
+
+    fake_flashomni = SimpleNamespace(
+        attention=SimpleNamespace(BatchFlashOmniFAWithRaggedKVWrapper=_Wrapper),
+        segment_packbits=lambda values, indptr, bitorder: (values.to(torch.uint8), indptr.to(torch.int32)),
+    )
+    monkeypatch.setattr("sparsevideo.methods.flashomni.method._flashomni_import", lambda: fake_flashomni)
+
+    q = torch.randn(1, 2, 6, 96)
+    out = _flashomni_upstream_attention(
+        q,
+        q,
+        q,
+        None,
+        q_len=6,
+        q_block_size=4,
+        kv_block_size=4,
+        backend="fa2",
+        workspace_bytes=16,
+        is_full=True,
+    )
+
+    assert _flashomni_native_head_dim(96) == 128
+    assert calls["plan_kwargs"]["head_dim_qk"] == 128
+    assert calls["plan_kwargs"]["head_dim_vo"] == 128
+    assert calls["plan_kwargs"]["sm_scale"] == pytest.approx(96 ** -0.5)
+    assert calls["run_shapes"] == {
+        "q": (6, 2, 128),
+        "k": (6, 2, 128),
+        "v": (6, 2, 128),
+    }
+    assert out.shape == (1, 2, 6, 96)
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="FlashOmni native smoke requires CUDA")

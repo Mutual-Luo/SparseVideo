@@ -74,6 +74,32 @@ T2V_720P_DEFAULTS = {
         "dynamic_min_kc_ratio_min": 0.05,
         "dynamic_min_kc_ratio_max": 0.10,
     },
+    "skyreels-v2-t2v-14b": {
+        "first_times_fp": 0.2,
+        "first_layers_fp": 0.03,
+        "num_q_centroids": 256,
+        "num_k_centroids": 1024,
+        "top_p_kmeans": 0.90,
+        "min_kc_ratio": 0.10,
+        "kmeans_iter_init": 2,
+        "kmeans_iter_step": 2,
+        "start_reuse_step": 11,
+        "reuse_interval": 20,
+        "use_dynamic_min_kc_ratio": False,
+    },
+    "skyreels-v2-i2v-14b": {
+        "first_times_fp": 0.2,
+        "first_layers_fp": 0.03,
+        "num_q_centroids": 256,
+        "num_k_centroids": 1024,
+        "top_p_kmeans": 0.90,
+        "min_kc_ratio": 0.10,
+        "kmeans_iter_init": 2,
+        "kmeans_iter_step": 2,
+        "start_reuse_step": 11,
+        "reuse_interval": 20,
+        "use_dynamic_min_kc_ratio": False,
+    },
     "hunyuan_video": {
         "first_times_fp": 0.1,
         "first_layers_fp": 0.03,
@@ -89,9 +115,84 @@ T2V_720P_DEFAULTS = {
         "dynamic_min_kc_ratio_min": 0.05,
         "dynamic_min_kc_ratio_max": 0.10,
     },
+    "cogvideox": {
+        "first_times_fp": 0.2,
+        "first_layers_fp": 0.03,
+        "num_q_centroids": 256,
+        "num_k_centroids": 1024,
+        "top_p_kmeans": 0.90,
+        "min_kc_ratio": 0.10,
+        "kmeans_iter_init": 2,
+        "kmeans_iter_step": 2,
+        "start_reuse_step": 11,
+        "reuse_interval": 20,
+        "use_dynamic_min_kc_ratio": False,
+    },
+    "ltx_video": {
+        "first_times_fp": 0.2,
+        "first_layers_fp": 0.03,
+        "num_q_centroids": 256,
+        "num_k_centroids": 1024,
+        "top_p_kmeans": 0.90,
+        "min_kc_ratio": 0.10,
+        "kmeans_iter_init": 2,
+        "kmeans_iter_step": 2,
+        "start_reuse_step": 11,
+        "reuse_interval": 20,
+        "use_dynamic_min_kc_ratio": False,
+    },
+    "allegro": {
+        "first_times_fp": 0.2,
+        "first_layers_fp": 0.03,
+        "num_q_centroids": 256,
+        "num_k_centroids": 1024,
+        "top_p_kmeans": 0.90,
+        "min_kc_ratio": 0.10,
+        "kmeans_iter_init": 2,
+        "kmeans_iter_step": 2,
+        "start_reuse_step": 11,
+        "reuse_interval": 20,
+        "use_dynamic_min_kc_ratio": False,
+    },
+    "mochi": {
+        "first_times_fp": 0.2,
+        "first_layers_fp": 0.03,
+        "num_q_centroids": 256,
+        "num_k_centroids": 1024,
+        "top_p_kmeans": 0.90,
+        "min_kc_ratio": 0.10,
+        "kmeans_iter_init": 2,
+        "kmeans_iter_step": 2,
+        "start_reuse_step": 11,
+        "reuse_interval": 20,
+        "use_dynamic_min_kc_ratio": False,
+    },
+    "easyanimate": {
+        "first_times_fp": 0.2,
+        "first_layers_fp": 0.03,
+        "num_q_centroids": 256,
+        "num_k_centroids": 1024,
+        "top_p_kmeans": 0.90,
+        "min_kc_ratio": 0.10,
+        "kmeans_iter_init": 2,
+        "kmeans_iter_step": 2,
+        "start_reuse_step": 11,
+        "reuse_interval": 20,
+        "use_dynamic_min_kc_ratio": False,
+    },
 }
 
 CONFIG_ALIASES = {}
+PROFILED_MODEL_KEYS = {
+    "wan21-t2v-1.3b",
+    "wan21-i2v-14b",
+    "wan21-t2v-14b",
+    "wan22-i2v-a14b",
+    "wan22-t2v-a14b",
+    "hunyuan_video",
+    "hunyuan-t2v",
+    "hunyuan-i2v",
+}
 
 
 def _env_bool(name, default):
@@ -102,13 +203,21 @@ def _env_bool(name, default):
 
 def default_sparsity_csv_path(model_family=None, model_key=None):
     profile_dir = Path(__file__).resolve().parent / "sparsity_profiles"
+    if model_key == "hunyuan-i2v":
+        return str(profile_dir / "sparsity_hunyuan10_13B_i2v.csv")
+    if model_key == "wan22-i2v-a14b":
+        return str(profile_dir / "sparsity_wan22_A14B_i2v.csv")
     if model_key == "wan22-t2v-a14b":
         return str(profile_dir / "sparsity_wan22_A14B_t2v.csv")
+    if model_key == "wan21-i2v-14b":
+        return str(profile_dir / "sparsity_wan_14B_i2v.csv")
     if model_key == "wan21-t2v-14b":
         return str(profile_dir / "sparsity_wan_14B_t2v.csv")
-    if model_family == "hunyuan_video" or model_key == "hunyuan_video":
+    if model_family == "hunyuan_video" or model_key in ("hunyuan_video", "hunyuan-t2v"):
         return str(profile_dir / "sparsity_hunyuan10_13B_t2v.csv")
-    if model_family == "wan" or model_key == "wan21-t2v-1.3b":
+    if model_key == "wan21-t2v-1.3b" or (
+        model_key is None and model_family == "wan"
+    ):
         return str(profile_dir / "sparsity_wan_1.3B_t2v.csv")
     return None
 
@@ -122,6 +231,16 @@ def default_config(**context):
         config.update(T2V_720P_DEFAULTS[model_key])
     elif model_family in T2V_720P_DEFAULTS:
         config.update(T2V_720P_DEFAULTS[model_family])
+    if (
+        model_key is not None
+        and config.get("use_dynamic_min_kc_ratio")
+        and model_key not in PROFILED_MODEL_KEYS
+    ):
+        # No owned offline sparsity profile is available for this model. Fall
+        # back to SVOO's online co-clustering with the fixed min_kc_ratio, which
+        # matches the SVG2-style runtime threshold behavior and avoids borrowing
+        # another backbone's CSV profile.
+        config["use_dynamic_min_kc_ratio"] = False
     if (
         config.get("use_dynamic_min_kc_ratio")
         and config.get("sparsity_csv_path") == CONFIG_DEFAULTS["sparsity_csv_path"]

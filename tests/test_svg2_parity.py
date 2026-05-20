@@ -75,26 +75,43 @@ def test_svg2_dynamic_map_matches_upstream_shifted_top_p_boundary():
     assert dynamic_map.tolist() == [[[True, True, True]]]
 
 
-def test_svg2_rejects_batch_size_above_one_like_upstream():
+def test_svg2_folds_classifier_free_batch_into_batch_head_slots(monkeypatch):
     from sparsevideo.methods.svg2 import method as svg2_method
+    from sparsevideo.methods.svg2 import kmeans as svg2_kmeans
+
+    kmeans_calls = []
+
+    def fake_triton_kmeans(x, n_clusters, iter_time, init_centroids=None, final_reassign=False):
+        kmeans_calls.append(tuple(x.shape))
+        labels = torch.arange(x.shape[1], device=x.device).remainder(n_clusters)
+        labels = labels.expand(x.shape[0], -1).int()
+        centroids = torch.zeros(x.shape[0], n_clusters, x.shape[2], dtype=x.dtype, device=x.device)
+        sizes = torch.ones(x.shape[0], n_clusters, 1, dtype=torch.int32, device=x.device)
+        return labels, centroids, sizes
+
+    monkeypatch.setattr(svg2_kmeans, "triton_kmeans", fake_triton_kmeans)
 
     query = torch.zeros(2, 8, 1, 4)
     state = {"centroids_init": False, "prev_q_centroids": None, "prev_k_centroids": None}
 
-    with pytest.raises(RuntimeError, match="requires batch size 1"):
-        svg2_method._svg2_attention(
-            query,
-            query,
-            query,
-            top_p_kmeans=0.9,
-            min_kc_ratio=0.1,
-            num_q_centroids=2,
-            num_k_centroids=3,
-            kmeans_iter_init=1,
-            kmeans_iter_step=1,
-            state=state,
-            allow_triton_fallback=True,
-        )
+    out = svg2_method._svg2_attention(
+        query,
+        query,
+        query,
+        top_p_kmeans=0.9,
+        min_kc_ratio=0.1,
+        num_q_centroids=2,
+        num_k_centroids=3,
+        kmeans_iter_init=1,
+        kmeans_iter_step=1,
+        state=state,
+        initialize_only=True,
+        allow_triton_fallback=True,
+    )
+
+    assert out is None
+    assert kmeans_calls == [(2, 8, 4), (2, 8, 4)]
+    assert state["centroids_init"] is True
 
 
 def test_svg2_wan_keeps_centroid_state_per_layer_like_upstream(monkeypatch):

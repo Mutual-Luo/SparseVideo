@@ -14,8 +14,13 @@ import torch
 import torch.nn.functional as F
 
 from .._base import SparseMethod
+from ...processors.allegro import SparseAllegroAttnProcessor
+from ...processors.cogvideox import SparseCogVideoXAttnProcessor
+from ...processors.easyanimate import SparseEasyAnimateAttnProcessor
 from ...processors.wan import SparseWanAttnProcessor
 from ...processors.hunyuan_video import SparseHunyuanVideoAttnProcessor
+from ...processors.ltx_video import SparseLTXVideoAttnProcessor
+from ...processors.mochi import SparseMochiAttnProcessor
 from . import config as method_config
 from .policy import flashomni_hunyuan_sparse_blocks, flashomni_paper_sparse_blocks
 
@@ -23,6 +28,7 @@ from .policy import flashomni_hunyuan_sparse_blocks, flashomni_paper_sparse_bloc
 _FLASHOMNI_MODULE_CACHE: ModuleType | None = None
 _FLASHOMNI_Q_BLOCK_CACHE_CPU_THRESHOLD_BYTES = 128 * 1024 * 1024
 _FLASHOMNI_Q_BLOCK_CACHE_CHUNK_BYTES = 8 * 1024 * 1024
+_FLASHOMNI_NATIVE_HEAD_DIMS = (64, 128, 256)
 
 
 @dataclass
@@ -207,7 +213,15 @@ class FlashOmniMethod(SparseMethod):
             )
 
     def create_processor(self, layer_idx, total_layers, original_processor, step_tracker):
-        if self.model_info.model_type not in ("wan", "hunyuan_video"):
+        if self.model_info.model_type not in (
+            "wan",
+            "hunyuan_video",
+            "cogvideox",
+            "ltx_video",
+            "allegro",
+            "mochi",
+            "easyanimate",
+        ):
             raise NotImplementedError(f"flashomni not yet supported for {self.model_info.model_type}")
 
         cfg = self.config
@@ -427,11 +441,21 @@ class FlashOmniMethod(SparseMethod):
                 query_projection_fn=query_projection_fn,
                 output_projection_fn=output_projection_fn,
             )
-        return SparseHunyuanVideoAttnProcessor(
-            attn_fn=attn_fn, layer_idx=layer_idx, step_tracker=step_tracker,
-            query_projection_fn=query_projection_fn,
-            output_projection_fn=output_projection_fn,
-        )
+        if self.model_info.model_type == "hunyuan_video":
+            return SparseHunyuanVideoAttnProcessor(
+                attn_fn=attn_fn, layer_idx=layer_idx, step_tracker=step_tracker,
+                query_projection_fn=query_projection_fn,
+                output_projection_fn=output_projection_fn,
+            )
+        if self.model_info.model_type == "cogvideox":
+            return SparseCogVideoXAttnProcessor(attn_fn=attn_fn, layer_idx=layer_idx, step_tracker=step_tracker)
+        if self.model_info.model_type == "ltx_video":
+            return SparseLTXVideoAttnProcessor(attn_fn=attn_fn, layer_idx=layer_idx, step_tracker=step_tracker)
+        if self.model_info.model_type == "allegro":
+            return SparseAllegroAttnProcessor(attn_fn=attn_fn, layer_idx=layer_idx, step_tracker=step_tracker)
+        if self.model_info.model_type == "mochi":
+            return SparseMochiAttnProcessor(attn_fn=attn_fn, layer_idx=layer_idx, step_tracker=step_tracker)
+        return SparseEasyAnimateAttnProcessor(attn_fn=attn_fn, layer_idx=layer_idx, step_tracker=step_tracker)
 
     def install_model_patches(self, model_info):
         if (
@@ -1612,6 +1636,21 @@ def _flashomni_upstream_attention(q, k, v, block_mask_pattern,
         raise ValueError("flashomni input_layout must be 'HND' or 'NHD'")
     if q.ndim != 4 or k.ndim != 4 or v.ndim != 4:
         raise RuntimeError("flashomni q/k/v tensors must have shape [B, H, S, D] or [B, S, H, D]")
+    original_head_dim_qk = int(q.shape[-1])
+    original_head_dim_vo = int(v.shape[-1])
+    if int(k.shape[-1]) != original_head_dim_qk:
+        raise RuntimeError("flashomni query/key head dimensions must match")
+    kernel_head_dim_qk = _flashomni_native_head_dim(original_head_dim_qk)
+    kernel_head_dim_vo = _flashomni_native_head_dim(original_head_dim_vo)
+    if kernel_head_dim_qk != original_head_dim_qk:
+        q = F.pad(q, (0, kernel_head_dim_qk - original_head_dim_qk))
+        k = F.pad(k, (0, kernel_head_dim_qk - original_head_dim_qk))
+        if sm_scale is None:
+            sm_scale = float(original_head_dim_qk) ** -0.5
+    if kernel_head_dim_vo != original_head_dim_vo:
+        v = F.pad(v, (0, kernel_head_dim_vo - original_head_dim_vo))
+        if out is not None:
+            out = F.pad(out, (0, kernel_head_dim_vo - original_head_dim_vo))
     if input_layout == "HND":
         B, num_qo_heads, q_len_padded, head_dim_qk = q.shape
         num_kv_heads = k.shape[1]
@@ -1636,8 +1675,6 @@ def _flashomni_upstream_attention(q, k, v, block_mask_pattern,
         raise RuntimeError("flashomni q/k/v batch sizes must match")
     if value_num_kv_heads != num_kv_heads:
         raise RuntimeError("flashomni key/value head counts must match")
-    if k.shape[-1] != head_dim_qk:
-        raise RuntimeError("flashomni query/key head dimensions must match")
     head_dim_vo = v.shape[-1]
     if value_kv_len_padded != kv_len_padded:
         raise RuntimeError("flashomni key/value sequence lengths must match")
@@ -1762,11 +1799,26 @@ def _flashomni_upstream_attention(q, k, v, block_mask_pattern,
         **run_kwargs,
     )
     out = out.view(B, q_len_padded, num_qo_heads, head_dim_vo)
+    if int(head_dim_vo) != original_head_dim_vo:
+        out = out[..., :original_head_dim_vo].contiguous()
     if return_layout == "NHD":
         return out
     if return_layout != "HND":
         raise ValueError("flashomni return_layout must be 'HND' or 'NHD'")
     return out.transpose(1, 2).contiguous()
+
+
+def _flashomni_native_head_dim(*head_dims: int) -> int:
+    required = max(int(dim) for dim in head_dims)
+    if required < _FLASHOMNI_NATIVE_HEAD_DIMS[0] or required in _FLASHOMNI_NATIVE_HEAD_DIMS:
+        return required
+    for head_dim in _FLASHOMNI_NATIVE_HEAD_DIMS:
+        if required <= head_dim:
+            return head_dim
+    raise RuntimeError(
+        "flashomni native upstream kernels support head_dim values "
+        f"{list(_FLASHOMNI_NATIVE_HEAD_DIMS)}; got {list(map(int, head_dims))}."
+    )
 
 
 def _flashomni_all_ones_sparse_info(flashomni, indptr):

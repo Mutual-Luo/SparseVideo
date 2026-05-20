@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 import subprocess
 import sys
+from dataclasses import replace
 from types import SimpleNamespace
 
 
@@ -51,6 +52,38 @@ print(json.dumps({{
     assert payload["flashinfer_imported"] is False
     assert payload["flashomni_imported"] is False
     assert payload["native_kernels_imported"] is False
+
+
+def test_sparsevideo_public_api_exports_apply_alias():
+    import inspect
+
+    import sparsevideo
+
+    assert callable(sparsevideo.apply)
+    assert callable(sparsevideo.replace_attention)
+    assert inspect.signature(sparsevideo.apply) == inspect.signature(sparsevideo.apply_sparse_attention)
+    assert inspect.signature(sparsevideo.replace_attention) == inspect.signature(sparsevideo.apply_sparse_attention)
+    assert "apply" in sparsevideo.__all__
+    assert "replace_attention" in sparsevideo.__all__
+
+
+def test_unvalidated_method_reasons_are_shared_by_api_and_infer():
+    import importlib.util
+
+    from sparsevideo._support import unvalidated_method_reason
+
+    script = REPO_ROOT / "scripts" / "infer.py"
+    spec = importlib.util.spec_from_file_location("sparsevideo_infer_for_support_test", script)
+    infer = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    sys.modules[spec.name] = infer
+    spec.loader.exec_module(infer)
+
+    spec_obj = replace(infer.MODEL_SPECS["ltx-video"], sparse_methods=("svg2",))
+    message = infer.unsupported_sparse_method_message(spec_obj, "draft")
+
+    assert unvalidated_method_reason("draft") in message
+    assert "Current smoke coverage is dense/svg2 only." in message
 
 
 def test_native_fused_kernel_candidates_are_sparsevideo_owned():

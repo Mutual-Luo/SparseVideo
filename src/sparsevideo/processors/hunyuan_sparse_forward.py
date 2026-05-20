@@ -9,6 +9,12 @@ _PATCH_REFCOUNT = 0
 _ORIGINALS = {}
 
 
+def _normalize_token_replace_forward_args(timestep, token_replace_emb, first_frame_num_tokens):
+    if first_frame_num_tokens is None and isinstance(token_replace_emb, int) and torch.is_tensor(timestep):
+        return None, timestep, token_replace_emb
+    return timestep, token_replace_emb, first_frame_num_tokens
+
+
 def install_hunyuan_sparse_forward_patch():
     """Install SVOO's package-owned Hunyuan forward patch.
 
@@ -153,6 +159,9 @@ def _svoo_hunyuan_token_replace_block_forward(
     *args,
     **kwargs,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
+    timestep, token_replace_emb, first_frame_num_tokens = _normalize_token_replace_forward_args(
+        timestep, token_replace_emb, first_frame_num_tokens,
+    )
     num_tokens = first_frame_num_tokens
     (
         norm_hidden_states,
@@ -213,6 +222,9 @@ def _svoo_hunyuan_token_replace_single_block_forward(
     *args,
     **kwargs,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
+    timestep, token_replace_emb, first_frame_num_tokens = _normalize_token_replace_forward_args(
+        timestep, token_replace_emb, first_frame_num_tokens,
+    )
     num_tokens = first_frame_num_tokens
     text_seq_length = encoder_hidden_states.shape[1]
     hidden_states = torch.cat([hidden_states, encoder_hidden_states], dim=1)

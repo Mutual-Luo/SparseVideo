@@ -145,6 +145,21 @@ def test_hunyuan_sparse_forward_patch_exposes_upstream_timestep_argument():
     assert HunyuanVideoTransformerBlock.forward is original_forward
 
 
+def test_hunyuan_sparse_forward_accepts_i2v_token_replace_positional_order():
+    from sparsevideo.processors.hunyuan_sparse_forward import _normalize_token_replace_forward_args
+
+    token_replace_emb = torch.randn(1, 4)
+    timestep, normalized_token_replace_emb, first_frame_num_tokens = _normalize_token_replace_forward_args(
+        token_replace_emb,
+        16,
+        None,
+    )
+
+    assert timestep is None
+    assert normalized_token_replace_emb is token_replace_emb
+    assert first_frame_num_tokens == 16
+
+
 def test_svoo_wan_fast_block_patch_passes_timestep_to_attn1(monkeypatch):
     from types import SimpleNamespace
 
@@ -825,7 +840,23 @@ def test_svoo_wan_fast_block_kernel_sources_match_upstream_references():
 
     owned_permute = repo_root / "src/sparsevideo/kernels/permute.py"
     upstream_permute = repo_root / "training_free/SVOO/svoo/kernels/triton/permute.py"
-    assert _source_without_trailing_ws(owned_permute) == _source_without_trailing_ws(upstream_permute)
+    owned_text = _source_without_trailing_ws(owned_permute)
+    upstream_text = _source_without_trailing_ws(upstream_permute)
+    assert owned_text != upstream_text
+    for token in [
+        "def _permute_kernel",
+        "def _inverse_permute_kernel",
+        "def permute_tensor_by_labels_triton",
+        "def apply_inverse_permutation_triton",
+    ]:
+        assert token in owned_text
+    for token in [
+        "def _next_pow2",
+        "def _block_d",
+        "BLOCK_D",
+        "d_mask = d_offsets < D",
+    ]:
+        assert token in owned_text
 
 
 def test_svoo_fused_native_kernel_sources_match_upstream_references():
@@ -1029,6 +1060,52 @@ def test_svoo_co_cluster_tokens_smoke_shapes_on_cuda():
     assert k_sizes.shape == (2, 8)
     assert q_sizes.sum(dim=1).tolist() == [32, 32]
     assert k_sizes.sum(dim=1).tolist() == [32, 32]
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA/Triton")
+def test_svoo_co_cluster_tokens_supports_non_power_of_two_head_dim_on_cuda():
+    from sparsevideo.kernels.co_cluster import co_cluster_tokens
+    from sparsevideo.kernels.kmeans import triton_kmeans
+
+    torch.manual_seed(11)
+    q = torch.randn(2, 32, 96, device="cuda", dtype=torch.float16)
+    k = torch.randn(2, 32, 96, device="cuda", dtype=torch.float16)
+
+    labels, centroids, sizes = triton_kmeans(q, 4, max_iters=1)
+    assert labels.shape == (2, 32)
+    assert centroids.shape == (2, 4, 96)
+    assert sizes.shape == (2, 4)
+
+    q_labels, q_centroids, q_sizes, k_labels, k_centroids, k_sizes = co_cluster_tokens(
+        q, k, 4, 8, max_iters=1,
+    )
+
+    assert q_labels.shape == (2, 32)
+    assert k_labels.shape == (2, 32)
+    assert q_centroids.shape == (2, 4, 96)
+    assert k_centroids.shape == (2, 8, 96)
+    assert q_sizes.shape == (2, 4)
+    assert k_sizes.shape == (2, 8)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA/Triton")
+def test_svoo_permute_round_trips_non_power_of_two_head_dim_on_cuda():
+    from sparsevideo.kernels.permute import apply_inverse_permutation_triton, permute_tensor_by_labels_triton
+
+    torch.manual_seed(12)
+    tensor = torch.randn(2, 3, 17, 96, device="cuda", dtype=torch.float16)
+    labels = torch.randint(0, 5, (6, 17), device="cuda", dtype=torch.int64)
+
+    permuted, sorted_indices = permute_tensor_by_labels_triton(tensor, labels, dim=2)
+    expected = torch.gather(
+        tensor.reshape(6, 17, 96),
+        1,
+        sorted_indices.unsqueeze(-1).expand(-1, -1, 96),
+    ).reshape_as(tensor)
+    restored = apply_inverse_permutation_triton(permuted, sorted_indices, dim=2)
+
+    torch.testing.assert_close(permuted, expected, rtol=0, atol=0)
+    torch.testing.assert_close(restored, tensor, rtol=0, atol=0)
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA/FlashInfer")

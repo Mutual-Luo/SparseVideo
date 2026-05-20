@@ -21,7 +21,17 @@
 #   skyreels-v2-i2v SkyReels V2 I2V 14B 720P Diffusers
 #   hunyuan    HunyuanVideo T2V
 #   hunyuan-i2v HunyuanVideo I2V
-#   cogvideox  CogVideoX dense baseline only
+#   cogvideox  CogVideoX T2V, dense plus public sparse method support
+#   cogvideox-i2v CogVideoX I2V, dense plus public sparse method support
+#   ltx        LTX Video T2V, dense plus public sparse method support
+#   ltx-i2v    LTX Video I2V, dense plus public sparse method support
+#   allegro    Allegro T2V, dense plus public sparse method support
+#   mochi      Mochi 1 preview, dense plus public sparse method support
+#   easyanimate EasyAnimate V5 T2V, dense plus public sparse method support
+#   motif-video MotifVideo, unknown in current Diffusers install; dry-run only
+#   ltx-video-2 LTX Video 2, unknown in current Diffusers install; dry-run only
+#   sana-video SanaVideo, incompatible linear attention; dense dry-run only
+#   kandinsky5 Kandinsky 5 T2V, native sparse controls; dense dry-run only
 #
 # Supported methods:
 #   dense       Original dense attention baseline.
@@ -46,10 +56,11 @@
 #               anonymous Hunyuan attention sparse-symbol policy and Hunyuan
 #               transformer forward/Taylor-cache method path.
 #               For Hunyuan quality runs, the CLI defaults paper_mmdit to
-#               max_order=0,use_sparse_gemm=false. Higher-order Taylor reuse
-#               and sparse GEMM projection are retained in source for audit
-#               history, but blocked for Hunyuan inference because current
-#               tests showed visual degradation and slower generation.
+#               max_order=0,use_sparse_gemm=false. The reported D/max_order=1
+#               path is allowed with use_sparse_gemm=false; sparse GEMM
+#               projection is retained in source for audit history, but blocked
+#               for Hunyuan inference because current tests showed visual
+#               degradation and slower generation.
 #               sparse_pattern=local_qk_topk is a SparseVideo diagnostic path,
 #               not method parity.
 #   svoo        SVOO method.
@@ -58,7 +69,10 @@
 #   Wan-family/SkyReels (T2V and I2V) and Hunyuan (T2V and I2V) support the sparse methods above.
 #   I2V models require --image <path>. Sparse attention applies to video self-attention;
 #   image cross-attention remains dense as in upstream.
-#   CogVideoX is included only for the dense baseline until processors are added.
+#   CogVideoX T2V/I2V, LTX Video, Allegro, Mochi, and EasyAnimate support the
+#   public sparse methods above. SanaVideo is incompatible with sparse-softmax
+#   methods; Kandinsky5 is native-N/A for processor swap. MotifVideo and
+#   LTX Video 2 are unknown in the current Diffusers install.
 #
 # Common options:
 #
@@ -160,7 +174,8 @@
 #                allow_triton_fallback.
 #                Wan upstream sparse path uses sparsity_ratio=0.75 and supports
 #                768x512 or 1280x768 latent layouts; Hunyuan uses 0.9 at
-#                1280x768. Other layouts are reported as parity gaps. Use
+#                1280x768. New backbones use model-aware latent_h/latent_w/
+#                visual_len defaults and the owned MIT block-sparse backend. Use
 #                --profile upstream for the upstream shell/demo layouts.
 #                Strict benchmark preflight requires SparseVideo-owned MIT Han
 #                Lab Block-Sparse-Attention under
@@ -214,10 +229,11 @@
 #                max_order, first_enhance, saving_threshold_q_for_taylor.
 #                The Hunyuan forward/Taylor-cache patch is installed through
 #                apply_sparse_attention and restored with the public handle.
-#                For Hunyuan quality runs, this CLI keeps the safer
-#                max_order=0,use_sparse_gemm=false path. use_sparse_gemm=true
-#                and max_order>0 are retained in code for reference/audit but
-#                are rejected for Hunyuan CLI inference because measured runs
+#                For Hunyuan quality runs, this CLI defaults to the safer
+#                max_order=0,use_sparse_gemm=false path. The reported
+#                D/max_order=1 path is allowed with use_sparse_gemm=false;
+#                use_sparse_gemm=true is retained in code for reference/audit
+#                but rejected for Hunyuan CLI inference because measured runs
 #                showed both quality degradation and performance regression.
 #                use_sparse_gemm controls
 #                the owned FlashOmni GEMM-Q/GEMM-O dispatch hooks; those hooks
@@ -281,13 +297,15 @@ import traceback
 from contextlib import redirect_stdout
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Tuple
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SRC_ROOT = REPO_ROOT / "src"
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
+
+from sparsevideo._support import LIMITED_METHODS_BY_MODEL_TYPE, unvalidated_method_reason
 
 METHODS = (
     "adacluster",
@@ -340,6 +358,9 @@ class ModelSpec:
     guidance_scale: float
     output_type: str
     sparse_supported: bool = True
+    sparse_methods: Optional[Tuple[str, ...]] = None
+    compatibility_label: str = "likely-compatible"
+    unsupported_reason: Optional[str] = None
 
 
 MODEL_SPECS: Dict[str, ModelSpec] = {
@@ -451,6 +472,42 @@ MODEL_SPECS: Dict[str, ModelSpec] = {
         guidance_scale=5.0,
         output_type="np",
     ),
+    "wan22-animate-14b": ModelSpec(
+        key="wan22-animate-14b",
+        family="wan",
+        pipeline_class="WanAnimatePipeline",
+        hf_id="Wan-AI/Wan2.2-Animate-14B-Diffusers",
+        local_dir="Wan2.2-Animate-14B-Diffusers",
+        fps=16,
+        default_frames=77,
+        default_steps=20,
+        guidance_scale=1.0,
+        output_type="np",
+    ),
+    "wan21-vace-1.3b": ModelSpec(
+        key="wan21-vace-1.3b",
+        family="wan",
+        pipeline_class="WanVACEPipeline",
+        hf_id="Wan-AI/Wan2.1-VACE-1.3B-diffusers",
+        local_dir="Wan2.1-VACE-1.3B-diffusers",
+        fps=16,
+        default_frames=81,
+        default_steps=50,
+        guidance_scale=5.0,
+        output_type="np",
+    ),
+    "wan21-vace-14b": ModelSpec(
+        key="wan21-vace-14b",
+        family="wan",
+        pipeline_class="WanVACEPipeline",
+        hf_id="Wan-AI/Wan2.1-VACE-14B-diffusers",
+        local_dir="Wan2.1-VACE-14B-diffusers",
+        fps=16,
+        default_frames=81,
+        default_steps=50,
+        guidance_scale=5.0,
+        output_type="np",
+    ),
     "cogvideox-t2v": ModelSpec(
         key="cogvideox-t2v",
         family="cogvideox",
@@ -462,7 +519,164 @@ MODEL_SPECS: Dict[str, ModelSpec] = {
         default_steps=50,
         guidance_scale=6.0,
         output_type="pil",
+        sparse_supported=True,
+    ),
+    "cogvideox-i2v": ModelSpec(
+        key="cogvideox-i2v",
+        family="cogvideox",
+        pipeline_class="CogVideoXImageToVideoPipeline",
+        hf_id="THUDM/CogVideoX-5b-I2V",
+        local_dir="CogVideoX-5b-I2V",
+        fps=8,
+        default_frames=49,
+        default_steps=50,
+        guidance_scale=6.0,
+        output_type="pil",
+        sparse_supported=True,
+    ),
+    "ltx-video": ModelSpec(
+        key="ltx-video",
+        family="ltx_video",
+        pipeline_class="LTXPipeline",
+        hf_id="Lightricks/LTX-Video",
+        local_dir="ltx-video",
+        fps=25,
+        default_frames=161,
+        default_steps=50,
+        guidance_scale=3.0,
+        output_type="pil",
+        sparse_supported=True,
+    ),
+    "ltx-video-i2v": ModelSpec(
+        key="ltx-video-i2v",
+        family="ltx_video",
+        pipeline_class="LTXImageToVideoPipeline",
+        hf_id="Lightricks/LTX-Video",
+        local_dir="ltx-video",
+        fps=25,
+        default_frames=161,
+        default_steps=50,
+        guidance_scale=3.0,
+        output_type="pil",
+        sparse_supported=True,
+    ),
+    "allegro": ModelSpec(
+        key="allegro",
+        family="allegro",
+        pipeline_class="AllegroPipeline",
+        hf_id="rhymes-ai/Allegro",
+        local_dir="allegro",
+        fps=15,
+        default_frames=88,
+        default_steps=100,
+        guidance_scale=7.5,
+        output_type="pil",
+        sparse_supported=True,
+    ),
+    "mochi-1": ModelSpec(
+        key="mochi-1",
+        family="mochi",
+        pipeline_class="MochiPipeline",
+        hf_id="genmo/mochi-1-preview",
+        local_dir="mochi-1",
+        fps=8,
+        default_frames=19,
+        default_steps=64,
+        guidance_scale=4.5,
+        output_type="pil",
+        sparse_supported=True,
+    ),
+    "easyanimate-v5-t2v-12b": ModelSpec(
+        key="easyanimate-v5-t2v-12b",
+        family="easyanimate",
+        pipeline_class="EasyAnimatePipeline",
+        hf_id="alibaba-pai/EasyAnimateV5.1-12b-zh-diffusers",
+        local_dir="easyanimate-v5-t2v-12b",
+        fps=8,
+        default_frames=49,
+        default_steps=50,
+        guidance_scale=5.0,
+        output_type="pil",
+        sparse_supported=True,
+    ),
+    "sana-video": ModelSpec(
+        key="sana-video",
+        family="sana_video",
+        pipeline_class="SanaVideoPipeline",
+        hf_id="Efficient-Large-Model/SANA-Video_2B_480p_diffusers",
+        local_dir="sana-video",
+        fps=24,
+        default_frames=17,
+        default_steps=20,
+        guidance_scale=5.0,
+        output_type="pil",
         sparse_supported=False,
+        sparse_methods=(),
+        compatibility_label="incompatible",
+        unsupported_reason=(
+            "SanaVideo uses Diffusers' SanaLinearAttnProcessor3_0 linear attention, "
+            "not softmax QK^T V attention; current SparseVideo sparse-softmax methods "
+            "are incompatible."
+        ),
+    ),
+    "motif-video": ModelSpec(
+        key="motif-video",
+        family="motif_video",
+        pipeline_class="UnavailablePipeline",
+        hf_id="",
+        local_dir=None,
+        fps=24,
+        default_frames=1,
+        default_steps=1,
+        guidance_scale=1.0,
+        output_type="pil",
+        sparse_supported=False,
+        sparse_methods=(),
+        compatibility_label="unknown",
+        unsupported_reason=(
+            "MotifVideo is not available in the current Diffusers installation "
+            "and no confirmed local/Hugging Face checkpoint is configured, so "
+            "SparseVideo cannot verify a processor-swap path."
+        ),
+    ),
+    "ltx-video-2": ModelSpec(
+        key="ltx-video-2",
+        family="ltx_video_2",
+        pipeline_class="UnavailablePipeline",
+        hf_id="",
+        local_dir=None,
+        fps=24,
+        default_frames=1,
+        default_steps=1,
+        guidance_scale=1.0,
+        output_type="pil",
+        sparse_supported=False,
+        sparse_methods=(),
+        compatibility_label="unknown",
+        unsupported_reason=(
+            "LTX Video 2 is not available in the current Diffusers installation; "
+            "SparseVideo cannot verify the requested video attn1 plus audio_attn1 "
+            "structure or safely reuse the plain LTX Video processor."
+        ),
+    ),
+    "kandinsky5-t2v": ModelSpec(
+        key="kandinsky5-t2v",
+        family="kandinsky5",
+        pipeline_class="Kandinsky5T2VPipeline",
+        hf_id="ai-forever/Kandinsky-5.0-T2V",
+        local_dir="kandinsky5-t2v",
+        fps=12,
+        default_frames=49,
+        default_steps=50,
+        guidance_scale=5.0,
+        output_type="pil",
+        sparse_supported=False,
+        sparse_methods=(),
+        compatibility_label="native-N/A",
+        unsupported_reason=(
+            "Kandinsky5 exposes native sparse attention controls through transformer "
+            "sparse_params/window parameters, so it is not a SparseVideo processor-swap target."
+        ),
     ),
 }
 
@@ -487,6 +701,15 @@ MODEL_ALIASES = {
     "skyreels-i2v": "skyreels-v2-i2v-14b",
     "skyreels-v2-i2v": "skyreels-v2-i2v-14b",
     "skyreels-v2-i2v-14b": "skyreels-v2-i2v-14b",
+    "wananimate": "wan22-animate-14b",
+    "wan-animate": "wan22-animate-14b",
+    "wan22-animate": "wan22-animate-14b",
+    "wan22-animate-14b": "wan22-animate-14b",
+    "vace": "wan21-vace-1.3b",
+    "wan-vace": "wan21-vace-1.3b",
+    "wan21-vace": "wan21-vace-1.3b",
+    "wan21-vace-1.3b": "wan21-vace-1.3b",
+    "wan21-vace-14b": "wan21-vace-14b",
     "wan-i2v": "wan21-i2v-14b",
     "wan14b-i2v": "wan21-i2v-14b",
     "wan21-i2v": "wan21-i2v-14b",
@@ -496,6 +719,27 @@ MODEL_ALIASES = {
     "cog": "cogvideox-t2v",
     "cogvideox": "cogvideox-t2v",
     "cogvideox-t2v": "cogvideox-t2v",
+    "cog-i2v": "cogvideox-i2v",
+    "cogvideox-i2v": "cogvideox-i2v",
+    "cogvideox-5b-i2v": "cogvideox-i2v",
+    "ltx": "ltx-video",
+    "ltx-video": "ltx-video",
+    "ltx-i2v": "ltx-video-i2v",
+    "ltx-video-i2v": "ltx-video-i2v",
+    "allegro": "allegro",
+    "mochi": "mochi-1",
+    "mochi-1": "mochi-1",
+    "easyanimate": "easyanimate-v5-t2v-12b",
+    "easyanimate-v5": "easyanimate-v5-t2v-12b",
+    "easyanimate-v5-t2v-12b": "easyanimate-v5-t2v-12b",
+    "motif": "motif-video",
+    "motif-video": "motif-video",
+    "ltx2": "ltx-video-2",
+    "ltx-video-2": "ltx-video-2",
+    "sana-video": "sana-video",
+    "sanavideo": "sana-video",
+    "kandinsky5": "kandinsky5-t2v",
+    "kandinsky5-t2v": "kandinsky5-t2v",
 }
 
 
@@ -826,10 +1070,16 @@ def build_parser() -> argparse.ArgumentParser:
             "  python scripts/infer.py --model hunyuan-i2v --method radial --image input.png\n"
             "\n"
             "Models: wan1.3b, wan14b, wan22, wan14b-i2v, wan22-i2v, "
-            "skyreels-v2, skyreels-v2-i2v, hunyuan, hunyuan-i2v, cogvideox\n"
+            "skyreels-v2, skyreels-v2-i2v, wananimate, wan-vace, hunyuan, "
+            "hunyuan-i2v, cogvideox, cogvideox-i2v, ltx, ltx-i2v, allegro, mochi, "
+            "easyanimate, motif-video, ltx-video-2, sana-video, kandinsky5\n"
             "Methods: dense, svg1, svg2, spargeattn, radial, sta, draft, "
             "adacluster, flashomni, svoo\n"
-            "Note: sparse methods support Wan-family/SkyReels and Hunyuan (T2V and I2V); CogVideoX is dense-only.\n"
+            "Note: sparse methods support Wan-family/SkyReels and Hunyuan (T2V and I2V); "
+            "CogVideoX T2V/I2V, LTX, Allegro, Mochi, and EasyAnimate currently use the guarded "
+            "validated matrix from sparsevideo._support. "
+            "MotifVideo and LTX Video 2 are unknown in this Diffusers install; "
+            "SanaVideo is incompatible; Kandinsky5 is native-N/A.\n"
             "I2V models require --image <path>."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -841,7 +1091,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--local-files-only", action="store_true")
     parser.add_argument("--prompt", type=str, default="A cinematic shot of a red sports car driving along a coastal road at sunset, detailed, realistic")
     parser.add_argument("--prompt-file", type=Path, default=None)
-    parser.add_argument("--image", type=str, default=None, help="Input image path for I2V models. Required for wan*-i2v and hunyuan-i2v.")
+    parser.add_argument("--image", type=str, default=None, help="Input image path. Required for *-i2v models and WanAnimate (reference character).")
+    parser.add_argument("--pose-video", type=str, default=None, help="Pose video path. Required for WanAnimate.")
+    parser.add_argument("--face-video", type=str, default=None, help="Face video path. Required for WanAnimate.")
+    parser.add_argument("--reference-video", type=str, default=None, help="Reference/input video path for WanVACE (optional).")
+    parser.add_argument("--mask-video", type=str, default=None, help="Mask video path for WanVACE (optional).")
     parser.add_argument("--negative-prompt", type=str, default=None)
     parser.add_argument(
         "--profile",
@@ -1058,16 +1312,15 @@ def validate_flashomni_hunyuan_quality_lock(config: Dict[str, Any], model_family
         return
     if config.get("sparse_pattern") != "paper_mmdit":
         return
-    if int(config.get("max_order", 0) or 0) == 0 and not bool(config.get("use_sparse_gemm", False)):
+    if not bool(config.get("use_sparse_gemm", False)):
         return
 
-    # The Taylor/sparse-GEMM implementation is intentionally kept for source
-    # audit and future repair, but it is not an allowed Hunyuan inference path:
-    # matched 50-step tests showed visual shining artifacts and slower runtime.
+    # Sparse GEMM projection is intentionally kept for source audit and future
+    # repair, but it is not an allowed Hunyuan inference path: matched 50-step
+    # tests showed visual shining artifacts and slower runtime.
     raise NotImplementedError(
         "flashomni Hunyuan paper_mmdit only supports the quality-safe inference path "
-        "max_order=0,use_sparse_gemm=false. Higher-order Taylor reuse "
-        "(max_order>0/D>0) and sparse GEMM projection (use_sparse_gemm=true) are "
+        "with use_sparse_gemm=false. Sparse GEMM projection (use_sparse_gemm=true) is "
         "currently disabled because measured Hunyuan runs showed quality degradation "
         "and performance regression. The code is retained for audit/future repair, "
         "but this path is not supported for inference."
@@ -1076,17 +1329,28 @@ def validate_flashomni_hunyuan_quality_lock(config: Dict[str, Any], model_family
 
 def default_svoo_sparsity_csv_path(spec: ModelSpec) -> str:
     profile_dir = SRC_ROOT / "sparsevideo" / "methods" / "svoo" / "sparsity_profiles"
-    if spec.family == "hunyuan_video":
+    if spec.key == "hunyuan-i2v":
+        sparsity_csv = profile_dir / "sparsity_hunyuan10_13B_i2v.csv"
+    elif spec.family == "hunyuan_video":
         sparsity_csv = profile_dir / "sparsity_hunyuan10_13B_t2v.csv"
+    elif spec.key == "wan22-i2v-a14b":
+        sparsity_csv = profile_dir / "sparsity_wan22_A14B_i2v.csv"
     elif spec.key == "wan22-t2v-a14b":
         sparsity_csv = profile_dir / "sparsity_wan22_A14B_t2v.csv"
+    elif spec.key == "wan21-i2v-14b":
+        sparsity_csv = profile_dir / "sparsity_wan_14B_i2v.csv"
+    elif spec.key == "wan21-t2v-14b":
+        sparsity_csv = profile_dir / "sparsity_wan_14B_t2v.csv"
+    elif spec.key == "wan21-t2v-1.3b":
+        sparsity_csv = profile_dir / "sparsity_wan_1.3B_t2v.csv"
     else:
-        filename = (
-            "sparsity_wan_14B_t2v.csv"
-            if spec.key == "wan21-t2v-14b"
-            else "sparsity_wan_1.3B_t2v.csv"
+        raise ValueError(
+            f"SVOO has no owned offline sparsity profile for {spec.key}; "
+            "leave use_dynamic_min_kc_ratio=false to skip the offline sparsity "
+            "profile stage and use online co-clustering with the fixed "
+            "min_kc_ratio, or provide an explicit owned "
+            "sparsity_csv_path."
         )
-        sparsity_csv = profile_dir / filename
 
     return str(sparsity_csv)
 
@@ -1206,7 +1470,7 @@ def resolve_scheduler_first_times_fp(pipe, method: str, config: Dict[str, Any], 
         return None
 
     ref_scheduler = copy.deepcopy(scheduler)
-    ref_scheduler.set_timesteps(int(steps))
+    _set_timesteps_for_threshold_resolution(ref_scheduler, int(steps))
     num_fp_timesteps = math.floor(first_times_fp * int(steps))
     if num_fp_timesteps > 0:
         threshold = _scalar_timestep(ref_scheduler.timesteps[num_fp_timesteps - 1]) - 1
@@ -1219,6 +1483,15 @@ def resolve_scheduler_first_times_fp(pipe, method: str, config: Dict[str, Any], 
         "first_times_fp_resolved": threshold,
         "num_fp_timesteps": num_fp_timesteps,
     }
+
+
+def _set_timesteps_for_threshold_resolution(scheduler, steps: int) -> None:
+    try:
+        scheduler.set_timesteps(steps)
+    except ValueError as exc:
+        if "`mu` must be passed" not in str(exc):
+            raise
+        scheduler.set_timesteps(steps, mu=1)
 
 
 def _scalar_timestep(timestep) -> float:
@@ -1305,7 +1578,6 @@ def validate_method_config(method: str, config: Dict[str, Any], model_family: Op
             )
         if config.get("sparse_backend") not in ("flashinfer", "triton"):
             raise ValueError("svoo sparse_backend must be flashinfer or triton")
-
         if config.get("use_routing_transformer_strategy"):
             missing = [
                 name for name in ("mq1", "mk1", "mq2", "mk2")
@@ -1339,6 +1611,11 @@ def validate_method_config(method: str, config: Dict[str, Any], model_family: Op
                     f"svoo use_dynamic_min_kc_ratio requires an existing sparsity_csv_path: {path}"
                 )
             config["sparsity_csv_path"] = str(path)
+
+        if config.get("use_svoo", True):
+            for key in ("kmeans_iter_init", "kmeans_iter_step"):
+                if key in config and int(config.get(key, 0)) <= 0:
+                    raise ValueError(f"svoo use_svoo=true requires {key} > 0")
 
 
 def normalize_seq_shape_for_warning(seq_shape: Any) -> Optional[str]:
@@ -1911,11 +2188,11 @@ def preflight_runtime(
                     "flashomni Hunyuan paper_mmdit is using the CLI quality-safe defaults "
                     "max_order=0,use_sparse_gemm=false."
                 )
-            elif bool(config.get("use_sparse_gemm", False)) or int(config.get("max_order", 0) or 0) > 0:
+            elif bool(config.get("use_sparse_gemm", False)):
                 errors.append(
-                    "flashomni Hunyuan paper_mmdit higher-order Taylor/sparse-GEMM path is not "
-                    "supported for inference. Use max_order=0,use_sparse_gemm=false. The retained "
-                    "Taylor/GEMM code caused measured quality degradation and performance regression."
+                    "flashomni Hunyuan paper_mmdit sparse-GEMM path is not supported for inference. "
+                    "Use use_sparse_gemm=false. The retained GEMM code caused measured quality "
+                    "degradation and performance regression."
                 )
     if method == "flashomni" and config.get("is_full"):
         warnings.append(
@@ -2305,16 +2582,17 @@ def preflight_runtime(
                 errors.append(error)
 
     if method == "draft":
-        message = _flash_attn_preflight_error(
-            kernels,
-            required_func="flash_attn_varlen_func",
-            requirement="draft dense gates require FlashAttention varlen for upstream parity",
-        )
-        if message is not None:
-            if strict_kernels:
-                errors.append(message)
-            else:
-                warnings.append(message)
+        if model_family in (None, "wan", "hunyuan_video"):
+            message = _flash_attn_preflight_error(
+                kernels,
+                required_func="flash_attn_varlen_func",
+                requirement="draft dense gates require FlashAttention varlen for upstream parity",
+            )
+            if message is not None:
+                if strict_kernels:
+                    errors.append(message)
+                else:
+                    warnings.append(message)
         draft = kernels["draft_kernels"]
         mit_backend = draft.get("mit_block_sparse_attn", {})
         mit_ready = mit_backend.get("source_files") and mit_backend.get("cuda_extension")
@@ -2470,15 +2748,24 @@ def preflight_runtime(
                 "FastVideo STA native shapes are "
                 f"{sorted(STA_NATIVE_SEQ_SHAPES)}."
             )
-            if strict_kernels:
+            if strict_kernels and model_family in (None, "wan", "hunyuan_video"):
                 errors.append(message)
             else:
                 warnings.append(message)
         elif seq_shape not in STA_NATIVE_SEQ_SHAPES:
-            errors.append(
-                f"sta seq_shape={seq_shape} is outside FastVideo STA native shapes "
-                f"{sorted(STA_NATIVE_SEQ_SHAPES)}; SparseVideo rejects the non-upstream generalized STA fallback."
-            )
+            parsed_seq_shape = _parse_normalized_seq_shape(seq_shape)
+            if parsed_seq_shape is None:
+                errors.append(f"sta seq_shape={seq_shape} is invalid; expected TxHxW.")
+            elif model_family in ("wan", "hunyuan_video"):
+                errors.append(
+                    f"sta seq_shape={seq_shape} is outside FastVideo STA native shapes "
+                    f"{sorted(STA_NATIVE_SEQ_SHAPES)}; SparseVideo rejects the non-upstream generalized STA fallback."
+                )
+            else:
+                warnings.append(
+                    f"sta seq_shape={seq_shape} uses SparseVideo's generalized FastVideo Triton STA path "
+                    "for this backbone's inferred tile-padded video layout."
+                )
         elif seq_shape in STA_NATIVE_SEQ_SHAPES:
             has_hopper = _has_hopper_device(torch_status)
             h100_extension = bool(sta["sparsevideo_h100"].get("native_extension"))
@@ -2538,18 +2825,22 @@ def draft_upstream_layout_error(
 ) -> Optional[str]:
     if not config.get("block_sparse_attention", True):
         return None
-    if height % 16 != 0 or width % 16 != 0:
+    spatial_divisor = 32 if spec.family == "ltx_video" else 16
+    if height % spatial_divisor != 0 or width % spatial_divisor != 0:
         return (
-            "draft upstream sparse path requires height and width divisible by 16 "
-            f"for Wan/Hunyuan patch tokens; got {height}x{width}."
+            f"draft upstream sparse path requires height and width divisible by {spatial_divisor} "
+            f"for video patch tokens; got {height}x{width}."
         )
 
-    latent_t = (num_frames - 1) // 4 + 1
-    latent_h = height // 16
-    latent_w = width // 16
+    latent_t, latent_h, latent_w = _draft_estimated_latent_shape(spec, height, width, num_frames)
     pool_h = int(config.get("pool_h", 8))
     pool_w = int(config.get("pool_w", 16))
     video_len = latent_t * latent_h * latent_w
+    if pool_h * pool_w != 128:
+        return (
+            "draft MIT Block-Sparse-Attention backend requires pool_h * pool_w == 128 "
+            f"to form upstream 128-token blocks; got pool_h={pool_h}, pool_w={pool_w}."
+        )
 
     for key, actual in (
         ("latent_h", latent_h),
@@ -2564,14 +2855,25 @@ def draft_upstream_layout_error(
             )
 
     configured_text_len = config.get("text_len")
-    expected_text_len = 256 if spec.family == "hunyuan_video" else 0
-    if configured_text_len is not None and int(configured_text_len) != expected_text_len:
+    expected_text_len = None
+    if spec.family == "hunyuan_video":
+        expected_text_len = 256
+    elif spec.family in ("wan", "ltx_video", "allegro"):
+        expected_text_len = 0
+    if (
+        configured_text_len is not None
+        and expected_text_len is not None
+        and int(configured_text_len) != expected_text_len
+    ):
         return (
             f"draft upstream text_len config expects {int(configured_text_len)}, "
             f"but {spec.family} upstream path expects text_len={expected_text_len}."
         )
 
-    if latent_h % pool_h != 0 or latent_w % pool_w != 0:
+    if (
+        spec.family in ("wan", "hunyuan_video")
+        and (latent_h % pool_h != 0 or latent_w % pool_w != 0)
+    ):
         return (
             "draft upstream sparse path requires latent_h % pool_h == 0 and "
             "latent_w % pool_w == 0; got latent shape "
@@ -2593,10 +2895,10 @@ def draft_upstream_layout_error(
                 "33x48x80 (129 frames at 1280x768); got "
                 f"{latent_t}x{latent_h}x{latent_w} from {num_frames} frames at {width}x{height}."
             )
-    else:
+    elif spec.family not in ("cogvideox", "ltx_video", "allegro", "mochi", "easyanimate"):
         return f"draft is not implemented for {spec.family}."
 
-    if video_len % (latent_w * pool_h) != 0:
+    if spec.family in ("wan", "hunyuan_video") and video_len % (latent_w * pool_h) != 0:
         return (
             "draft upstream sparse path requires visual_len % (latent_w * pool_h) == 0; "
             f"got visual_len={video_len}, latent_w={latent_w}, pool_h={pool_h}."
@@ -2611,7 +2913,8 @@ def radial_flashinfer_layout_warning(
     num_frames: int,
     config: Dict[str, Any],
 ) -> Optional[str]:
-    if spec.family not in ("wan", "hunyuan_video"):
+    radial_families = ("wan", "hunyuan_video", "cogvideox", "ltx_video", "allegro", "mochi", "easyanimate")
+    if spec.family not in radial_families:
         return f"radial is not implemented for {spec.family}."
     if height % 16 != 0 or width % 16 != 0:
         return (
@@ -2620,9 +2923,7 @@ def radial_flashinfer_layout_warning(
         )
 
     block_size = int(config.get("block_size", 128))
-    latent_t = (num_frames - 1) // 4 + 1
-    latent_h = height // 16
-    latent_w = width // 16
+    latent_t, latent_h, latent_w = _radial_estimated_latent_shape(spec, height, width, num_frames)
     video_len = latent_t * latent_h * latent_w
     if video_len % block_size == 0:
         return None
@@ -2648,6 +2949,63 @@ def radial_flashinfer_layout_warning(
     )
 
 
+def _radial_estimated_latent_shape(
+    spec: ModelSpec,
+    height: int,
+    width: int,
+    num_frames: int,
+) -> tuple[int, int, int]:
+    if spec.family == "cogvideox":
+        latent_t = (num_frames - 1) // 4 + 1
+        latent_h = height // 8
+        latent_w = width // 8
+        if spec.key == "cogvideox-i2v":
+            latent_t = ((num_frames - 1) // 4 + 1) * 2
+        return latent_t, latent_h // 2, latent_w // 2
+    if spec.family == "ltx_video":
+        return (num_frames - 1) // 8 + 1, height // 32, width // 32
+    if spec.family == "allegro":
+        latent_t = ((num_frames + 3) // 4) if num_frames % 2 == 0 else ((num_frames - 1 + 3) // 4 + 1)
+        return latent_t, height // 16, width // 16
+    if spec.family == "mochi":
+        return (num_frames - 1) // 6 + 1, height // 16, width // 16
+    if spec.family == "easyanimate":
+        return (num_frames - 1) // 4 + 1, height // 16, width // 16
+    return (num_frames - 1) // 4 + 1, height // 16, width // 16
+
+
+def _draft_estimated_latent_shape(
+    spec: ModelSpec,
+    height: int,
+    width: int,
+    num_frames: int,
+) -> tuple[int, int, int]:
+    if spec.family == "cogvideox":
+        return (num_frames - 1) // 4 + 1, height // 16, width // 16
+    return _radial_estimated_latent_shape(spec, height, width, num_frames)
+
+
+def apply_draft_runtime_layout_defaults(
+    spec: ModelSpec,
+    height: int,
+    width: int,
+    num_frames: int,
+    config: Dict[str, Any],
+    user_config: Dict[str, Any],
+) -> None:
+    if spec.family in ("wan", "hunyuan_video"):
+        return
+    latent_t, latent_h, latent_w = _draft_estimated_latent_shape(spec, height, width, num_frames)
+    defaults = {
+        "latent_h": latent_h,
+        "latent_w": latent_w,
+        "visual_len": latent_t * latent_h * latent_w,
+    }
+    for key, value in defaults.items():
+        if key not in user_config and config.get(key) is None:
+            config[key] = value
+
+
 def sta_layout_preflight_messages(
     spec: ModelSpec,
     height: int,
@@ -2659,7 +3017,8 @@ def sta_layout_preflight_messages(
 ) -> Dict[str, list[str]]:
     errors: list[str] = []
     warnings: list[str] = []
-    if spec.family not in ("wan", "hunyuan_video"):
+    sta_families = ("wan", "hunyuan_video", "cogvideox", "ltx_video", "allegro", "mochi", "easyanimate")
+    if spec.family not in sta_families:
         return {"errors": [f"sta is not implemented for {spec.family}."], "warnings": warnings}
     if height % 16 != 0 or width % 16 != 0:
         return {
@@ -2677,7 +3036,7 @@ def sta_layout_preflight_messages(
             "Running only window_size for every layer/head is a full-window debug path, "
             "not FastVideo sparse STA inference."
         )
-        if strict_kernels:
+        if strict_kernels and spec.family in ("wan", "hunyuan_video"):
             errors.append(message)
         else:
             warnings.append(message)
@@ -2708,9 +3067,7 @@ def sta_layout_preflight_messages(
                 else:
                     warnings.append(message)
 
-    latent_t = (num_frames - 1) // 4 + 1
-    latent_h = height // 16
-    latent_w = width // 16
+    latent_t, latent_h, latent_w = _radial_estimated_latent_shape(spec, height, width, num_frames)
     latent_shape = (latent_t, latent_h, latent_w)
     latent_seq_shape = f"{latent_t}x{latent_h}x{latent_w}"
 
@@ -2731,6 +3088,12 @@ def sta_layout_preflight_messages(
     )
     padded_seq_shape = "x".join(str(part) for part in padded_shape)
     if padded_seq_shape not in STA_NATIVE_SEQ_SHAPES:
+        if spec.family not in ("wan", "hunyuan_video"):
+            warnings.append(
+                f"sta will use generalized FastVideo Triton STA for tile-padded canvas {padded_seq_shape} "
+                f"from latent layout {latent_seq_shape}."
+            )
+            return {"errors": errors, "warnings": warnings}
         if spec.key == "wan22-t2v-a14b":
             upstream_shape = "Wan2.2 uses 77 frames at 1280x768"
         elif spec.family == "wan":
@@ -2776,6 +3139,91 @@ def resolve_model_id(spec: ModelSpec, model_root: Path, model_path: Optional[str
         if local_path.exists():
             return str(local_path.resolve())
     return spec.hf_id
+
+
+def _has_component_weight(component_dir: Path) -> bool:
+    if not component_dir.exists():
+        return False
+    for pattern in (
+        "*.safetensors",
+        "*.bin",
+        "*.ckpt",
+        "*.pt",
+        "*.pth",
+        "*.index.json",
+        "*.index.bf16.json",
+    ):
+        if any(component_dir.glob(pattern)):
+            return True
+    return False
+
+
+def _ltx_single_file_checkpoint(model_id: str) -> Optional[Path]:
+    path = Path(model_id).expanduser()
+    if path.is_file() and path.suffix == ".safetensors":
+        return path
+    if not path.is_dir():
+        return None
+    if (path / "transformer" / "config.json").exists():
+        return None
+
+    preferred = (
+        "ltx-video-2b-v0.9.5.safetensors",
+        "ltxv-2b-0.9.6-distilled-04-25.safetensors",
+        "ltxv-2b-0.9.6-dev-04-25.safetensors",
+        "ltx-video-2b-v0.9.1.safetensors",
+        "ltx-video-2b-v0.9.safetensors",
+    )
+    for name in preferred:
+        checkpoint = path / name
+        if checkpoint.exists():
+            return checkpoint
+    return None
+
+
+def _read_json_file(path: Path) -> Optional[Dict[str, Any]]:
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+
+
+def _compatible_t5_component_root(candidate: Path, reference_config: Optional[Dict[str, Any]]) -> bool:
+    text_encoder_dir = candidate / "text_encoder"
+    tokenizer_dir = candidate / "tokenizer"
+    if not _has_component_weight(text_encoder_dir) or not (tokenizer_dir / "spiece.model").exists():
+        return False
+    if reference_config is None:
+        return True
+    candidate_config = _read_json_file(text_encoder_dir / "config.json")
+    if candidate_config is None:
+        return False
+    for key in ("model_type", "d_model", "num_layers", "vocab_size"):
+        if candidate_config.get(key) != reference_config.get(key):
+            return False
+    return True
+
+
+def _resolve_ltx_text_component_root(model_id: str) -> Optional[Path]:
+    path = Path(model_id).expanduser()
+    model_dir = path if path.is_dir() else path.parent
+    reference_config = _read_json_file(model_dir / "text_encoder" / "config.json")
+
+    candidates = [model_dir]
+    if model_dir.parent.exists():
+        candidates.extend(
+            model_dir.parent / name
+            for name in (
+                "CogVideoX-5b",
+                "CogVideoX-5b-I2V",
+                "allegro",
+                "mochi-1",
+            )
+        )
+    for candidate in candidates:
+        if _compatible_t5_component_root(candidate, reference_config):
+            return candidate
+    return None
 
 
 def read_prompt(args: argparse.Namespace) -> str:
@@ -2916,6 +3364,8 @@ def load_pipeline(
     height: int,
     flow_shift: Optional[float],
 ):
+    if spec.pipeline_class == "UnavailablePipeline":
+        raise RuntimeError(spec.unsupported_reason or f"{spec.key} has no configured pipeline class")
     if spec.pipeline_class == "WanPipeline":
         import torch
         from diffusers import AutoencoderKLWan, WanPipeline
@@ -2966,9 +3416,9 @@ def load_pipeline(
             flow_shift=resolve_wan_flow_shift(height, flow_shift),
         )
         return pipe
-    elif spec.pipeline_class in ("SkyReelsV2Pipeline", "SkyReelsV2ImageToVideoPipeline"):
+    elif spec.pipeline_class in ("WanAnimatePipeline", "WanVACEPipeline"):
         import torch
-        from diffusers import AutoencoderKLWan, SkyReelsV2ImageToVideoPipeline, SkyReelsV2Pipeline
+        from diffusers import AutoencoderKLWan, WanAnimatePipeline, WanVACEPipeline
         from diffusers.schedulers.scheduling_unipc_multistep import UniPCMultistepScheduler
 
         kwargs = {"local_files_only": True} if local_files_only else {}
@@ -2980,7 +3430,41 @@ def load_pipeline(
             torch_dtype=vae_dtype,
             **kwargs,
         )
-        cls = SkyReelsV2ImageToVideoPipeline if spec.pipeline_class == "SkyReelsV2ImageToVideoPipeline" else SkyReelsV2Pipeline
+        cls = WanAnimatePipeline if spec.pipeline_class == "WanAnimatePipeline" else WanVACEPipeline
+        pipe = cls.from_pretrained(
+            model_id,
+            vae=vae,
+            torch_dtype=torch_dtype,
+            **kwargs,
+        )
+        pipe.scheduler = UniPCMultistepScheduler.from_config(
+            pipe.scheduler.config,
+            flow_shift=resolve_wan_flow_shift(height, flow_shift),
+        )
+        return pipe
+    elif spec.pipeline_class in ("SkyReelsV2Pipeline", "SkyReelsV2ImageToVideoPipeline"):
+        import torch
+        from diffusers import (
+            AutoencoderKLWan,
+            SkyReelsV2ImageToVideoPipeline,
+            SkyReelsV2Pipeline,
+        )
+        from diffusers.schedulers.scheduling_unipc_multistep import UniPCMultistepScheduler
+
+        kwargs = {"local_files_only": True} if local_files_only else {}
+        if vae_dtype is None:
+            vae_dtype = torch.float32
+        vae = AutoencoderKLWan.from_pretrained(
+            model_id,
+            subfolder="vae",
+            torch_dtype=vae_dtype,
+            **kwargs,
+        )
+        cls = (
+            SkyReelsV2ImageToVideoPipeline
+            if spec.pipeline_class == "SkyReelsV2ImageToVideoPipeline"
+            else SkyReelsV2Pipeline
+        )
         pipe = cls.from_pretrained(
             model_id,
             vae=vae,
@@ -3004,6 +3488,38 @@ def load_pipeline(
         from diffusers import CogVideoXPipeline
 
         cls = CogVideoXPipeline
+    elif spec.pipeline_class == "CogVideoXImageToVideoPipeline":
+        from diffusers import CogVideoXImageToVideoPipeline
+
+        cls = CogVideoXImageToVideoPipeline
+    elif spec.pipeline_class == "LTXPipeline":
+        from diffusers import LTXPipeline
+
+        cls = LTXPipeline
+    elif spec.pipeline_class == "LTXImageToVideoPipeline":
+        from diffusers import LTXImageToVideoPipeline
+
+        cls = LTXImageToVideoPipeline
+    elif spec.pipeline_class == "AllegroPipeline":
+        from diffusers import AllegroPipeline
+
+        cls = AllegroPipeline
+    elif spec.pipeline_class == "MochiPipeline":
+        from diffusers import MochiPipeline
+
+        cls = MochiPipeline
+    elif spec.pipeline_class == "EasyAnimatePipeline":
+        from diffusers import EasyAnimatePipeline
+
+        cls = EasyAnimatePipeline
+    elif spec.pipeline_class == "SanaVideoPipeline":
+        from diffusers import SanaVideoPipeline
+
+        cls = SanaVideoPipeline
+    elif spec.pipeline_class == "Kandinsky5T2VPipeline":
+        from diffusers import Kandinsky5T2VPipeline
+
+        cls = Kandinsky5T2VPipeline
     else:
         raise ValueError(f"Unknown pipeline class: {spec.pipeline_class}")
 
@@ -3014,6 +3530,34 @@ def load_pipeline(
         kwargs["revision"] = "refs/pr/18"
     if spec.pipeline_class in ("HunyuanVideoPipeline", "HunyuanVideoImageToVideoPipeline") and flow_shift is not None:
         kwargs["scheduler"] = FlowMatchEulerDiscreteScheduler(shift=float(flow_shift))
+    if spec.pipeline_class in ("LTXPipeline", "LTXImageToVideoPipeline"):
+        checkpoint = _ltx_single_file_checkpoint(model_id)
+        if checkpoint is not None:
+            component_root = _resolve_ltx_text_component_root(model_id)
+            if component_root is None:
+                raise RuntimeError(
+                    "LTX local single-file checkpoint requires a compatible local T5 text_encoder "
+                    "and tokenizer because the checkpoint does not contain those weights. "
+                    "Download the Diffusers component layout for LTX or place a compatible "
+                    "T5EncoderModel/tokenizer next to another local video model."
+                )
+            from transformers import T5EncoderModel, T5Tokenizer
+
+            text_encoder = T5EncoderModel.from_pretrained(
+                component_root / "text_encoder",
+                torch_dtype=torch_dtype,
+                local_files_only=local_files_only,
+            )
+            tokenizer = T5Tokenizer.from_pretrained(
+                component_root / "tokenizer",
+                local_files_only=local_files_only,
+            )
+            return cls.from_single_file(
+                str(checkpoint),
+                text_encoder=text_encoder,
+                tokenizer=tokenizer,
+                **kwargs,
+            )
     return cls.from_pretrained(model_id, **kwargs)
 
 
@@ -3064,32 +3608,122 @@ def build_call_kwargs(
     guidance_scale = args.guidance_scale if args.guidance_scale is not None else spec.guidance_scale
     steps = args.num_inference_steps if args.num_inference_steps is not None else spec.default_steps
     output_type = "latent" if getattr(args, "skip_decode", False) else spec.output_type
+    if spec.pipeline_class == "WanAnimatePipeline":
+        if (
+            getattr(args, "image", None) is None
+            or getattr(args, "pose_video", None) is None
+            or getattr(args, "face_video", None) is None
+        ):
+            raise RuntimeError("WanAnimate real inference requires image, pose_video, and face_video inputs")
+    if spec.pipeline_class == "WanVACEPipeline":
+        if getattr(args, "reference_video", None) is None or getattr(args, "mask_video", None) is None:
+            raise RuntimeError("WanVACE real inference requires video and mask inputs")
+    if spec.pipeline_class == "SanaVideoPipeline":
+        frame_key = "frames"
+    elif spec.pipeline_class == "WanAnimatePipeline":
+        frame_key = "segment_frame_length"
+    else:
+        frame_key = "num_frames"
     kwargs: Dict[str, Any] = {
         "prompt": prompt,
         "negative_prompt": negative_prompt,
         "height": args.height,
         "width": args.width,
-        "num_frames": num_frames,
         "num_inference_steps": steps,
         "guidance_scale": guidance_scale,
         "generator": generator,
         "output_type": output_type,
     }
+    kwargs[frame_key] = num_frames
     if spec.pipeline_class in (
         "WanImageToVideoPipeline",
         "SkyReelsV2ImageToVideoPipeline",
         "HunyuanVideoImageToVideoPipeline",
+        "CogVideoXImageToVideoPipeline",
+        "LTXImageToVideoPipeline",
     ):
         kwargs["image"] = _load_i2v_image(args.image)
-    if spec.key == "wan22-t2v-a14b":
-        kwargs["guidance_scale_2"] = args.guidance_scale_2
-    if spec.key == "wan22-i2v-a14b":
+    if spec.pipeline_class == "WanAnimatePipeline":
+        kwargs["image"] = _load_i2v_image(args.image)
+        kwargs["pose_video"] = _load_video_frames(args.pose_video)
+        kwargs["face_video"] = _load_video_frames(args.face_video)
+    if spec.pipeline_class == "WanVACEPipeline":
+        if args.reference_video is not None:
+            kwargs["video"] = _load_video_frames(args.reference_video)
+        if args.mask_video is not None:
+            kwargs["mask"] = _load_video_frames(args.mask_video)
+    if spec.key in ("wan22-t2v-a14b", "wan22-i2v-a14b"):
         kwargs["guidance_scale_2"] = args.guidance_scale_2
     if spec.family == "hunyuan_video":
         kwargs["true_cfg_scale"] = args.true_cfg_scale
     if spec.family == "cogvideox":
         kwargs["use_dynamic_cfg"] = False
+    if spec.family == "ltx_video":
+        kwargs["frame_rate"] = fps
     return kwargs
+
+
+def apply_hunyuan_i2v_prompt_template_compat(pipe, call_kwargs: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Adapt Hunyuan I2V's prompt crop anchor for local tokenizer variants."""
+    from diffusers.pipelines.hunyuan_video.pipeline_hunyuan_video_image2video import DEFAULT_PROMPT_TEMPLATE
+
+    template = dict(DEFAULT_PROMPT_TEMPLATE)
+    tokenizer = getattr(pipe, "tokenizer", None)
+    prompt = call_kwargs.get("prompt")
+    status: Dict[str, Any] = {
+        "default_double_return_token_id": template.get("double_return_token_id"),
+        "selected_double_return_token_id": template.get("double_return_token_id"),
+        "override": False,
+    }
+    if tokenizer is None or prompt is None:
+        call_kwargs["prompt_template"] = template
+        return status
+
+    prompt_item = prompt[0] if isinstance(prompt, list) and prompt else prompt
+    if not isinstance(prompt_item, str):
+        call_kwargs["prompt_template"] = template
+        return status
+
+    rendered_prompt = template["template"].format(prompt_item)
+    max_length = int(template.get("crop_start", 0) or 0) + 256
+    text_inputs = tokenizer(
+        rendered_prompt,
+        max_length=max_length,
+        padding="max_length",
+        truncation=True,
+        return_tensors="pt",
+        return_attention_mask=False,
+    )
+    token_ids = text_inputs.input_ids[0].tolist()
+    default_token_id = int(template.get("double_return_token_id", 271))
+    default_count = token_ids.count(default_token_id)
+    status["default_token_count"] = default_count
+
+    if default_count == 0:
+        assistant_header_end_token_id = 128007
+        assistant_header_end_count = token_ids.count(assistant_header_end_token_id)
+        status["assistant_header_end_token_count"] = assistant_header_end_count
+        if assistant_header_end_count > 0:
+            template["double_return_token_id"] = assistant_header_end_token_id
+            status["selected_double_return_token_id"] = assistant_header_end_token_id
+            status["override"] = True
+
+    call_kwargs["prompt_template"] = template
+    return status
+
+
+def call_pipeline_with_model_compat(pipe, call_kwargs: Dict[str, Any], torch_module, spec: ModelSpec, device: str):
+    if spec.pipeline_class != "HunyuanVideoImageToVideoPipeline" or not device.startswith("cuda"):
+        return pipe(**call_kwargs)
+
+    previous_default_device = None
+    if hasattr(torch_module, "get_default_device"):
+        previous_default_device = torch_module.get_default_device()
+    torch_module.set_default_device(device)
+    try:
+        return pipe(**call_kwargs)
+    finally:
+        torch_module.set_default_device(previous_default_device or "cpu")
 
 
 def _load_i2v_image(image_path: Optional[str]):
@@ -3099,6 +3733,11 @@ def _load_i2v_image(image_path: Optional[str]):
         )
     from PIL import Image
     return Image.open(image_path).convert("RGB")
+
+
+def _load_video_frames(video_path: str):
+    from diffusers.utils import load_video
+    return load_video(video_path)
 
 
 def make_output_file(args: argparse.Namespace, model: str, method: str, num_frames: int) -> Path:
@@ -3354,6 +3993,41 @@ def maybe_save_spargeattn_tuned_state(handle, method_config: Dict[str, Any]) -> 
     return str(path)
 
 
+def sparse_method_supported(spec: ModelSpec, method: str) -> bool:
+    if method == "dense":
+        return True
+    if not spec.sparse_supported:
+        return False
+    if spec.sparse_methods is None:
+        return True
+    return method in spec.sparse_methods
+
+
+def unsupported_sparse_method_message(spec: ModelSpec, method: str) -> str:
+    method_reason = ""
+    if spec.sparse_supported and spec.sparse_methods is not None and method not in spec.sparse_methods:
+        method_reason = unvalidated_method_reason(method, smoke_methods=spec.sparse_methods)
+    reasons = [reason for reason in (spec.unsupported_reason, method_reason) if reason]
+    reason = f" {' '.join(reasons)}" if reasons else ""
+    return (
+        f"{method} is not implemented for {spec.family}; "
+        f"compatibility_label={spec.compatibility_label}; "
+        f"supported sparse methods: {list(spec.sparse_methods or ()) or 'none'}.{reason}"
+    )
+
+
+def should_preload_fused_native_kernels(spec: ModelSpec, method: str) -> bool:
+    if method not in ("svg1", "svg2", "svoo"):
+        return False
+    if spec.family in ("wan", "hunyuan_video"):
+        return True
+    return os.environ.get("SPARSEVIDEO_FUSED_KERNEL_BACKEND") == "native"
+
+
+def should_defer_fused_native_kernel_load(spec: ModelSpec, method: str, *, dry_run: bool) -> bool:
+    return (not dry_run) and spec.family == "hunyuan_video" and method in ("svg2", "svoo")
+
+
 def run(args: argparse.Namespace) -> int:
     spec = MODEL_SPECS[MODEL_ALIASES[args.model]]
     fps = args.fps if args.fps is not None else spec.fps
@@ -3435,6 +4109,15 @@ def run(args: argparse.Namespace) -> int:
     )
     if args.method == "flashomni":
         apply_flashomni_hunyuan_quality_defaults(spec, method_config, user_method_config)
+    if args.method == "draft":
+        apply_draft_runtime_layout_defaults(
+            spec, height, width, num_frames, method_config, user_method_config,
+        )
+    if spec.pipeline_class == "HunyuanVideoImageToVideoPipeline" and args.method in ("svg1", "svg2", "svoo"):
+        if "context_length" not in user_method_config:
+            method_config["context_length"] = None
+        if "prompt_length" not in user_method_config:
+            method_config["prompt_length"] = None
     if args.method == "radial" and not strict_kernels:
         method_config["allow_flex_fallback"] = True
     if args.method == "svg2" and not strict_kernels:
@@ -3445,20 +4128,22 @@ def run(args: argparse.Namespace) -> int:
     output_file = make_output_file(args, spec.key, args.method, num_frames)
     scheduler_flow_shift = resolve_scheduler_flow_shift(spec, args.height, args.flow_shift)
     wan_flow_shift = scheduler_flow_shift if spec.family == "wan" else None
+    unsupported = not sparse_method_supported(spec, args.method)
     try:
-        materialize_method_config_values(args.method, method_config)
-        if args.method == "spargeattn":
-            normalize_spargeattn_model_out_path(method_config, output_file)
-        if (
-            args.method == "svoo"
-            and method_config.get("use_dynamic_min_kc_ratio")
-            and (
-                not method_config.get("sparsity_csv_path")
-                or method_config.get("sparsity_csv_path") == "sparsity_profiles/sparsity_results.csv"
-            )
-        ):
-            method_config["sparsity_csv_path"] = default_svoo_sparsity_csv_path(spec)
-        validate_method_config(args.method, method_config, model_family=spec.family)
+        if not unsupported:
+            materialize_method_config_values(args.method, method_config)
+            if args.method == "spargeattn":
+                normalize_spargeattn_model_out_path(method_config, output_file)
+            if (
+                args.method == "svoo"
+                and method_config.get("use_dynamic_min_kc_ratio")
+                and (
+                    not method_config.get("sparsity_csv_path")
+                    or method_config.get("sparsity_csv_path") == "sparsity_profiles/sparsity_results.csv"
+                )
+            ):
+                method_config["sparsity_csv_path"] = default_svoo_sparsity_csv_path(spec)
+            validate_method_config(args.method, method_config, model_family=spec.family)
     except (FileNotFoundError, NotImplementedError, TypeError, ValueError) as exc:
         failed_metrics = {
             "model": spec.key,
@@ -3523,76 +4208,90 @@ def run(args: argparse.Namespace) -> int:
         "optional_kernels": optional_kernel_status(),
         "torch": torch_runtime_status(),
     }
-    runtime_status["optional_kernels"]["svg_svoo_fused_kernels"].update(
-        native_kernel_load_status()
+    defer_fused_native_kernel_load = should_defer_fused_native_kernel_load(
+        spec, args.method, dry_run=args.dry_run,
     )
+    if should_preload_fused_native_kernels(spec, args.method) and not defer_fused_native_kernel_load:
+        runtime_status["optional_kernels"]["svg_svoo_fused_kernels"].update(
+            native_kernel_load_status()
+        )
     needs_flash_attn_load = (
-        args.method == "draft"
-        or (args.method in ("svg1", "adacluster") and spec.family == "hunyuan_video")
+        not unsupported
+        and (
+            args.method == "draft"
+            or (args.method in ("svg1", "adacluster") and spec.family == "hunyuan_video")
+        )
     )
     if needs_flash_attn_load:
         runtime_status["optional_kernels"].setdefault("flash_attn", {}).update(
             quiet_runtime_status_call(flash_attn_load_status)
         )
-    if args.method == "adacluster":
+    if not unsupported and args.method == "adacluster":
         runtime_status["optional_kernels"].setdefault("adacluster_kernels", {}).setdefault(
             "owned_triton_runtime", {}
         ).update(quiet_runtime_status_call(adacluster_load_status))
         runtime_status["optional_kernels"]["adacluster_kernels"]["load_checked"] = True
-    if args.method == "draft":
+    if not unsupported and args.method == "draft":
         runtime_status["optional_kernels"].setdefault("draft_kernels", {}).setdefault(
             "mit_block_sparse_attn", {}
         ).update(quiet_runtime_status_call(draft_block_sparse_load_status))
         runtime_status["optional_kernels"]["draft_kernels"]["mit_load_checked"] = True
     needs_flashinfer_load = (
-        args.method in ("radial", "svg2")
-        or (args.method == "svoo" and method_config.get("sparse_backend") == "flashinfer")
+        not unsupported
+        and (
+            args.method in ("radial", "svg2")
+            or (args.method == "svoo" and method_config.get("sparse_backend") == "flashinfer")
+        )
     )
     if needs_flashinfer_load:
         runtime_status["optional_kernels"].setdefault("flashinfer", {}).update(
             quiet_runtime_status_call(flashinfer_load_status)
         )
-    if args.method == "radial":
+    if not unsupported and args.method == "radial":
         runtime_status["optional_kernels"].setdefault("radial_kernels", {}).setdefault(
             "owned_runtime", {}
         ).update(quiet_runtime_status_call(radial_runtime_load_status))
         runtime_status["optional_kernels"]["radial_kernels"]["load_checked"] = True
-    if args.method == "svg1":
+    if not unsupported and args.method == "svg1":
         runtime_status["optional_kernels"].setdefault("svg1_kernels", {}).setdefault(
             "owned_triton_runtime", {}
         ).update(quiet_runtime_status_call(svg1_runtime_load_status))
         runtime_status["optional_kernels"]["svg1_kernels"]["load_checked"] = True
-    if args.method == "svg2":
+    if not unsupported and args.method == "svg2":
         runtime_status["optional_kernels"].setdefault("svg2_kernels", {}).setdefault(
             "owned_triton_runtime", {}
         ).update(quiet_runtime_status_call(svg2_runtime_load_status))
         runtime_status["optional_kernels"]["svg2_kernels"]["load_checked"] = True
-    if args.method == "svoo":
+    if not unsupported and args.method == "svoo":
         runtime_status["optional_kernels"].setdefault("svoo_kernels", {}).setdefault(
             "owned_triton_runtime", {}
         ).update(quiet_runtime_status_call(svoo_runtime_load_status))
         runtime_status["optional_kernels"]["svoo_kernels"]["load_checked"] = True
     needs_flashomni_load = (
-        args.method == "flashomni"
+        not unsupported
+        and args.method == "flashomni"
         and method_config.get("implementation") == "upstream"
     )
     if needs_flashomni_load:
         runtime_status["optional_kernels"].setdefault("flashomni", {}).update(
             quiet_runtime_status_call(flashomni_load_status)
         )
-    if args.method == "sta":
+    if not unsupported and args.method == "sta":
         runtime_status["optional_kernels"].setdefault("sta_kernels", {}).update(
             quiet_runtime_status_call(sta_load_status)
         )
     spargeattn_needs_runtime = (
-        args.method == "spargeattn"
+        not unsupported
+        and args.method == "spargeattn"
         and (
             method_config.get("mode") != "full"
             or method_config.get("tune")
             or method_config.get("model_out_path")
         )
     )
-    radial_needs_sparge = args.method == "radial" and method_config.get("use_sage_attention")
+    radial_needs_sparge = (
+        not unsupported and args.method == "radial" and method_config.get("use_sage_attention")
+    )
     if spargeattn_needs_runtime or radial_needs_sparge:
         runtime_status["optional_kernels"].setdefault("spas_sage_attn", {}).update(
             quiet_runtime_status_call(
@@ -3614,21 +4313,24 @@ def run(args: argparse.Namespace) -> int:
         runtime_status["optional_kernels"].setdefault("sageattention", {}).update(
             quiet_runtime_status_call(sageattention_load_status)
         )
-    runtime_status["preflight"] = preflight_runtime(
-        args.method,
-        method_config,
-        args.device,
-        runtime_status,
-        strict_kernels=strict_kernels,
-        model_family=spec.family,
-    )
-    if args.method == "draft":
+    if unsupported:
+        runtime_status["preflight"] = {"errors": [], "warnings": []}
+    else:
+        runtime_status["preflight"] = preflight_runtime(
+            args.method,
+            method_config,
+            args.device,
+            runtime_status,
+            strict_kernels=strict_kernels,
+            model_family=spec.family,
+        )
+    if not unsupported and args.method == "draft":
         draft_error = draft_upstream_layout_error(
             spec, height, width, num_frames, method_config,
         )
         if draft_error is not None:
             runtime_status["preflight"]["errors"].append(draft_error)
-    if args.method == "radial":
+    if not unsupported and args.method == "radial":
         radial_warning = radial_flashinfer_layout_warning(
             spec, height, width, num_frames, method_config,
         )
@@ -3637,7 +4339,7 @@ def run(args: argparse.Namespace) -> int:
                 runtime_status["preflight"]["errors"].append(radial_warning)
             else:
                 runtime_status["preflight"]["warnings"].append(radial_warning)
-    if args.method == "sta":
+    if not unsupported and args.method == "sta":
         sta_messages = sta_layout_preflight_messages(
             spec, height, width, num_frames, method_config,
             strict_kernels=strict_kernels,
@@ -3673,6 +4375,8 @@ def run(args: argparse.Namespace) -> int:
         "vae_decoder_chunk_size": args.vae_decoder_chunk_size,
         "skip_decode": args.skip_decode,
         "output_type": "latent" if args.skip_decode else spec.output_type,
+        "compatibility_label": spec.compatibility_label,
+        "unsupported_reason": spec.unsupported_reason,
         "strict_kernels": strict_kernels,
         "allow_debug_fallbacks": args.allow_debug_fallbacks,
         "seed": args.seed,
@@ -3684,15 +4388,10 @@ def run(args: argparse.Namespace) -> int:
         "source_fingerprints": sparsevideo_source_fingerprints(args.method),
     }
 
-    unsupported = args.method != "dense" and not spec.sparse_supported
-
     if args.dry_run:
         if unsupported:
             base_metrics.update(status="unsupported_dry_run")
-            base_metrics["error"] = (
-                f"{args.method} is not implemented for {spec.family}; "
-                "only dense baseline is available."
-            )
+            base_metrics["error"] = unsupported_sparse_method_message(spec, args.method)
             print(json.dumps(json_ready(base_metrics), indent=2, sort_keys=True))
             return 0
         if runtime_status["preflight"]["errors"]:
@@ -3712,7 +4411,7 @@ def run(args: argparse.Namespace) -> int:
     if unsupported:
         base_metrics.update(
             status="unsupported",
-            error=f"{args.method} is not implemented for {spec.family}; only dense baseline is available.",
+            error=unsupported_sparse_method_message(spec, args.method),
         )
         append_metrics(args.metrics_file, base_metrics)
         print(json.dumps(json_ready(base_metrics), indent=2, sort_keys=True))
@@ -3783,13 +4482,33 @@ def run(args: argparse.Namespace) -> int:
             sync_if_cuda(torch, args.device)
         timings["load_pipeline_sec"] = time.perf_counter() - t0
 
+        if defer_fused_native_kernel_load:
+            stage = "deferred_runtime_preflight"
+            with redirect_stdout(sys.stderr):
+                runtime_status["optional_kernels"]["svg_svoo_fused_kernels"].update(
+                    native_kernel_load_status()
+                )
+            deferred_preflight = preflight_runtime(
+                args.method,
+                method_config,
+                args.device,
+                runtime_status,
+                strict_kernels=strict_kernels,
+                model_family=spec.family,
+            )
+            runtime_status["preflight"]["warnings"].extend(deferred_preflight["warnings"])
+            if deferred_preflight["errors"]:
+                runtime_status["preflight"]["errors"].extend(deferred_preflight["errors"])
+                raise RuntimeError("; ".join(deferred_preflight["errors"]))
+
         stage = "apply_sparse_attention"
         t0 = time.perf_counter()
         with redirect_stdout(sys.stderr):
             if args.method in ("svg1", "svg2", "svoo") and spec.family == "hunyuan_video":
-                if method_config.get("context_length") is None:
+                hunyuan_i2v = spec.pipeline_class == "HunyuanVideoImageToVideoPipeline"
+                if method_config.get("context_length") is None and not hunyuan_i2v:
                     method_config["context_length"] = 256
-                if method_config.get("prompt_length") is None:
+                if method_config.get("prompt_length") is None and not hunyuan_i2v:
                     method_config["prompt_length"] = infer_hunyuan_prompt_length(
                         pipe, prompt, int(method_config["context_length"]),
                     )
@@ -3849,10 +4568,14 @@ def run(args: argparse.Namespace) -> int:
             num_frames=num_frames,
             fps=fps,
         )
+        if spec.pipeline_class == "HunyuanVideoImageToVideoPipeline":
+            base_metrics["hunyuan_i2v_prompt_template_compat"] = apply_hunyuan_i2v_prompt_template_compat(
+                pipe, call_kwargs,
+            )
 
         t0 = time.perf_counter()
         with redirect_stdout(sys.stderr):
-            result = pipe(**call_kwargs)
+            result = call_pipeline_with_model_compat(pipe, call_kwargs, torch, spec, args.device)
             sync_if_cuda(torch, args.device)
         base_metrics["sparse_attention_handle"] = sparse_attention_handle_summary(handle)
         timings["generate_sec"] = time.perf_counter() - t0

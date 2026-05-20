@@ -121,3 +121,4 @@ benchmark_outputs/
 .claude
 AGENTS.md
 CLAUDE.md
+.tmp*

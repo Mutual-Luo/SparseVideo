@@ -41,7 +41,7 @@ class StepTracker:
             idx = 1
         elif self._model_type == "hunyuan_video":
             idx = 1
-        elif self._model_type == "cogvideox":
+        elif self._model_type in ("cogvideox", "ltx_video"):
             idx = 2
         else:
             idx = 1

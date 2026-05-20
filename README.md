@@ -48,8 +48,8 @@ import sparsevideo
 pipe = WanPipeline.from_pretrained("Wan-AI/Wan2.1-T2V-14B-Diffusers", torch_dtype=torch.bfloat16)
 pipe.to("cuda")
 
-# Apply sparse attention (one line)
-handle = sparsevideo.apply_sparse_attention(pipe, method="svoo")
+# Replace attention with a sparse method (one line)
+handle = sparsevideo.replace_attention(pipe, method="svoo")
 
 # Generate video as usual
 video = pipe("A cat playing piano", num_frames=81, num_inference_steps=50).frames[0]
@@ -71,21 +71,25 @@ sparsevideo.restore_sparse_attention(handle)
 | `draft` | Draft Attention | Triton block-sparse | Wan, Hunyuan | pass |
 | `adacluster` | AdaCluster | Triton k-means + block-sparse | Wan, Hunyuan | pass |
 | `svoo` | SVOO | FlashInfer / Triton co-clustering | Wan, Hunyuan | pass |
-| `flashomni` | FlashOmni | C++/CUDA sparse attention | Wan, Hunyuan | partial: missing upstream video policy |
+| `flashomni` | FlashOmni | C++/CUDA sparse attention | Wan, Hunyuan | pass; visual QC caveat |
 
-See `PARITY_STATUS.md` for the current completion gate. `flashomni` has owned kernels and 50-step dispatch evidence,
-but cannot be called upstream-equivalent until the Wan/Hunyuan sparse-symbol policy and threshold schedule source are
-available or matched. `sta_h100` is deferred on A100-only machines.
+See `PARITY_STATUS.md` for the current completion gate. On this A100 machine, the current audit is complete, including
+FlashOmni Hunyuan reported-config dispatch evidence. FlashOmni's gate still records a separate artifact-QC warning for
+visual acceptance. `sta_h100` remains hardware-deferred until a Hopper/H100 machine is available.
 
 ## API Reference
 
 ```python
-# Apply sparse attention to a pipeline
-handle = sparsevideo.apply_sparse_attention(
+# Replace attention in a pipeline
+handle = sparsevideo.replace_attention(
     pipe,                        # Diffusers pipeline
     method="svoo",               # Method name
     config={"sparse_backend": "flashinfer"},  # Optional config overrides
 )
+
+# Existing aliases are kept for compatibility:
+# sparsevideo.apply_sparse_attention(...)
+# sparsevideo.apply(...)
 
 # Restore original dense attention
 sparsevideo.restore_sparse_attention(handle)

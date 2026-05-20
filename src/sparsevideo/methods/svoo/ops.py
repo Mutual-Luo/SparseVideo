@@ -113,8 +113,6 @@ def svoo_attention(
     from ...kernels.flashinfer_block_sparse import HAS_FLASHINFER, variable_block_sparse_attn
 
     B, N, H, D = query.shape
-    if B != 1:
-        raise RuntimeError("SVOO follows the upstream implementation and currently requires batch size 1")
     scale = D ** -0.5
     text_len = max(0, min(int(text_len or 0), N))
     video_N = N - text_len
@@ -124,6 +122,8 @@ def svoo_attention(
     q_bhsd = query.permute(0, 2, 1, 3).contiguous()
     k_bhsd = key.permute(0, 2, 1, 3).contiguous()
     v_bhsd = value.permute(0, 2, 1, 3).contiguous()
+    # CFG batches are independent after folding batch and head into the leading
+    # dimension, matching the block-sparse kernels' batch-head contract.
     q_flat = q_bhsd.reshape(B * H, N, D)
     k_flat = k_bhsd.reshape(B * H, N, D)
     v_flat = v_bhsd.reshape(B * H, N, D)

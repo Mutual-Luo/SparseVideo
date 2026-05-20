@@ -17,6 +17,19 @@ import triton.language as tl
 from .l2norm import triton_l2norm_forward
 
 
+def _next_pow2(n: int) -> int:
+    return 1 << (max(1, int(n)) - 1).bit_length()
+
+
+def _block_d(head_dim: int) -> int:
+    block = _next_pow2(head_dim)
+    if block < 16:
+        block = 16
+    if block > 256:
+        raise AssertionError(f"head_dim {head_dim} not supported, must be <= 256")
+    return block
+
+
 def _env_int(name: str, default: int) -> int:
     value = os.environ.get(name)
     if value is None:
@@ -174,6 +187,7 @@ def _centroid_update_chunk_kernel(
     B,
     N,
     D: tl.constexpr,
+    BLOCK_D: tl.constexpr,
     K: tl.constexpr,
     stride_xb: tl.constexpr,
     stride_xn: tl.constexpr,
@@ -195,7 +209,8 @@ def _centroid_update_chunk_kernel(
     last_id = tl.load(SortedCluster + pid_b * N + last_token_idx)
     all_ids = tl.load(SortedCluster + pid_b * N + token_offs, mask=valid, other=-1)
     all_token_idx = tl.load(SortedIdx + pid_b * N + token_offs, mask=valid, other=-1)
-    dim_offs = tl.arange(0, D)
+    dim_offs = tl.arange(0, BLOCK_D)
+    dim_mask = dim_offs < D
 
     for cid in range(first_id, last_id + 1):
         cluster_mask = all_ids == cid
@@ -208,10 +223,14 @@ def _centroid_update_chunk_kernel(
                 + dim_offs.to(tl.int64)[None, :] * stride_xd
             )
             token_valid = all_token_idx[:, None] >= 0
-            feats = tl.load(x_ptrs, mask=(cluster_mask[:, None] & token_valid), other=0.0).to(tl.float32)
+            feats = tl.load(
+                x_ptrs,
+                mask=(cluster_mask[:, None] & token_valid & dim_mask[None, :]),
+                other=0.0,
+            ).to(tl.float32)
             sums = tl.sum(feats, axis=0)
             sum_ptrs = Sum + (pid_b * K + cid) * D + dim_offs
-            tl.atomic_add(sum_ptrs, sums)
+            tl.atomic_add(sum_ptrs, sums, mask=dim_mask)
             tl.atomic_add(Count + pid_b * K + cid, cluster_size)
 
 
@@ -230,6 +249,7 @@ def centroid_update_sorted_euclid(
     assert x.is_cuda and cluster_ids.is_cuda, "centroid update requires CUDA"
     B, N, D = x.shape
     K = old_centroids.shape[1]
+    BLOCK_D = _block_d(D)
 
     sorted_cluster_ids, sorted_idx = torch.sort(cluster_ids, dim=-1)
     centroid_sums = torch.zeros((B, K, D), device=x.device, dtype=torch.float32)
@@ -245,6 +265,7 @@ def centroid_update_sorted_euclid(
         B,
         N,
         D,
+        BLOCK_D,
         K,
         x.stride(0),
         x.stride(1),
@@ -288,6 +309,7 @@ def _profile_norm_kernel(
     B, N,
     K: tl.constexpr,
     D: tl.constexpr,
+    BLOCK_D: tl.constexpr,
     stride_xb, stride_xn, stride_xd,
     stride_kcb, stride_kck, stride_kcd,
     stride_nb, stride_nn,
@@ -301,10 +323,11 @@ def _profile_norm_kernel(
 
     n_offs = pid_n * BLOCK_N + tl.arange(0, BLOCK_N)
     n_mask = n_offs < N
-    d_offs = tl.arange(0, D)
+    d_offs = tl.arange(0, BLOCK_D)
+    d_mask = d_offs < D
 
     x_ptrs = X + pid_b * stride_xb + n_offs[:, None] * stride_xn + d_offs[None, :] * stride_xd
-    x_tile = tl.load(x_ptrs, mask=n_mask[:, None], other=0.0).to(tl.float32)
+    x_tile = tl.load(x_ptrs, mask=(n_mask[:, None] & d_mask[None, :]), other=0.0).to(tl.float32)
 
     sq_norm = tl.zeros((BLOCK_N,), dtype=tl.float32)
 
@@ -313,7 +336,7 @@ def _profile_norm_kernel(
         k_mask = k_offs < K
 
         kc_ptrs = KC + pid_b * stride_kcb + d_offs[:, None] * stride_kcd + k_offs[None, :] * stride_kck
-        kc_tile = tl.load(kc_ptrs, mask=k_mask[None, :], other=0.0).to(tl.float32)
+        kc_tile = tl.load(kc_ptrs, mask=(d_mask[:, None] & k_mask[None, :]), other=0.0).to(tl.float32)
 
         dot = tl.dot(x_tile, kc_tile, allow_tf32=True)
         dot = tl.where(k_mask[None, :], dot, 0.0)
@@ -336,6 +359,7 @@ def _fused_cocluster_assign_kernel(
     K: tl.constexpr,
     J: tl.constexpr,
     D: tl.constexpr,
+    BLOCK_D: tl.constexpr,
     stride_xb, stride_xn, stride_xd,
     stride_kcb, stride_kck, stride_kcd,
     stride_pcb, stride_pcj, stride_pck,
@@ -352,10 +376,11 @@ def _fused_cocluster_assign_kernel(
 
     n_offs = pid_n * BLOCK_N + tl.arange(0, BLOCK_N)
     n_mask = n_offs < N
-    d_offs = tl.arange(0, D)
+    d_offs = tl.arange(0, BLOCK_D)
+    d_mask = d_offs < D
 
     x_ptrs = X + pid_b * stride_xb + n_offs[:, None] * stride_xn + d_offs[None, :] * stride_xd
-    x_tile = tl.load(x_ptrs, mask=n_mask[:, None], other=0.0).to(tl.float32)
+    x_tile = tl.load(x_ptrs, mask=(n_mask[:, None] & d_mask[None, :]), other=0.0).to(tl.float32)
 
     norm_ptrs = Norms + pid_b * stride_nb + n_offs * stride_nn
     norms = tl.load(norm_ptrs, mask=n_mask, other=1.0)
@@ -374,7 +399,7 @@ def _fused_cocluster_assign_kernel(
             k_mask = k_offs < K
 
             kc_ptrs = KC + pid_b * stride_kcb + d_offs[:, None] * stride_kcd + k_offs[None, :] * stride_kck
-            kc_tile = tl.load(kc_ptrs, mask=k_mask[None, :], other=0.0).to(tl.float32)
+            kc_tile = tl.load(kc_ptrs, mask=(d_mask[:, None] & k_mask[None, :]), other=0.0).to(tl.float32)
 
             dot_xkc = tl.dot(x_tile, kc_tile, allow_tf32=True)
             dot_xkc = dot_xkc / norms[:, None]
@@ -418,6 +443,7 @@ def profile_norm(
     """
     B, N, D = x.shape
     K = kcentroids.shape[1]
+    BLOCK_D = _block_d(D)
 
     x = x.contiguous()
     kcentroids = kcentroids.contiguous()
@@ -440,7 +466,7 @@ def profile_norm(
     def _run(meta):
         _profile_norm_kernel[grid](
             x, kcentroids, norms,
-            B, N, K=K, D=D,
+            B, N, K=K, D=D, BLOCK_D=BLOCK_D,
             stride_xb=x.stride(0), stride_xn=x.stride(1), stride_xd=x.stride(2),
             stride_kcb=kcentroids.stride(0), stride_kck=kcentroids.stride(1), stride_kcd=kcentroids.stride(2),
             stride_nb=norms.stride(0), stride_nn=norms.stride(1),
@@ -487,6 +513,7 @@ def co_cluster_assign(
     B, N, D = x.shape
     K = kcentroids.shape[1]
     J = profile_centroids.shape[1]
+    BLOCK_D = _block_d(D)
 
     x = x.contiguous()
     kcentroids = kcentroids.contiguous()
@@ -514,7 +541,7 @@ def co_cluster_assign(
     def _run(meta):
         _fused_cocluster_assign_kernel[grid](
             x, kcentroids, profile_centroids, norms, out,
-            B, N, K=K, J=J, D=D,
+            B, N, K=K, J=J, D=D, BLOCK_D=BLOCK_D,
             stride_xb=x.stride(0), stride_xn=x.stride(1), stride_xd=x.stride(2),
             stride_kcb=kcentroids.stride(0), stride_kck=kcentroids.stride(1), stride_kcd=kcentroids.stride(2),
             stride_pcb=profile_centroids.stride(0), stride_pcj=profile_centroids.stride(1), stride_pck=profile_centroids.stride(2),

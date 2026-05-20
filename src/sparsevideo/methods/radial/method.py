@@ -5,8 +5,13 @@ import torch
 from .._base import SparseMethod
 from .._layout import infer_video_frame_shape, infer_video_token_layout
 from .._schedule import _scalar_timestep
+from ...processors.allegro import SparseAllegroAttnProcessor
+from ...processors.cogvideox import SparseCogVideoXAttnProcessor
+from ...processors.easyanimate import SparseEasyAnimateAttnProcessor
 from ...processors.wan import SparseWanAttnProcessor
 from ...processors.hunyuan_video import SparseHunyuanVideoAttnProcessor
+from ...processors.ltx_video import SparseLTXVideoAttnProcessor
+from ...processors.mochi import SparseMochiAttnProcessor
 from ...kernels.sageattention_runtime import load_sageattn_function
 from ...kernels.spas_sage_runtime import load_block_sparse_sage2_attn_function
 from . import config as method_config
@@ -44,7 +49,9 @@ class RadialMethod(SparseMethod):
                 ) from exc
 
     def create_processor(self, layer_idx, total_layers, original_processor, step_tracker):
-        if self.model_info.model_type not in ("wan", "hunyuan_video"):
+        if self.model_info.model_type not in (
+            "wan", "hunyuan_video", "cogvideox", "ltx_video", "allegro", "mochi", "easyanimate",
+        ):
             raise NotImplementedError(f"radial not yet supported for {self.model_info.model_type}")
 
         decay_factor = self.config["decay_factor"]
@@ -97,7 +104,10 @@ class RadialMethod(SparseMethod):
                 return out
             if not query.is_cuda:
                 raise RuntimeError("radial sparse path requires CUDA self-attention")
-            if attention_mask is not None and model_type != "hunyuan_video":
+            if (
+                attention_mask is not None
+                and model_type not in ("hunyuan_video", "cogvideox", "mochi", "easyanimate")
+            ):
                 raise RuntimeError("radial sparse path only supports attention masks for Hunyuan-style text tails")
             text_len = kwargs.get("text_len", 0)
             out = _radial_attention(
@@ -128,6 +138,26 @@ class RadialMethod(SparseMethod):
 
         if self.model_info.model_type == "wan":
             return SparseWanAttnProcessor(
+                attn_fn=attn_fn, layer_idx=layer_idx, step_tracker=step_tracker,
+            )
+        if self.model_info.model_type == "cogvideox":
+            return SparseCogVideoXAttnProcessor(
+                attn_fn=attn_fn, layer_idx=layer_idx, step_tracker=step_tracker,
+            )
+        if self.model_info.model_type == "ltx_video":
+            return SparseLTXVideoAttnProcessor(
+                attn_fn=attn_fn, layer_idx=layer_idx, step_tracker=step_tracker,
+            )
+        if self.model_info.model_type == "allegro":
+            return SparseAllegroAttnProcessor(
+                attn_fn=attn_fn, layer_idx=layer_idx, step_tracker=step_tracker,
+            )
+        if self.model_info.model_type == "mochi":
+            return SparseMochiAttnProcessor(
+                attn_fn=attn_fn, layer_idx=layer_idx, step_tracker=step_tracker,
+            )
+        if self.model_info.model_type == "easyanimate":
+            return SparseEasyAnimateAttnProcessor(
                 attn_fn=attn_fn, layer_idx=layer_idx, step_tracker=step_tracker,
             )
         return SparseHunyuanVideoAttnProcessor(
@@ -420,9 +450,9 @@ def _radial_flashinfer_attention(
         v_b = value[batch_idx]
         if tail_len:
             video_video_o, video_video_o_lse = bsr_wrapper.run(
-                q_b[:video_len],
-                k_b[:video_len],
-                v_b[:video_len],
+                q_b[:video_len].contiguous(),
+                k_b[:video_len].contiguous(),
+                v_b[:video_len].contiguous(),
                 return_lse=True,
             )
             custom_video_text = None
@@ -455,7 +485,13 @@ def _radial_flashinfer_attention(
             )
             outputs.append(torch.cat([out_video, out_text], dim=0))
         else:
-            outputs.append(bsr_wrapper.run(q_b[:video_len], k_b[:video_len], v_b[:video_len]))
+            outputs.append(
+                bsr_wrapper.run(
+                    q_b[:video_len].contiguous(),
+                    k_b[:video_len].contiguous(),
+                    v_b[:video_len].contiguous(),
+                )
+            )
 
     return torch.stack(outputs, dim=0)
 
@@ -727,6 +763,8 @@ def _radial_model_type(model_type: str) -> str:
         return "hunyuan"
     if model_type == "wan":
         return "wan"
+    if model_type in ("cogvideox", "ltx_video", "allegro", "mochi", "easyanimate"):
+        return "hunyuan"
     raise ValueError(f"Unknown model type: {model_type}")
 
 

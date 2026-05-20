@@ -229,6 +229,488 @@ def test_infer_dry_run_resolves_skyreels_v2_sparse_alias(tmp_path):
     assert payload["wan_flow_shift"] == 5.0
 
 
+def test_infer_dry_run_resolves_wan_animate_sparse_alias(tmp_path):
+    payload = _run_infer_dry_run(tmp_path, "--model", "wananimate", "--method", "svg2")
+
+    assert payload["status"] == "dry_run"
+    assert payload["model"] == "wan22-animate-14b"
+    assert payload["method"] == "svg2"
+    assert payload["num_frames"] == 77
+    assert payload["fps"] == 16
+    assert payload["wan_flow_shift"] == 5.0
+
+
+def test_infer_dry_run_resolves_wan_vace_sparse_alias(tmp_path):
+    payload = _run_infer_dry_run(tmp_path, "--model", "wan-vace", "--method", "svoo")
+
+    assert payload["status"] == "dry_run"
+    assert payload["model"] == "wan21-vace-1.3b"
+    assert payload["method"] == "svoo"
+    assert payload["method_config"]["use_dynamic_min_kc_ratio"] is False
+    assert payload["method_config"]["sparsity_csv_path"] == "sparsity_profiles/sparsity_results.csv"
+    assert payload["runtime"]["preflight"]["errors"] == []
+
+
+@pytest.mark.parametrize(
+    ("model_key", "message"),
+    [
+        ("wan22-animate-14b", "WanAnimate real inference requires image, pose_video, and face_video inputs"),
+        ("wan21-vace-1.3b", "WanVACE real inference requires video and mask inputs"),
+    ],
+)
+def test_build_call_kwargs_rejects_auxiliary_wan_pipelines_without_cli_inputs(model_key, message):
+    infer = _load_infer_module()
+    args = types.SimpleNamespace(guidance_scale=None, num_inference_steps=None, skip_decode=False)
+
+    with pytest.raises(RuntimeError, match=message):
+        infer.build_call_kwargs(
+            args,
+            infer.MODEL_SPECS[model_key],
+            prompt="test prompt",
+            negative_prompt="",
+            generator=None,
+            num_frames=1,
+            fps=16,
+        )
+
+
+def test_infer_dry_run_allows_cogvideox_svg2_sparse_processor(tmp_path):
+    payload = _run_infer_dry_run(tmp_path, "--model", "cogvideox", "--method", "svg2")
+
+    assert payload["status"] == "dry_run"
+    assert payload["model"] == "cogvideox-t2v"
+    assert payload["method"] == "svg2"
+    assert payload["num_frames"] == 49
+    assert payload["fps"] == 8
+
+
+@pytest.mark.parametrize(
+    ("model", "resolved"),
+    [
+        ("cogvideox", "cogvideox-t2v"),
+        ("cogvideox-i2v", "cogvideox-i2v"),
+        ("ltx", "ltx-video"),
+        ("ltx-i2v", "ltx-video-i2v"),
+        ("allegro", "allegro"),
+        ("mochi", "mochi-1"),
+        ("easyanimate", "easyanimate-v5-t2v-12b"),
+    ],
+)
+def test_infer_dry_run_allows_new_backbone_svg1_sparse_processors(tmp_path, model, resolved):
+    payload = _run_infer_dry_run(tmp_path, "--model", model, "--method", "svg1")
+
+    assert payload["status"] == "dry_run"
+    assert payload["model"] == resolved
+    assert payload["method"] == "svg1"
+    assert payload["runtime"]["preflight"]["errors"] == []
+
+
+@pytest.mark.parametrize(
+    ("model", "resolved"),
+    [
+        ("cogvideox", "cogvideox-t2v"),
+        ("cogvideox-i2v", "cogvideox-i2v"),
+        ("ltx", "ltx-video"),
+        ("ltx-i2v", "ltx-video-i2v"),
+        ("allegro", "allegro"),
+        ("mochi", "mochi-1"),
+        ("easyanimate", "easyanimate-v5-t2v-12b"),
+    ],
+)
+def test_infer_dry_run_allows_new_backbone_spargeattn_sparse_processors(tmp_path, model, resolved):
+    payload = _run_infer_dry_run(tmp_path, "--model", model, "--method", "spargeattn")
+
+    assert payload["status"] == "dry_run"
+    assert payload["model"] == resolved
+    assert payload["method"] == "spargeattn"
+    assert payload["runtime"]["preflight"]["errors"] == []
+
+
+@pytest.mark.parametrize(
+    ("model", "resolved"),
+    [
+        ("cogvideox", "cogvideox-t2v"),
+        ("cogvideox-i2v", "cogvideox-i2v"),
+        ("ltx", "ltx-video"),
+        ("ltx-i2v", "ltx-video-i2v"),
+        ("allegro", "allegro"),
+        ("mochi", "mochi-1"),
+        ("easyanimate", "easyanimate-v5-t2v-12b"),
+    ],
+)
+def test_infer_dry_run_allows_new_backbone_adacluster_sparse_processors(tmp_path, model, resolved):
+    payload = _run_infer_dry_run(tmp_path, "--model", model, "--method", "adacluster")
+
+    assert payload["status"] == "dry_run"
+    assert payload["model"] == resolved
+    assert payload["method"] == "adacluster"
+    assert payload["runtime"]["preflight"]["errors"] == []
+
+
+@pytest.mark.parametrize(
+    ("model", "resolved"),
+    [
+        ("cogvideox", "cogvideox-t2v"),
+        ("cogvideox-i2v", "cogvideox-i2v"),
+        ("ltx", "ltx-video"),
+        ("ltx-i2v", "ltx-video-i2v"),
+        ("allegro", "allegro"),
+        ("mochi", "mochi-1"),
+        ("easyanimate", "easyanimate-v5-t2v-12b"),
+    ],
+)
+def test_infer_dry_run_allows_new_backbone_flashomni_sparse_processors(tmp_path, model, resolved):
+    payload = _run_infer_dry_run(
+        tmp_path,
+        "--model", model,
+        "--method", "flashomni",
+        "--method-config", "sparse_pattern=paper_mmdit",
+        "--method-config", "max_order=0",
+        "--method-config", "use_sparse_gemm=false",
+    )
+
+    assert payload["status"] == "dry_run"
+    assert payload["model"] == resolved
+    assert payload["method"] == "flashomni"
+    assert payload["runtime"]["preflight"]["errors"] == []
+
+
+@pytest.mark.parametrize(
+    ("model", "resolved"),
+    [
+        ("cogvideox", "cogvideox-t2v"),
+        ("cogvideox-i2v", "cogvideox-i2v"),
+        ("ltx", "ltx-video"),
+        ("ltx-i2v", "ltx-video-i2v"),
+        ("allegro", "allegro"),
+        ("mochi", "mochi-1"),
+        ("easyanimate", "easyanimate-v5-t2v-12b"),
+    ],
+)
+def test_infer_dry_run_allows_new_backbone_sta_sparse_processors(tmp_path, model, resolved):
+    payload = _run_infer_dry_run(tmp_path, "--model", model, "--method", "sta")
+
+    assert payload["status"] == "dry_run"
+    assert payload["model"] == resolved
+    assert payload["method"] == "sta"
+    assert payload["runtime"]["preflight"]["errors"] == []
+
+
+@pytest.mark.parametrize(
+    ("model", "resolved", "shape_args"),
+    [
+        ("cogvideox", "cogvideox-t2v", ["--height", "256", "--width", "256", "--num-frames", "5"]),
+        ("cogvideox-i2v", "cogvideox-i2v", ["--height", "480", "--width", "720", "--num-frames", "5"]),
+        ("ltx", "ltx-video", ["--height", "512", "--width", "512", "--num-frames", "5"]),
+        ("ltx-i2v", "ltx-video-i2v", ["--height", "512", "--width", "512", "--num-frames", "5"]),
+        ("allegro", "allegro", ["--height", "256", "--width", "256", "--num-frames", "5"]),
+        ("mochi", "mochi-1", ["--height", "512", "--width", "512", "--num-frames", "7"]),
+        ("easyanimate", "easyanimate-v5-t2v-12b", ["--height", "256", "--width", "256", "--num-frames", "5"]),
+    ],
+)
+def test_infer_dry_run_allows_new_backbone_draft_sparse_processors(tmp_path, model, resolved, shape_args):
+    payload = _run_infer_dry_run(tmp_path, "--model", model, "--method", "draft", *shape_args)
+
+    assert payload["status"] == "dry_run"
+    assert payload["model"] == resolved
+    assert payload["method"] == "draft"
+    assert payload["runtime"]["preflight"]["errors"] == []
+
+
+@pytest.mark.parametrize(
+    ("model", "resolved", "shape_args"),
+    [
+        ("cogvideox", "cogvideox-t2v", ["--height", "128", "--width", "128", "--num-frames", "5"]),
+        (
+            "cogvideox-i2v",
+            "cogvideox-i2v",
+            [
+                "--height", "480",
+                "--width", "720",
+                "--num-frames", "125",
+                "--method-config", "block_size=64",
+            ],
+        ),
+        ("ltx", "ltx-video", ["--height", "512", "--width", "512", "--num-frames", "5"]),
+        ("ltx-i2v", "ltx-video-i2v", ["--height", "512", "--width", "512", "--num-frames", "5"]),
+        ("allegro", "allegro", ["--height", "128", "--width", "128", "--num-frames", "5"]),
+        ("mochi", "mochi-1", ["--height", "256", "--width", "256", "--num-frames", "7"]),
+        ("easyanimate", "easyanimate-v5-t2v-12b", ["--height", "128", "--width", "128", "--num-frames", "5"]),
+    ],
+)
+def test_infer_dry_run_allows_new_backbone_radial_sparse_processors(tmp_path, model, resolved, shape_args):
+    payload = _run_infer_dry_run(tmp_path, "--model", model, "--method", "radial", *shape_args)
+
+    assert payload["status"] == "dry_run"
+    assert payload["model"] == resolved
+    assert payload["method"] == "radial"
+    assert payload["runtime"]["preflight"]["errors"] == []
+
+
+def test_infer_dry_run_allows_cogvideox_svoo_sparse_processor(tmp_path):
+    payload = _run_infer_dry_run(tmp_path, "--model", "cogvideox", "--method", "svoo")
+
+    assert payload["status"] == "dry_run"
+    assert payload["model"] == "cogvideox-t2v"
+    assert payload["method"] == "svoo"
+    assert payload["method_config"]["kmeans_iter_init"] == 2
+    assert payload["method_config"]["kmeans_iter_step"] == 2
+    assert payload["method_config"]["use_dynamic_min_kc_ratio"] is False
+    assert payload["runtime"]["preflight"]["errors"] == []
+
+
+def test_infer_dry_run_allows_cogvideox_i2v_sparse_processor(tmp_path):
+    payload = _run_infer_dry_run(tmp_path, "--model", "cogvideox-i2v", "--method", "svoo")
+
+    assert payload["status"] == "dry_run"
+    assert payload["model"] == "cogvideox-i2v"
+    assert payload["model_id"].endswith("CogVideoX-5b-I2V")
+    assert payload["method"] == "svoo"
+    assert payload["method_config"]["use_dynamic_min_kc_ratio"] is False
+    assert payload["runtime"]["preflight"]["errors"] == []
+
+
+def test_infer_dry_run_allows_ltx_svg2_sparse_processor(tmp_path):
+    payload = _run_infer_dry_run(tmp_path, "--model", "ltx", "--method", "svg2")
+
+    assert payload["status"] == "dry_run"
+    assert payload["model"] == "ltx-video"
+    assert payload["method"] == "svg2"
+    assert payload["num_frames"] == 161
+    assert payload["fps"] == 25
+
+
+def test_infer_dry_run_allows_ltx_i2v_svoo_sparse_processor(tmp_path):
+    payload = _run_infer_dry_run(tmp_path, "--model", "ltx-i2v", "--method", "svoo")
+
+    assert payload["status"] == "dry_run"
+    assert payload["model"] == "ltx-video-i2v"
+    assert payload["method"] == "svoo"
+    assert payload["method_config"]["use_dynamic_min_kc_ratio"] is False
+    assert payload["method_config"]["kmeans_iter_init"] == 2
+    assert payload["runtime"]["preflight"]["errors"] == []
+
+
+def test_ltx_single_file_checkpoint_prefers_base_checkpoint(tmp_path):
+    infer = _load_infer_module()
+    model_dir = tmp_path / "ltx-video"
+    model_dir.mkdir()
+    (model_dir / "ltxv-spatial-upscaler-0.9.8.safetensors").write_bytes(b"")
+    preferred = model_dir / "ltx-video-2b-v0.9.5.safetensors"
+    preferred.write_bytes(b"")
+
+    assert infer._ltx_single_file_checkpoint(str(model_dir)) == preferred
+
+
+def test_ltx_single_file_checkpoint_uses_component_layout_when_present(tmp_path):
+    infer = _load_infer_module()
+    model_dir = tmp_path / "ltx-video"
+    (model_dir / "transformer").mkdir(parents=True)
+    (model_dir / "transformer" / "config.json").write_text("{}", encoding="utf-8")
+    (model_dir / "ltx-video-2b-v0.9.5.safetensors").write_bytes(b"")
+
+    assert infer._ltx_single_file_checkpoint(str(model_dir)) is None
+
+
+def test_resolve_ltx_text_component_root_finds_compatible_sibling_t5(tmp_path):
+    infer = _load_infer_module()
+    model_dir = tmp_path / "ltx-video"
+    text_encoder = model_dir / "text_encoder"
+    text_encoder.mkdir(parents=True)
+    text_encoder.joinpath("config.json").write_text(
+        json.dumps({"model_type": "t5", "d_model": 4096, "num_layers": 24, "vocab_size": 32128}),
+        encoding="utf-8",
+    )
+
+    sibling = tmp_path / "CogVideoX-5b"
+    sibling_text_encoder = sibling / "text_encoder"
+    sibling_tokenizer = sibling / "tokenizer"
+    sibling_text_encoder.mkdir(parents=True)
+    sibling_tokenizer.mkdir(parents=True)
+    sibling_text_encoder.joinpath("config.json").write_text(
+        json.dumps({"model_type": "t5", "d_model": 4096, "num_layers": 24, "vocab_size": 32128}),
+        encoding="utf-8",
+    )
+    sibling_text_encoder.joinpath("model.safetensors").write_bytes(b"")
+    sibling_tokenizer.joinpath("spiece.model").write_bytes(b"")
+
+    assert infer._resolve_ltx_text_component_root(str(model_dir)) == sibling
+
+
+def test_infer_dry_run_allows_allegro_svg2_sparse_processor(tmp_path):
+    payload = _run_infer_dry_run(tmp_path, "--model", "allegro", "--method", "svg2")
+
+    assert payload["status"] == "dry_run"
+    assert payload["model"] == "allegro"
+    assert payload["method"] == "svg2"
+    assert payload["num_frames"] == 88
+    assert payload["fps"] == 15
+    assert payload["method_config"]["kmeans_iter_init"] == 50
+    assert payload["runtime"]["preflight"]["errors"] == []
+
+
+def test_infer_dry_run_allows_allegro_svoo_sparse_processor(tmp_path):
+    payload = _run_infer_dry_run(tmp_path, "--model", "allegro", "--method", "svoo")
+
+    assert payload["status"] == "dry_run"
+    assert payload["model"] == "allegro"
+    assert payload["method"] == "svoo"
+    assert payload["method_config"]["use_dynamic_min_kc_ratio"] is False
+    assert payload["method_config"]["kmeans_iter_init"] == 2
+    assert payload["runtime"]["preflight"]["errors"] == []
+
+
+def test_infer_dry_run_allows_mochi_svg2_sparse_processor(tmp_path):
+    payload = _run_infer_dry_run(tmp_path, "--model", "mochi", "--method", "svg2")
+
+    assert payload["status"] == "dry_run"
+    assert payload["model"] == "mochi-1"
+    assert payload["method"] == "svg2"
+    assert payload["num_frames"] == 19
+    assert payload["fps"] == 8
+    assert payload["method_config"]["kmeans_iter_init"] == 50
+    assert payload["runtime"]["preflight"]["errors"] == []
+
+
+def test_infer_dry_run_allows_mochi_svoo_sparse_processor(tmp_path):
+    payload = _run_infer_dry_run(tmp_path, "--model", "mochi", "--method", "svoo")
+
+    assert payload["status"] == "dry_run"
+    assert payload["model"] == "mochi-1"
+    assert payload["method"] == "svoo"
+    assert payload["method_config"]["use_dynamic_min_kc_ratio"] is False
+    assert payload["method_config"]["kmeans_iter_init"] == 2
+    assert payload["runtime"]["preflight"]["errors"] == []
+
+
+def test_infer_dry_run_allows_easyanimate_svg2_sparse_processor(tmp_path):
+    payload = _run_infer_dry_run(tmp_path, "--model", "easyanimate", "--method", "svg2")
+
+    assert payload["status"] == "dry_run"
+    assert payload["model"] == "easyanimate-v5-t2v-12b"
+    assert payload["method"] == "svg2"
+    assert payload["num_frames"] == 49
+    assert payload["fps"] == 8
+    assert payload["method_config"]["kmeans_iter_init"] == 50
+    assert payload["runtime"]["preflight"]["errors"] == []
+
+
+def test_infer_dry_run_allows_easyanimate_svoo_sparse_processor(tmp_path):
+    payload = _run_infer_dry_run(tmp_path, "--model", "easyanimate", "--method", "svoo")
+
+    assert payload["status"] == "dry_run"
+    assert payload["model"] == "easyanimate-v5-t2v-12b"
+    assert payload["method"] == "svoo"
+    assert payload["method_config"]["use_dynamic_min_kc_ratio"] is False
+    assert payload["method_config"]["kmeans_iter_init"] == 2
+    assert payload["runtime"]["preflight"]["errors"] == []
+
+
+def test_infer_dry_run_rejects_invalid_svoo_cocluster_iterations(tmp_path):
+    code, payload = _run_infer_dry_run_unchecked(
+        tmp_path,
+        "--model",
+        "cogvideox",
+        "--method",
+        "svoo",
+        "--method-config",
+        "kmeans_iter_init=0",
+    )
+
+    assert code == 1
+    assert payload["failed_stage"] == "validate_method_config"
+    assert "kmeans_iter_init > 0" in payload["error"]
+
+
+def test_new_backbone_specs_enable_all_public_sparse_methods():
+    infer = _load_infer_module()
+    from sparsevideo._support import LIMITED_METHODS_BY_MODEL_TYPE
+
+    all_method_models = [
+        "cogvideox-t2v",
+        "cogvideox-i2v",
+        "ltx-video",
+        "ltx-video-i2v",
+        "allegro",
+        "mochi-1",
+        "easyanimate-v5-t2v-12b",
+    ]
+
+    assert LIMITED_METHODS_BY_MODEL_TYPE == {}
+    for model_key in all_method_models:
+        spec = infer.MODEL_SPECS[model_key]
+        assert spec.sparse_supported is True
+        assert spec.sparse_methods is None
+
+
+def test_infer_dry_run_labels_sana_video_as_incompatible(tmp_path):
+    code, payload = _run_infer_dry_run_unchecked(tmp_path, "--model", "sana-video", "--method", "svg2")
+
+    assert code == 0
+    assert payload["status"] == "unsupported_dry_run"
+    assert payload["model"] == "sana-video"
+    assert payload["compatibility_label"] == "incompatible"
+    assert "SanaLinearAttnProcessor3_0 linear attention" in payload["unsupported_reason"]
+    assert "compatibility_label=incompatible" in payload["error"]
+
+
+def test_infer_dry_run_labels_kandinsky5_as_native_na(tmp_path):
+    code, payload = _run_infer_dry_run_unchecked(tmp_path, "--model", "kandinsky5", "--method", "svoo")
+
+    assert code == 0
+    assert payload["status"] == "unsupported_dry_run"
+    assert payload["model"] == "kandinsky5-t2v"
+    assert payload["compatibility_label"] == "native-N/A"
+    assert "native sparse attention controls" in payload["unsupported_reason"]
+    assert "compatibility_label=native-N/A" in payload["error"]
+
+
+@pytest.mark.parametrize(
+    ("model", "expected_key", "reason"),
+    [
+        ("motif-video", "motif-video", "MotifVideo is not available"),
+        ("ltx-video-2", "ltx-video-2", "LTX Video 2 is not available"),
+    ],
+)
+def test_infer_dry_run_labels_unavailable_backbones_as_unknown(tmp_path, model, expected_key, reason):
+    code, payload = _run_infer_dry_run_unchecked(tmp_path, "--model", model, "--method", "svg2")
+
+    assert code == 0
+    assert payload["status"] == "unsupported_dry_run"
+    assert payload["model"] == expected_key
+    assert payload["compatibility_label"] == "unknown"
+    assert reason in payload["unsupported_reason"]
+    assert "compatibility_label=unknown" in payload["error"]
+
+
+def test_cogvideox_sparse_dry_run_does_not_preload_fused_native_kernels(tmp_path):
+    payload = _run_infer_dry_run(tmp_path, "--model", "cogvideox", "--method", "svg2")
+
+    fused = payload["runtime"]["optional_kernels"]["svg_svoo_fused_kernels"]
+    assert fused["native_load_checked"] is False
+
+
+def test_ltx_sparse_dry_run_does_not_preload_fused_native_kernels(tmp_path):
+    payload = _run_infer_dry_run(tmp_path, "--model", "ltx", "--method", "svg2")
+
+    fused = payload["runtime"]["optional_kernels"]["svg_svoo_fused_kernels"]
+    assert fused["native_load_checked"] is False
+
+
+def test_mochi_sparse_dry_run_does_not_preload_fused_native_kernels(tmp_path):
+    payload = _run_infer_dry_run(tmp_path, "--model", "mochi", "--method", "svg2")
+
+    fused = payload["runtime"]["optional_kernels"]["svg_svoo_fused_kernels"]
+    assert fused["native_load_checked"] is False
+
+
+def test_wan_sparse_dry_run_keeps_fused_native_kernel_preload(tmp_path):
+    payload = _run_infer_dry_run(tmp_path, "--model", "wan1.3b", "--method", "svg2")
+
+    fused = payload["runtime"]["optional_kernels"]["svg_svoo_fused_kernels"]
+    assert fused["native_load_checked"] is True
+
+
 def test_infer_dry_run_warns_for_wan13b_720p_quality_baseline(tmp_path):
     payload = _run_infer_dry_run(tmp_path, "--model", "wan1.3b", "--method", "dense")
 
@@ -1481,7 +1963,8 @@ def test_infer_flashomni_hunyuan_paper_mmdit_rejects_taylor_gemm_path(tmp_path):
     assert result.returncode == 1
     assert payload["status"] == "failed"
     assert payload["failed_stage"] == "validate_method_config"
-    assert "max_order=0,use_sparse_gemm=false" in payload["error"]
+    assert "use_sparse_gemm=false" in payload["error"]
+    assert "Sparse GEMM projection" in payload["error"]
     assert "quality degradation and performance regression" in payload["error"]
 
 
@@ -3461,6 +3944,33 @@ def test_resolve_scheduler_first_times_fp_matches_upstream_threshold_conversion(
     }
 
 
+def test_resolve_scheduler_first_times_fp_passes_mu_for_dynamic_shift_scheduler():
+    infer = _load_infer_module()
+
+    class _Scheduler:
+        def __init__(self):
+            self.calls = []
+
+        def set_timesteps(self, steps, **kwargs):
+            self.calls.append((steps, kwargs))
+            if "mu" not in kwargs:
+                raise ValueError("`mu` must be passed when `use_dynamic_shifting` is set to be `True`")
+            self.timesteps = torch.arange(1000, 1000 - 10 * steps, -10)
+
+    class _Pipe:
+        def __init__(self):
+            self.scheduler = _Scheduler()
+
+    pipe = _Pipe()
+    cfg = {"first_times_fp": 0.2}
+
+    resolution = infer.resolve_scheduler_first_times_fp(pipe, "svg2", cfg, 50)
+
+    assert pipe.scheduler.calls == []
+    assert cfg["first_times_fp"] == 909.0
+    assert resolution["first_times_fp_resolved"] == 909.0
+
+
 def test_resolve_scheduler_first_times_fp_leaves_threshold_values_unchanged():
     infer = _load_infer_module()
 
@@ -3640,6 +4150,8 @@ def test_validate_resolves_svoo_dynamic_sparsity_csv_path():
     config = {
         "implementation": "native",
         "sparse_backend": "flashinfer",
+        "kmeans_iter_init": 2,
+        "kmeans_iter_step": 2,
         "use_dynamic_min_kc_ratio": True,
         "sparsity_csv_path": "src/sparsevideo/methods/svoo/sparsity_profiles/sparsity_wan_1.3B_t2v.csv",
     }
@@ -3649,6 +4161,53 @@ def test_validate_resolves_svoo_dynamic_sparsity_csv_path():
     assert config["sparsity_csv_path"] == str(
         (infer.REPO_ROOT / "src/sparsevideo/methods/svoo/sparsity_profiles/sparsity_wan_1.3B_t2v.csv").resolve()
     )
+
+
+def test_default_svoo_sparsity_csv_rejects_unprofiled_models():
+    infer = _load_infer_module()
+    spec = infer.MODEL_SPECS["cogvideox-t2v"]
+
+    with pytest.raises(ValueError, match="no owned offline sparsity profile"):
+        infer.default_svoo_sparsity_csv_path(spec)
+
+
+def test_default_svoo_sparsity_csv_resolves_i2v_profiles():
+    infer = _load_infer_module()
+
+    assert infer.default_svoo_sparsity_csv_path(
+        infer.MODEL_SPECS["wan21-i2v-14b"]
+    ).endswith("sparsity_wan_14B_i2v.csv")
+    assert infer.default_svoo_sparsity_csv_path(
+        infer.MODEL_SPECS["wan22-i2v-a14b"]
+    ).endswith("sparsity_wan22_A14B_i2v.csv")
+    assert infer.default_svoo_sparsity_csv_path(
+        infer.MODEL_SPECS["hunyuan-i2v"]
+    ).endswith("sparsity_hunyuan10_13B_i2v.csv")
+
+
+def test_infer_dry_run_resolves_svoo_i2v_profiles(tmp_path):
+    cases = [
+        ("wan14b-i2v", "sparsity_wan_14B_i2v.csv", True),
+        ("wan22-i2v", "sparsity_wan22_A14B_i2v.csv", True),
+        ("hunyuan-i2v", "sparsity_hunyuan10_13B_i2v.csv", True),
+        ("skyreels-v2-i2v", "sparsity_profiles/sparsity_results.csv", False),
+    ]
+
+    for model, profile_name, use_dynamic in cases:
+        payload = _run_infer_dry_run(
+            tmp_path,
+            "--model",
+            model,
+            "--method",
+            "svoo",
+            "--image",
+            "/tmp/nonexistent.jpg",
+        )
+        cfg = payload["method_config"]
+
+        assert payload["status"] == "dry_run"
+        assert cfg["use_dynamic_min_kc_ratio"] is use_dynamic
+        assert cfg["sparsity_csv_path"].endswith(profile_name)
 
 
 def test_svoo_warmup_status_fails_strict_when_disabled():
@@ -4643,6 +5202,43 @@ def test_run_restores_sparse_attention_after_generation_failure(monkeypatch, tmp
         "type": "_Handle",
         "summary_available": False,
     }
+
+
+def test_hunyuan_i2v_prompt_template_compat_overrides_missing_default_anchor():
+    infer = _load_infer_module()
+
+    class _Tokenizer:
+        def __call__(self, *args, **kwargs):
+            return types.SimpleNamespace(
+                input_ids=torch.tensor([[128000, 128006, 9125, 128007, 128009, 128006, 78191, 128007]])
+            )
+
+    pipe = types.SimpleNamespace(tokenizer=_Tokenizer())
+    call_kwargs = {"prompt": "prompt"}
+
+    status = infer.apply_hunyuan_i2v_prompt_template_compat(pipe, call_kwargs)
+
+    assert status["override"] is True
+    assert status["default_double_return_token_id"] == 271
+    assert status["selected_double_return_token_id"] == 128007
+    assert call_kwargs["prompt_template"]["double_return_token_id"] == 128007
+
+
+def test_hunyuan_i2v_prompt_template_compat_keeps_default_anchor_when_present():
+    infer = _load_infer_module()
+
+    class _Tokenizer:
+        def __call__(self, *args, **kwargs):
+            return types.SimpleNamespace(input_ids=torch.tensor([[128000, 271, 128007]]))
+
+    pipe = types.SimpleNamespace(tokenizer=_Tokenizer())
+    call_kwargs = {"prompt": "prompt"}
+
+    status = infer.apply_hunyuan_i2v_prompt_template_compat(pipe, call_kwargs)
+
+    assert status["override"] is False
+    assert status["selected_double_return_token_id"] == 271
+    assert call_kwargs["prompt_template"]["double_return_token_id"] == 271
 
 
 @pytest.mark.skipif(

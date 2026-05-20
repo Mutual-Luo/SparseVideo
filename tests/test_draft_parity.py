@@ -18,8 +18,10 @@ from sparsevideo.methods.draft.method import (
     _draft_is_dense_layer_or_timestep,
     _draft_mit_path,
     _draft_triton_path,
+    _crop_draft_video_canvas,
     _fixed_block_sizes,
     _generate_reorg_restore_indices,
+    _pad_draft_video_canvas,
     _sample_qk_attention_2d,
     _validate_upstream_draft_layout,
 )
@@ -467,6 +469,98 @@ def test_draft_mit_path_calls_upstream_block_sparse_interface(monkeypatch):
     assert call["kwargs"]["is_causal"] is False
     assert call["kwargs"]["return_attn_probs"] is False
     assert torch.equal(out, query)
+
+
+def test_draft_mit_path_pads_sub_128_head_dim_preserving_scale(monkeypatch):
+    calls = []
+
+    def fake_load_block_sparse_attn_func():
+        def fake_func(q, k, v, *args, **kwargs):
+            calls.append({"q_shape": tuple(q.shape), "kwargs": kwargs})
+            return q
+
+        return fake_func
+
+    monkeypatch.setattr(
+        "sparsevideo.kernels.draft_block_sparse_runtime.load_block_sparse_attn_func",
+        fake_load_block_sparse_attn_func,
+    )
+
+    query = torch.arange(1 * 128 * 1 * 96, dtype=torch.float32).reshape(1, 128, 1, 96)
+    reorg_idx, restore_idx = _generate_reorg_restore_indices(
+        pool_h=8,
+        pool_w=16,
+        latent_h=8,
+        latent_w=16,
+        visual_len=128,
+        text_len=0,
+        device=torch.device("cpu"),
+    )
+
+    out = _draft_mit_path(
+        query,
+        query,
+        query,
+        B=1,
+        N=128,
+        H=1,
+        D=96,
+        context_len=0,
+        video_end=128,
+        T=1,
+        frame_h=8,
+        frame_w=16,
+        frame_size=128,
+        sparsity_ratio=0.75,
+        pool_h=8,
+        pool_w=16,
+        reorg_idx=reorg_idx,
+        restore_idx=restore_idx,
+    )
+
+    assert calls[0]["q_shape"] == (128, 1, 128)
+    assert calls[0]["kwargs"]["softmax_scale"] == pytest.approx(96 ** -0.5)
+    assert out.shape == query.shape
+    assert torch.equal(out, query)
+
+
+def test_draft_canvas_padding_round_trips_video_and_text_tail():
+    query = torch.arange(1 * 14 * 1 * 2, dtype=torch.float32).reshape(1, 14, 1, 2)
+    key = query + 1000
+    value = query + 2000
+
+    padded_query, padded_key, padded_value = _pad_draft_video_canvas(
+        query,
+        key,
+        value,
+        context_len=0,
+        video_end=12,
+        tail_len=2,
+        T=1,
+        frame_h=3,
+        frame_w=4,
+        canvas_h=4,
+        canvas_w=8,
+    )
+
+    assert padded_query.shape == (1, 34, 1, 2)
+
+    for padded, original in (
+        (padded_query, query),
+        (padded_key, key),
+        (padded_value, value),
+    ):
+        cropped = _crop_draft_video_canvas(
+            padded,
+            context_len=0,
+            tail_len=2,
+            T=1,
+            frame_h=3,
+            frame_w=4,
+            canvas_h=4,
+            canvas_w=8,
+        )
+        assert torch.equal(cropped, original)
 
 
 def test_draft_mit_path_matches_upstream_forward_kernel_inputs(monkeypatch):

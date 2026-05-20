@@ -11,6 +11,7 @@ import torch.nn.functional as F
 
 
 STA_TILE_SIZE = (6, 8, 8)
+STA_TRITON_HEAD_DIMS = (16, 32, 64, 128, 256)
 STA_SUPPORTED_SEQ_SHAPES = {
     "18x48x80": (18, 48, 80),
     "30x48x80": (30, 48, 80),
@@ -41,7 +42,7 @@ def sliding_tile_attention(
     seq_shape = _validate_fastvideo_sta_inputs(q, k, v, window_size, has_text, seq_shape)
     if not q.is_cuda:
         raise RuntimeError("STA sparse path requires CUDA")
-    if not _can_use_h100_sta(q):
+    if not _can_use_h100_sta(q) or seq_shape not in STA_SUPPORTED_SEQ_SHAPES:
         return _sliding_tile_attention_triton(q, k, v, window_size, text_length, has_text, seq_shape)
     return _sliding_tile_attention_h100(q, k, v, window_size, text_length, has_text, seq_shape)
 
@@ -66,8 +67,15 @@ def _sliding_tile_attention_triton(
     if _triton_full_window_dense_equivalent(q, window_size, text_length, has_text, seq_shape):
         return F.scaled_dot_product_attention(q, k, v, dropout_p=0.0)
 
+    original_head_dim = int(q.shape[-1])
+    kernel_head_dim = _sta_triton_head_dim(original_head_dim)
+    if kernel_head_dim != original_head_dim:
+        q = F.pad(q, (0, kernel_head_dim - original_head_dim))
+        k = F.pad(k, (0, kernel_head_dim - original_head_dim))
+        v = F.pad(v, (0, kernel_head_dim - original_head_dim))
+
     sta_triton = _owned_fastvideo_sta_triton()
-    return sta_triton(
+    out = sta_triton(
         q,
         k,
         v,
@@ -75,7 +83,11 @@ def _sliding_tile_attention_triton(
         text_length,
         has_text,
         seq_shape,
+        sm_scale=original_head_dim ** -0.5,
     )
+    if kernel_head_dim != original_head_dim:
+        out = out[..., :original_head_dim].contiguous()
+    return out
 
 
 def _sliding_tile_attention_h100(
@@ -117,7 +129,16 @@ def _sliding_tile_attention_h100(
 def _canvas_shape(seq_shape: str) -> tuple[int, int, int]:
     normalized = seq_shape.lower()
     if normalized not in STA_SUPPORTED_SEQ_SHAPES:
-        raise ValueError(f"Unsupported seq_shape={seq_shape!r}; expected one of {sorted(STA_SUPPORTED_SEQ_SHAPES)}")
+        parts = normalized.split("x")
+        if len(parts) != 3:
+            raise ValueError(f"Unsupported seq_shape={seq_shape!r}; expected TxHxW")
+        try:
+            shape = tuple(int(part) for part in parts)
+        except ValueError as exc:
+            raise ValueError(f"Unsupported seq_shape={seq_shape!r}; expected integer TxHxW") from exc
+        if any(dim <= 0 for dim in shape):
+            raise ValueError(f"Unsupported seq_shape={seq_shape!r}; dimensions must be positive")
+        return shape  # type: ignore[return-value]
     return STA_SUPPORTED_SEQ_SHAPES[normalized]
 
 
@@ -140,8 +161,14 @@ def _validate_fastvideo_sta_inputs(
     canvas_shape = _canvas_shape(normalized)
     image_tokens = math.prod(canvas_shape)
     seq_length = q.shape[2]
+    native_shape = normalized in STA_SUPPORTED_SEQ_SHAPES
+    total_tile_size = math.prod(STA_TILE_SIZE)
+    if any(dim % tile != 0 for dim, tile in zip(canvas_shape, STA_TILE_SIZE)):
+        raise ValueError(
+            f"Unsupported {normalized}, canvas dimensions must be tile-aligned to {STA_TILE_SIZE}"
+        )
 
-    if has_text:
+    if has_text and native_shape:
         if normalized != "30x48x80":
             raise ValueError("FastVideo STA text path is only defined for seq_shape='30x48x80'")
         if seq_length < image_tokens or seq_length > image_tokens + 256:
@@ -149,7 +176,13 @@ def _validate_fastvideo_sta_inputs(
                 f"Unsupported {normalized}, current shape is {tuple(q.shape)}, "
                 "only support image tokens plus up to 256 text tokens"
             )
-    elif normalized not in ("18x48x80", "36x48x48"):
+    elif has_text:
+        if seq_length < image_tokens or seq_length > image_tokens + total_tile_size:
+            raise ValueError(
+                f"Unsupported {normalized}, current shape is {tuple(q.shape)}, "
+                f"only support image tokens plus up to one STA tile ({total_tile_size}) text tokens"
+            )
+    elif native_shape and normalized not in ("18x48x80", "36x48x48"):
         raise ValueError(
             f"Unsupported {normalized}, current shape is {tuple(q.shape)}, "
             "only support '36x48x48' for Stepvideo and '18x48x80' for Wan when has_text=False"
@@ -185,6 +218,18 @@ def _triton_full_window_dense_equivalent(
         if t < full_window[0] or h < full_window[1] or w < full_window[2]:
             return False
     return True
+
+
+def _sta_triton_head_dim(head_dim: int) -> int:
+    head_dim = int(head_dim)
+    if head_dim < STA_TRITON_HEAD_DIMS[0] or head_dim in STA_TRITON_HEAD_DIMS:
+        return head_dim
+    for candidate in STA_TRITON_HEAD_DIMS:
+        if head_dim <= candidate:
+            return candidate
+    raise RuntimeError(
+        f"STA Triton supports head_dim up to {STA_TRITON_HEAD_DIMS[-1]}; got {head_dim}."
+    )
 
 
 def _can_use_h100_sta(q: torch.Tensor) -> bool:

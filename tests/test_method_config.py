@@ -115,11 +115,78 @@ def test_svoo_inference_context_uses_upstream_720p_defaults():
     assert wan22["sparsity_csv_path"].endswith("sparsity_wan22_A14B_t2v.csv")
     assert Path(wan22["sparsity_csv_path"]).exists()
 
+    wan_i2v = sparsevideo.default_method_config("svoo", model_family="wan", model_key="wan21-i2v-14b")
+    assert wan_i2v["use_dynamic_min_kc_ratio"] is True
+    assert wan_i2v["sparsity_csv_path"].endswith("sparsity_wan_14B_i2v.csv")
+    assert Path(wan_i2v["sparsity_csv_path"]).exists()
+
+    wan22_i2v = sparsevideo.default_method_config("svoo", model_family="wan", model_key="wan22-i2v-a14b")
+    assert wan22_i2v["use_dynamic_min_kc_ratio"] is True
+    assert wan22_i2v["sparsity_csv_path"].endswith("sparsity_wan22_A14B_i2v.csv")
+    assert Path(wan22_i2v["sparsity_csv_path"]).exists()
+
+    wan_animate = sparsevideo.default_method_config("svoo", model_family="wan", model_key="wan22-animate-14b")
+    assert wan_animate["use_dynamic_min_kc_ratio"] is False
+    assert wan_animate["num_q_centroids"] == 256
+    assert wan_animate["sparsity_csv_path"] == "sparsity_profiles/sparsity_results.csv"
+
+    wan_vace = sparsevideo.default_method_config("svoo", model_family="wan", model_key="wan21-vace-1.3b")
+    assert wan_vace["use_dynamic_min_kc_ratio"] is False
+    assert wan_vace["num_q_centroids"] == 256
+    assert wan_vace["sparsity_csv_path"] == "sparsity_profiles/sparsity_results.csv"
+
     hunyuan = sparsevideo.default_method_config("svoo", model_family="hunyuan_video")
     assert hunyuan["top_p_kmeans"] == 0.88
     assert hunyuan["start_reuse_step"] == 6
     assert hunyuan["sparsity_csv_path"].endswith("sparsity_hunyuan10_13B_t2v.csv")
     assert Path(hunyuan["sparsity_csv_path"]).exists()
+
+    hunyuan_i2v = sparsevideo.default_method_config(
+        "svoo",
+        model_family="hunyuan_video",
+        model_key="hunyuan-i2v",
+    )
+    assert hunyuan_i2v["use_dynamic_min_kc_ratio"] is True
+    assert hunyuan_i2v["sparsity_csv_path"].endswith("sparsity_hunyuan10_13B_i2v.csv")
+    assert Path(hunyuan_i2v["sparsity_csv_path"]).exists()
+
+    cogvideox = sparsevideo.default_method_config(
+        "svoo",
+        model_family="cogvideox",
+        model_key="cogvideox-t2v",
+    )
+    assert cogvideox["use_dynamic_min_kc_ratio"] is False
+    assert cogvideox["sparsity_csv_path"] == "sparsity_profiles/sparsity_results.csv"
+
+    ltx = sparsevideo.default_method_config(
+        "svoo",
+        model_family="ltx_video",
+        model_key="ltx-video",
+    )
+    assert ltx["use_dynamic_min_kc_ratio"] is False
+    assert ltx["num_q_centroids"] == 256
+    assert ltx["num_k_centroids"] == 1024
+    assert ltx["sparsity_csv_path"] == "sparsity_profiles/sparsity_results.csv"
+
+    mochi = sparsevideo.default_method_config(
+        "svoo",
+        model_family="mochi",
+        model_key="mochi-1",
+    )
+    assert mochi["use_dynamic_min_kc_ratio"] is False
+    assert mochi["num_q_centroids"] == 256
+    assert mochi["num_k_centroids"] == 1024
+    assert mochi["sparsity_csv_path"] == "sparsity_profiles/sparsity_results.csv"
+
+    easyanimate = sparsevideo.default_method_config(
+        "svoo",
+        model_family="easyanimate",
+        model_key="easyanimate-v5-t2v-12b",
+    )
+    assert easyanimate["use_dynamic_min_kc_ratio"] is False
+    assert easyanimate["num_q_centroids"] == 256
+    assert easyanimate["num_k_centroids"] == 1024
+    assert easyanimate["sparsity_csv_path"] == "sparsity_profiles/sparsity_results.csv"
 
 
 def test_svg2_inference_context_uses_upstream_720p_defaults():
@@ -139,6 +206,20 @@ def test_svg2_inference_context_uses_upstream_720p_defaults():
     assert hunyuan["zero_step_kmeans_init"] is True
     assert hunyuan["context_length"] == 256
     assert hunyuan["prompt_length"] is None
+
+    mochi = sparsevideo.default_method_config("svg2", model_family="mochi")
+    assert mochi["num_q_centroids"] == 300
+    assert mochi["num_k_centroids"] == 1000
+    assert mochi["min_kc_ratio"] == 0.10
+    assert mochi["kmeans_iter_init"] == 50
+    assert mochi["kmeans_iter_step"] == 2
+
+    easyanimate = sparsevideo.default_method_config("svg2", model_family="easyanimate")
+    assert easyanimate["num_q_centroids"] == 300
+    assert easyanimate["num_k_centroids"] == 1000
+    assert easyanimate["min_kc_ratio"] == 0.10
+    assert easyanimate["kmeans_iter_init"] == 50
+    assert easyanimate["kmeans_iter_step"] == 2
 
 
 def test_svg1_inference_context_uses_upstream_720p_defaults():
@@ -237,6 +318,113 @@ def test_svoo_apply_api_defaults_use_model_context():
         model_info=SimpleNamespace(model_type="wan", model_key="wan21-t2v-14b", transformers=[object()]),
     )
     assert wan14.config["sparsity_csv_path"].endswith("sparsity_wan_14B_t2v.csv")
+
+    wan_i2v = SVOOMethod(
+        config={},
+        model_info=SimpleNamespace(model_type="wan", model_key="wan21-i2v-14b", transformers=[object()]),
+    )
+    assert wan_i2v.config["use_dynamic_min_kc_ratio"] is True
+    assert wan_i2v.config["sparsity_csv_path"].endswith("sparsity_wan_14B_i2v.csv")
+
+    hunyuan_i2v = SVOOMethod(
+        config={},
+        model_info=SimpleNamespace(model_type="hunyuan_video", model_key="hunyuan-i2v", transformers=[object()]),
+    )
+    assert hunyuan_i2v.config["use_dynamic_min_kc_ratio"] is True
+    assert hunyuan_i2v.config["sparsity_csv_path"].endswith("sparsity_hunyuan10_13B_i2v.csv")
+
+    skyreels = SVOOMethod(
+        config={},
+        model_info=SimpleNamespace(model_type="wan", model_key="skyreels-v2-t2v-14b", transformers=[object()]),
+    )
+    assert skyreels.config["num_q_centroids"] == 256
+    assert skyreels.config["kmeans_iter_step"] == 2
+    assert skyreels.config["use_dynamic_min_kc_ratio"] is False
+    assert skyreels.config["sparsity_csv_path"] == "sparsity_profiles/sparsity_results.csv"
+
+    wan_animate = SVOOMethod(
+        config={},
+        model_info=SimpleNamespace(model_type="wan", model_key="wan22-animate-14b", transformers=[object()]),
+    )
+    assert wan_animate.config["use_dynamic_min_kc_ratio"] is False
+    assert wan_animate.config["sparsity_csv_path"] == "sparsity_profiles/sparsity_results.csv"
+
+    wan_vace = SVOOMethod(
+        config={},
+        model_info=SimpleNamespace(model_type="wan", model_key="wan21-vace-14b", transformers=[object()]),
+    )
+    assert wan_vace.config["use_dynamic_min_kc_ratio"] is False
+    assert wan_vace.config["sparsity_csv_path"] == "sparsity_profiles/sparsity_results.csv"
+
+    cogvideox = SVOOMethod(
+        config={},
+        model_info=SimpleNamespace(
+            model_type="cogvideox",
+            model_key="cogvideox-t2v",
+            transformers=[object()],
+        ),
+    )
+    assert cogvideox.config["num_q_centroids"] == 256
+    assert cogvideox.config["num_k_centroids"] == 1024
+    assert cogvideox.config["kmeans_iter_init"] == 2
+    assert cogvideox.config["kmeans_iter_step"] == 2
+    assert cogvideox.config["use_dynamic_min_kc_ratio"] is False
+    assert cogvideox.config["sparsity_csv_path"] == "sparsity_profiles/sparsity_results.csv"
+
+    ltx = SVOOMethod(
+        config={},
+        model_info=SimpleNamespace(
+            model_type="ltx_video",
+            model_key="ltx-video",
+            transformers=[object()],
+        ),
+    )
+    assert ltx.config["num_q_centroids"] == 256
+    assert ltx.config["num_k_centroids"] == 1024
+    assert ltx.config["kmeans_iter_init"] == 2
+    assert ltx.config["kmeans_iter_step"] == 2
+    assert ltx.config["use_dynamic_min_kc_ratio"] is False
+    assert ltx.config["sparsity_csv_path"] == "sparsity_profiles/sparsity_results.csv"
+
+    mochi = SVOOMethod(
+        config={},
+        model_info=SimpleNamespace(
+            model_type="mochi",
+            model_key="mochi-1",
+            transformers=[object()],
+        ),
+    )
+    assert mochi.config["num_q_centroids"] == 256
+    assert mochi.config["num_k_centroids"] == 1024
+    assert mochi.config["kmeans_iter_init"] == 2
+    assert mochi.config["kmeans_iter_step"] == 2
+    assert mochi.config["use_dynamic_min_kc_ratio"] is False
+    assert mochi.config["sparsity_csv_path"] == "sparsity_profiles/sparsity_results.csv"
+
+    easyanimate = SVOOMethod(
+        config={},
+        model_info=SimpleNamespace(
+            model_type="easyanimate",
+            model_key="easyanimate-v5-t2v-12b",
+            transformers=[object()],
+        ),
+    )
+    assert easyanimate.config["num_q_centroids"] == 256
+    assert easyanimate.config["num_k_centroids"] == 1024
+    assert easyanimate.config["kmeans_iter_init"] == 2
+    assert easyanimate.config["kmeans_iter_step"] == 2
+    assert easyanimate.config["use_dynamic_min_kc_ratio"] is False
+    assert easyanimate.config["sparsity_csv_path"] == "sparsity_profiles/sparsity_results.csv"
+
+    with pytest.raises(ValueError, match="kmeans_iter_init > 0"):
+        SVOOMethod(
+            config={"kmeans_iter_init": 0},
+            model_info=SimpleNamespace(
+                model_type="cogvideox",
+                model_key="cogvideox-t2v",
+                transformers=[object()],
+            ),
+        )
 
 
 def test_svoo_rejects_missing_dynamic_sparsity_profile():

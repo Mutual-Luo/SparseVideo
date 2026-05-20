@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import importlib.util
 import json
 import re
 import subprocess
@@ -35,7 +36,19 @@ EXPECTED_METHODS = (
     "svg2",
     "svoo",
 )
+EXPECTED_SPARSE_METHODS = tuple(method for method in EXPECTED_METHODS if method != "dense")
+EXPECTED_FULL_BACKBONE_METHODS = ("dense", *EXPECTED_SPARSE_METHODS)
+EXPECTED_ALL_METHOD_BACKBONES = {
+    "cogvideox-t2v",
+    "cogvideox-i2v",
+    "ltx-video",
+    "ltx-video-i2v",
+    "allegro",
+    "mochi-1",
+    "easyanimate-v5-t2v-12b",
+}
 EXPECTED_PUBLIC_API = (
+    "apply",
     "apply_sparse_attention",
     "restore_sparse_attention",
     "SparseAttentionHandle",
@@ -43,10 +56,83 @@ EXPECTED_PUBLIC_API = (
     "normalize_method_config",
     "list_methods",
 )
+EXPECTED_BACKBONE_MODEL_SPECS = {
+    "wan21-t2v-1.3b": "wan",
+    "wan21-t2v-14b": "wan",
+    "wan22-t2v-a14b": "wan",
+    "wan21-i2v-14b": "wan",
+    "wan22-i2v-a14b": "wan",
+    "wan22-animate-14b": "wan",
+    "wan21-vace-1.3b": "wan",
+    "wan21-vace-14b": "wan",
+    "skyreels-v2-t2v-14b": "wan",
+    "skyreels-v2-i2v-14b": "wan",
+    "hunyuan-t2v": "hunyuan_video",
+    "hunyuan-i2v": "hunyuan_video",
+    "cogvideox-t2v": "cogvideox",
+    "cogvideox-i2v": "cogvideox",
+    "ltx-video": "ltx_video",
+    "ltx-video-i2v": "ltx_video",
+    "allegro": "allegro",
+    "mochi-1": "mochi",
+    "easyanimate-v5-t2v-12b": "easyanimate",
+    "motif-video": "motif_video",
+    "ltx-video-2": "ltx_video_2",
+    "sana-video": "sana_video",
+    "kandinsky5-t2v": "kandinsky5",
+}
+EXPECTED_BACKBONE_ALIASES = {
+    "wananimate": "wan22-animate-14b",
+    "wan-vace": "wan21-vace-1.3b",
+    "cogvideox-i2v": "cogvideox-i2v",
+    "ltx": "ltx-video",
+    "ltx-i2v": "ltx-video-i2v",
+    "allegro": "allegro",
+    "mochi": "mochi-1",
+    "easyanimate": "easyanimate-v5-t2v-12b",
+    "motif-video": "motif-video",
+    "ltx-video-2": "ltx-video-2",
+    "sana-video": "sana-video",
+    "kandinsky5": "kandinsky5-t2v",
+}
+EXPECTED_DEFERRED_LABELS = {
+    "motif-video": "unknown",
+    "ltx-video-2": "unknown",
+    "sana-video": "incompatible",
+    "kandinsky5-t2v": "native-N/A",
+}
+EXPECTED_PROCESSOR_CLASSES = {
+    "cogvideox": "sparsevideo.processors.cogvideox.SparseCogVideoXAttnProcessor",
+    "ltx_video": "sparsevideo.processors.ltx_video.SparseLTXVideoAttnProcessor",
+    "allegro": "sparsevideo.processors.allegro.SparseAllegroAttnProcessor",
+    "mochi": "sparsevideo.processors.mochi.SparseMochiAttnProcessor",
+    "easyanimate": "sparsevideo.processors.easyanimate.SparseEasyAnimateAttnProcessor",
+}
 DEFAULT_METRICS_GLOB = "result/inference/**/*.jsonl"
+DEFAULT_SMOKE_METRICS_GLOB = ".tmp_smoke/*.jsonl"
+DEFAULT_METRICS_GLOBS = (DEFAULT_METRICS_GLOB, DEFAULT_SMOKE_METRICS_GLOB)
+DEFAULT_MODEL_ROOT = Path("/home/dataset-assist-0/luojy/models")
 TRAINING_FREE_IMPORT_RE = re.compile(
     r"^\s*(?:from\s+training_free(?:\.|\s)|import\s+training_free(?:\.|\s|$))"
 )
+EXPECTED_BACKBONE_SMOKE_METHODS = {
+    "wan21-t2v-1.3b": ("dense", "svg2", "svoo"),
+    "wan21-t2v-14b": ("dense", "svg2", "svoo"),
+    "wan22-t2v-a14b": ("dense", "svg2", "svoo"),
+    "hunyuan-t2v": ("dense", "svg2", "svoo"),
+    "wan21-i2v-14b": ("dense", "svg2", "svoo"),
+    "wan22-i2v-a14b": ("dense", "svg2", "svoo"),
+    "hunyuan-i2v": ("dense", "svg2", "svoo"),
+    "skyreels-v2-t2v-14b": ("dense", "svg2", "svoo"),
+    "skyreels-v2-i2v-14b": ("dense", "svg2", "svoo"),
+    "cogvideox-t2v": EXPECTED_FULL_BACKBONE_METHODS,
+    "cogvideox-i2v": EXPECTED_FULL_BACKBONE_METHODS,
+    "ltx-video": EXPECTED_FULL_BACKBONE_METHODS,
+    "ltx-video-i2v": EXPECTED_FULL_BACKBONE_METHODS,
+    "allegro": EXPECTED_FULL_BACKBONE_METHODS,
+    "mochi-1": EXPECTED_FULL_BACKBONE_METHODS,
+    "easyanimate-v5-t2v-12b": EXPECTED_FULL_BACKBONE_METHODS,
+}
 FLASHOMNI_PUBLIC_SOURCE_STATUS = {
     "checked_on": "2026-05-18",
     "author_project_page": "https://qiaolian9.github.io/",
@@ -118,10 +204,11 @@ FLASHOMNI_PUBLIC_SOURCE_STATUS = {
         "pyproject.toml",
         "setup.py",
     ],
-    "remaining_gap": (
-        "anonymous Hunyuan attention sparse-symbol policy is public, but complete "
-        "SparseVideo parity still needs the transformer forward/Taylor-cache method "
-        "path rather than only an attention-processor port"
+    "completion_note": (
+        "no remaining FlashOmni software gap in the current A100 audit: anonymous "
+        "Hunyuan policy files are available, SparseVideo owns the Hunyuan sparse-symbol "
+        "policy and transformer forward/Taylor-cache path, and reported-config "
+        "50-step Hunyuan dispatch evidence exists; artifact visual acceptance remains separate"
     ),
 }
 FLASHOMNI_REPORTED_HUNYUAN_CONFIG = {
@@ -228,6 +315,19 @@ def _dispatch_counts(record: dict[str, Any]) -> dict[str, Any]:
     return counts if isinstance(counts, dict) else {}
 
 
+def _record_model_candidates(record: dict[str, Any], aliases: dict[str, str]) -> tuple[str, ...]:
+    candidates: list[str] = []
+    handle = _handle(record)
+    for value in (handle.get("model_key"), record.get("model_arg"), record.get("model")):
+        if not isinstance(value, str) or not value:
+            continue
+        candidates.append(value)
+        alias = aliases.get(value)
+        if alias:
+            candidates.append(alias)
+    return tuple(dict.fromkeys(candidates))
+
+
 def _preflight_errors(record: dict[str, Any]) -> list[Any]:
     preflight = record.get("preflight")
     if not isinstance(preflight, dict):
@@ -318,6 +418,19 @@ def _video_artifact_qc(record: dict[str, Any]) -> dict[str, Any] | None:
             key: stream.get(key)
             for key in ("width", "height", "nb_frames", "duration", "avg_frame_rate", "bit_rate")
         }
+        actual_width = _optional_int(stream.get("width"))
+        actual_height = _optional_int(stream.get("height"))
+        actual_frames = _stream_frame_count(stream)
+        qc["actual_frames"] = actual_frames
+        if width > 0 and actual_width is not None and actual_width != width:
+            qc["warnings"].append(f"width_mismatch:{actual_width}!={width}")
+        if height > 0 and actual_height is not None and actual_height != height:
+            qc["warnings"].append(f"height_mismatch:{actual_height}!={height}")
+        if frames > 0:
+            if actual_frames is None:
+                qc["warnings"].append("frame_count_unavailable")
+            elif actual_frames < frames:
+                qc["warnings"].append(f"frame_count_below_requested:{actual_frames}<{frames}")
         try:
             bit_rate = int(stream.get("bit_rate") or 0)
         except (TypeError, ValueError):
@@ -325,6 +438,63 @@ def _video_artifact_qc(record: dict[str, Any]) -> dict[str, Any] | None:
         if height >= 720 and width >= 1280 and frames >= 50 and 0 < bit_rate < 1_000_000:
             qc["warnings"].append("low_bitrate_for_720p_video_quality_claim")
     return qc
+
+
+def _optional_int(value: Any) -> int | None:
+    try:
+        if value in (None, "", "N/A"):
+            return None
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _optional_float(value: Any) -> float | None:
+    try:
+        if value in (None, "", "N/A"):
+            return None
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _frame_rate(value: Any) -> float | None:
+    if not isinstance(value, str) or not value or value == "N/A":
+        return None
+    if "/" not in value:
+        return _optional_float(value)
+    numerator, denominator = value.split("/", 1)
+    num = _optional_float(numerator)
+    den = _optional_float(denominator)
+    if num is None or den in (None, 0):
+        return None
+    return num / den
+
+
+def _stream_frame_count(stream: dict[str, Any]) -> int | None:
+    nb_frames = _optional_int(stream.get("nb_frames"))
+    if nb_frames is not None:
+        return nb_frames
+    duration = _optional_float(stream.get("duration"))
+    rate = _frame_rate(stream.get("avg_frame_rate"))
+    if duration is None or rate is None:
+        return None
+    return int(round(duration * rate))
+
+
+def _quality_artifact_ok(record: dict[str, Any]) -> bool:
+    qc = _video_artifact_qc(record)
+    if qc is None or not qc.get("exists"):
+        return False
+    warnings = qc.get("warnings")
+    if not isinstance(warnings, list):
+        return False
+    non_blocking = {
+        "very_small_file_for_720p_video_quality_claim",
+        "low_bitrate_for_720p_video_quality_claim",
+    }
+    blocking = [warning for warning in warnings if warning not in non_blocking]
+    return "ffprobe" in qc and not blocking
 
 
 def _is_strict(record: dict[str, Any]) -> bool:
@@ -363,12 +533,31 @@ def _has_strict_sparse_dispatch(record: dict[str, Any]) -> bool:
     )
 
 
+def _has_sparse_smoke_dispatch(record: dict[str, Any]) -> bool:
+    backend_counts = _backend_counts(record)
+    dispatch_counts = _dispatch_counts(record)
+    return bool(backend_counts) and int(dispatch_counts.get("sparse", 0) or 0) > 0
+
+
+def _has_backbone_smoke(record: dict[str, Any], method: str) -> bool:
+    if record.get("method") != method:
+        return False
+    if not _is_ok(record):
+        return False
+    if int(record.get("num_inference_steps") or 0) < 1:
+        return False
+    if method == "dense":
+        return True
+    return _has_sparse_smoke_dispatch(record)
+
+
 def _has_quality_output(record: dict[str, Any], min_steps: int) -> bool:
     return (
         _is_ok(record)
         and not record.get("skip_decode")
         and int(record.get("num_inference_steps") or 0) >= min_steps
         and _output_exists(record)
+        and _quality_artifact_ok(record)
     )
 
 
@@ -525,6 +714,270 @@ def _public_api_and_config_gate() -> dict[str, Any]:
         "evidence": {
             "public_api": [name for name in EXPECTED_PUBLIC_API if hasattr(sparsevideo, name)],
             "config_keys": configs,
+        },
+        "missing": missing,
+    }
+
+
+def _load_infer_script_module():
+    module_name = "sparsevideo_audit_infer_script"
+    script = REPO_ROOT / "scripts" / "infer.py"
+    spec = importlib.util.spec_from_file_location(module_name, script)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"could not load {script}")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[module_name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def _processor_class_import_status() -> dict[str, str]:
+    status: dict[str, str] = {}
+    for family, dotted_path in EXPECTED_PROCESSOR_CLASSES.items():
+        module_name, class_name = dotted_path.rsplit(".", 1)
+        try:
+            module = __import__(module_name, fromlist=[class_name])
+            cls = getattr(module, class_name)
+        except Exception as exc:  # pragma: no cover - defensive audit output
+            status[family] = f"missing:{type(exc).__name__}: {exc}"
+            continue
+        status[family] = f"{cls.__module__}.{cls.__name__}"
+    return status
+
+
+def _all_backbone_support_contract_gate() -> dict[str, Any]:
+    try:
+        infer = _load_infer_script_module()
+        from sparsevideo._support import LIMITED_METHODS_BY_MODEL_TYPE
+    except Exception as exc:  # pragma: no cover - defensive audit output
+        return {
+            "gate": "all_backbone_support_contract",
+            "status": "fail",
+            "evidence": {"error": f"{type(exc).__name__}: {exc}"},
+            "missing": ["scripts/infer.py and sparsevideo._support must be importable"],
+        }
+
+    missing: list[str] = []
+    model_evidence: dict[str, dict[str, Any]] = {}
+    for model_key, expected_family in EXPECTED_BACKBONE_MODEL_SPECS.items():
+        spec = infer.MODEL_SPECS.get(model_key)
+        if spec is None:
+            missing.append(f"missing MODEL_SPECS[{model_key!r}]")
+            continue
+        sparse_methods = spec.sparse_methods
+        model_evidence[model_key] = {
+            "family": spec.family,
+            "pipeline_class": spec.pipeline_class,
+            "sparse_supported": spec.sparse_supported,
+            "sparse_methods": list(sparse_methods) if sparse_methods is not None else None,
+            "compatibility_label": spec.compatibility_label,
+        }
+        if spec.family != expected_family:
+            missing.append(f"{model_key}: family={spec.family}, expected={expected_family}")
+        if model_key in EXPECTED_ALL_METHOD_BACKBONES:
+            if not spec.sparse_supported:
+                missing.append(f"{model_key}: must be sparse_supported for all public sparse methods")
+            if sparse_methods is not None:
+                missing.append(
+                    f"{model_key}: sparse_methods={sparse_methods}, expected=None for all public sparse methods"
+                )
+            if spec.family in LIMITED_METHODS_BY_MODEL_TYPE:
+                missing.append(
+                    f"{spec.family}: still listed in LIMITED_METHODS_BY_MODEL_TYPE="
+                    f"{LIMITED_METHODS_BY_MODEL_TYPE[spec.family]}"
+                )
+        else:
+            expected_limited = LIMITED_METHODS_BY_MODEL_TYPE.get(spec.family)
+            if expected_limited is not None and sparse_methods != expected_limited:
+                missing.append(
+                    f"{model_key}: sparse_methods={sparse_methods}, expected={expected_limited}"
+                )
+        expected_label = EXPECTED_DEFERRED_LABELS.get(model_key)
+        if expected_label is not None and spec.compatibility_label != expected_label:
+            missing.append(
+                f"{model_key}: compatibility_label={spec.compatibility_label}, expected={expected_label}"
+            )
+        if expected_label is not None and spec.sparse_supported:
+            missing.append(f"{model_key}: deferred/non-swap backbone must not be sparse_supported")
+
+    alias_evidence = {}
+    for alias, expected_key in EXPECTED_BACKBONE_ALIASES.items():
+        actual = infer.MODEL_ALIASES.get(alias)
+        alias_evidence[alias] = actual
+        if actual != expected_key:
+            missing.append(f"alias {alias!r}: {actual!r}, expected {expected_key!r}")
+
+    processor_status = _processor_class_import_status()
+    for family, dotted_path in EXPECTED_PROCESSOR_CLASSES.items():
+        if processor_status.get(family) != dotted_path:
+            missing.append(f"{family}: processor import status={processor_status.get(family)!r}")
+
+    return {
+        "gate": "all_backbone_support_contract",
+        "status": "pass" if not missing else "fail",
+        "evidence": {
+            "models": model_evidence,
+            "aliases": alias_evidence,
+            "limited_methods_by_model_type": {
+                family: list(methods) for family, methods in LIMITED_METHODS_BY_MODEL_TYPE.items()
+            },
+            "processor_classes": processor_status,
+        },
+        "missing": missing,
+    }
+
+
+def _all_backbone_smoke_evidence_gate(records: list[dict[str, Any]]) -> dict[str, Any]:
+    try:
+        infer = _load_infer_script_module()
+    except Exception as exc:  # pragma: no cover - defensive audit output
+        return {
+            "gate": "all_backbone_smoke_evidence",
+            "status": "fail",
+            "evidence": {"error": f"{type(exc).__name__}: {exc}"},
+            "missing": ["scripts/infer.py must be importable to normalize model aliases"],
+        }
+
+    missing: list[str] = []
+    evidence: dict[str, Any] = {}
+    for model_key, methods in EXPECTED_BACKBONE_SMOKE_METHODS.items():
+        model_records = [
+            record
+            for record in records
+            if model_key in _record_model_candidates(record, infer.MODEL_ALIASES)
+        ]
+        method_evidence: dict[str, Any] = {}
+        for method in methods:
+            record = _best_record(
+                model_records,
+                lambda item, expected_method=method: _has_backbone_smoke(
+                    item,
+                    expected_method,
+                ),
+            )
+            method_evidence[method] = _summarize_record(record) if record else None
+            if record is None:
+                missing.append(f"{model_key}/{method}: needs >=1-step status=ok smoke record")
+        evidence[model_key] = {
+            "required_methods": list(methods),
+            "records_seen": len(model_records),
+            "methods": method_evidence,
+        }
+
+    return {
+        "gate": "all_backbone_smoke_evidence",
+        "status": "pass" if not missing else "fail",
+        "evidence": {
+            "note": (
+                "Counts real status=ok execution records only; dry_run/failed records "
+                "do not count. skip_decode latent runs count as smoke, not quality parity."
+            ),
+            "models": evidence,
+        },
+        "missing": missing,
+    }
+
+
+def _checkpoint_files(path: Path) -> list[Path]:
+    suffixes = {".safetensors", ".bin", ".pt", ".ckpt", ".pth"}
+    return sorted(item for item in path.rglob("*") if item.is_file() and item.suffix in suffixes)
+
+
+def _checkpoint_index_refs(path: Path) -> tuple[list[Path], list[str]]:
+    refs: list[Path] = []
+    errors: list[str] = []
+    for index_path in sorted(path.rglob("*.index.json")):
+        try:
+            data = json.loads(index_path.read_text(encoding="utf-8"))
+        except Exception as exc:
+            errors.append(f"{index_path.relative_to(path)}: {type(exc).__name__}: {exc}")
+            continue
+        weight_map = data.get("weight_map") if isinstance(data, dict) else None
+        if not isinstance(weight_map, dict):
+            continue
+        for rel_path in set(weight_map.values()):
+            if isinstance(rel_path, str):
+                refs.append(index_path.parent / rel_path)
+    return sorted(set(refs)), errors
+
+
+def _checkpoint_availability(path: Path) -> dict[str, Any]:
+    if not path.exists():
+        return {
+            "status": "missing_dir",
+            "path": str(path),
+            "index_ref_count": 0,
+            "missing_index_refs": [],
+            "checkpoint_file_count": 0,
+            "partial_file_count": 0,
+            "index_errors": [],
+        }
+
+    refs, errors = _checkpoint_index_refs(path)
+    missing_refs = [ref for ref in refs if not ref.exists()]
+    ckpt_files = _checkpoint_files(path)
+    partial_files = [
+        item
+        for pattern in ("*.incomplete", "*.lock", "*.part")
+        for item in path.rglob(pattern)
+        if item.is_file()
+    ]
+    if errors:
+        status = "index_error"
+    elif refs:
+        status = "complete" if not missing_refs else "missing_index_refs"
+    else:
+        status = "complete" if ckpt_files else "no_checkpoint_files"
+
+    return {
+        "status": status,
+        "path": str(path),
+        "index_ref_count": len(refs),
+        "missing_index_refs": [str(ref.relative_to(path)) for ref in missing_refs],
+        "checkpoint_file_count": len(ckpt_files),
+        "partial_file_count": len(partial_files),
+        "index_errors": errors,
+    }
+
+
+def _all_backbone_checkpoint_availability_gate(
+    model_root: Path = DEFAULT_MODEL_ROOT,
+) -> dict[str, Any]:
+    try:
+        infer = _load_infer_script_module()
+    except Exception as exc:  # pragma: no cover - defensive audit output
+        return {
+            "gate": "all_backbone_checkpoint_availability",
+            "status": "fail",
+            "evidence": {"error": f"{type(exc).__name__}: {exc}"},
+            "missing": ["scripts/infer.py must be importable to inspect model local_dir values"],
+        }
+
+    missing: list[str] = []
+    evidence: dict[str, Any] = {}
+    for model_key in EXPECTED_BACKBONE_SMOKE_METHODS:
+        spec = infer.MODEL_SPECS.get(model_key)
+        if spec is None or spec.local_dir is None:
+            missing.append(f"{model_key}: no MODEL_SPECS local_dir")
+            continue
+        availability = _checkpoint_availability(model_root / spec.local_dir)
+        evidence[model_key] = availability
+        if availability["status"] == "complete":
+            continue
+        if availability["status"] == "missing_index_refs":
+            missing.append(
+                f"{model_key}: missing {len(availability['missing_index_refs'])}/"
+                f"{availability['index_ref_count']} indexed checkpoint files"
+            )
+        else:
+            missing.append(f"{model_key}: checkpoint status={availability['status']}")
+
+    return {
+        "gate": "all_backbone_checkpoint_availability",
+        "status": "pass" if not missing else "fail",
+        "evidence": {
+            "model_root": str(model_root),
+            "models": evidence,
         },
         "missing": missing,
     }
@@ -784,8 +1237,30 @@ def _has_flashomni_paper_policy_dispatch(record: dict[str, Any], min_steps: int)
         _has_quality_output(record, min_steps)
         and _is_strict(record)
         and not _preflight_errors(record)
+        and _is_flashomni_hunyuan_record(record)
+        and _has_flashomni_hunyuan_target_shape(record)
+        and _flashomni_reported_hunyuan_config_match(record)
         and int(backend_counts.get("flashomni_explicit_upstream", 0) or 0) > 0
         and int(backend_counts.get("flashomni_full_upstream", 0) or 0) > 0
+    )
+
+
+def _is_flashomni_hunyuan_record(record: dict[str, Any]) -> bool:
+    handle = _handle(record)
+    fields = (
+        handle.get("model_key"),
+        handle.get("model_type"),
+        record.get("model_arg"),
+        record.get("model"),
+    )
+    return any(isinstance(value, str) and "hunyuan" in value.lower() for value in fields)
+
+
+def _has_flashomni_hunyuan_target_shape(record: dict[str, Any]) -> bool:
+    return (
+        int(record.get("height") or 0) >= 720
+        and int(record.get("width") or 0) >= 1280
+        and int(record.get("num_frames") or 0) >= 129
     )
 
 
@@ -867,7 +1342,10 @@ def _flashomni_goal_checklist(
             "caveat": None if upstream_policy_available else "anonymous Hunyuan source evidence is missing",
         },
         {
-            "requirement": "50-step real video inference using policy with flashomni_explicit_upstream dispatch",
+            "requirement": (
+                "Hunyuan 720p/129-frame/50-step real video inference using the reported "
+                "Hunyuan config with flashomni_explicit_upstream dispatch"
+            ),
             "status": "pass" if paper_policy else "missing",
             "evidence": paper_policy_runtime,
             "caveat": paper_runtime_caveat,
@@ -876,7 +1354,7 @@ def _flashomni_goal_checklist(
             "requirement": "code-level upstream Wan/Hunyuan video sparse-symbol policy evidence",
             "status": "pass" if upstream_policy_available else "missing",
             "evidence": reference_policy.get("video_policy_candidates", []) or public_status.get("anonymous_hunyuan_policy_files", []),
-            "caveat": None if upstream_policy_available else public_status.get("remaining_gap"),
+            "caveat": None if upstream_policy_available else public_status.get("completion_note"),
         },
         {
             "requirement": "complete Hunyuan transformer forward/Taylor-cache method path parity",
@@ -974,8 +1452,9 @@ def _method_audit(method: str, records: list[dict[str, Any]], min_steps: int) ->
             )
         if paper_policy is None:
             missing.append(
-                "FlashOmni paper/benchmark-derived policy needs real 50-step video inference "
-                "with flashomni_full_upstream update and flashomni_explicit_upstream dispatch"
+                "FlashOmni paper/benchmark-derived policy needs real Hunyuan 720p/129-frame/50-step "
+                "video inference with the reported Hunyuan config, flashomni_full_upstream update, "
+                "and flashomni_explicit_upstream dispatch"
             )
         if not method_path.get("method_uses_update_dispatch_cache"):
             missing.append(
@@ -1005,8 +1484,9 @@ def _method_audit(method: str, records: list[dict[str, Any]], min_steps: int) ->
             )
         if paper_policy is None:
             next_artifacts.append(
-                f"{min_steps}-step real video metrics with strict flashomni_explicit_upstream dispatch "
-                "using the paper/benchmark-derived policy"
+                "Hunyuan 720p/129-frame/"
+                f"{min_steps}-step real video metrics with strict flashomni_full_upstream update "
+                "and flashomni_explicit_upstream dispatch using the reported Hunyuan config"
             )
 
     if method == "sta":
@@ -1149,6 +1629,9 @@ def build_audit(records: list[dict[str, Any]], *, min_steps: int) -> dict[str, A
     checklist = [
         _public_api_and_config_gate(),
         _public_methods_gate(),
+        _all_backbone_support_contract_gate(),
+        _all_backbone_checkpoint_availability_gate(),
+        _all_backbone_smoke_evidence_gate(records),
         _runtime_ownership_gate(),
         {
             "gate": "per_method_strict_dispatch_and_quality_evidence",
@@ -1258,8 +1741,8 @@ def _print_markdown(audit: dict[str, Any]) -> None:
                     f"{public_status.get('anonymous_hunyuan_policy_files', [])}"
                 )
                 print(
-                    "  - reference_public_remaining_gap: "
-                    f"{public_status.get('remaining_gap')}"
+                    "  - reference_public_completion_note: "
+                    f"{public_status.get('completion_note')}"
                 )
                 print(
                     "  - reference_public_issues_status: "
@@ -1419,7 +1902,10 @@ def main() -> int:
         "--metrics-glob",
         action="append",
         default=None,
-        help=f"Repo-relative glob for metrics JSONL files. Default: {DEFAULT_METRICS_GLOB}",
+        help=(
+            "Repo-relative glob for metrics JSONL files. Default: "
+            f"{', '.join(DEFAULT_METRICS_GLOBS)}"
+        ),
     )
     parser.add_argument("--min-steps", type=int, default=50)
     parser.add_argument("--format", choices=("json", "markdown"), default="json")
@@ -1430,7 +1916,7 @@ def main() -> int:
     )
     args = parser.parse_args()
 
-    records = _collect_metrics(args.metrics, args.metrics_glob or [DEFAULT_METRICS_GLOB])
+    records = _collect_metrics(args.metrics, args.metrics_glob or list(DEFAULT_METRICS_GLOBS))
     audit = build_audit(records, min_steps=args.min_steps)
     if args.format == "markdown":
         _print_markdown(audit)

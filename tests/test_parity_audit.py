@@ -51,8 +51,29 @@ def _mark_current_flashomni_policy(record: dict, audit_mod) -> dict:
     return record
 
 
-def test_audit_reports_missing_quality_dispatch_for_sparse_methods(tmp_path):
+def _patch_valid_video_artifacts(monkeypatch, audit_mod):
+    def valid_artifact(record):
+        return {
+            "path": str(record.get("output_file")),
+            "exists": True,
+            "warnings": [],
+            "actual_frames": int(record.get("num_frames") or 1),
+            "ffprobe": {
+                "width": str(record.get("width") or 0),
+                "height": str(record.get("height") or 0),
+                "nb_frames": str(record.get("num_frames") or 1),
+                "duration": "1.0",
+                "avg_frame_rate": "1/1",
+                "bit_rate": "1000000",
+            },
+        }
+
+    monkeypatch.setattr(audit_mod, "_video_artifact_qc", valid_artifact)
+
+
+def test_audit_reports_missing_quality_dispatch_for_sparse_methods(tmp_path, monkeypatch):
     audit_mod = _load_audit_module()
+    _patch_valid_video_artifacts(monkeypatch, audit_mod)
     records = [_record("dense", tmp_path), _record("svg2", tmp_path, steps=6)]
 
     audit = audit_mod.build_audit(records, min_steps=50)
@@ -60,13 +81,141 @@ def test_audit_reports_missing_quality_dispatch_for_sparse_methods(tmp_path):
     assert audit["overall_status"] == "incomplete"
     gates = {item["gate"]: item for item in audit["checklist"]}
     assert gates["public_api_and_config_contract"]["status"] == "pass"
+    assert "apply" in gates["public_api_and_config_contract"]["evidence"]["public_api"]
+    assert gates["all_backbone_support_contract"]["status"] == "pass"
+    backbone_evidence = gates["all_backbone_support_contract"]["evidence"]
+    assert backbone_evidence["models"]["cogvideox-t2v"]["sparse_methods"] is None
+    assert backbone_evidence["limited_methods_by_model_type"] == {}
+    assert backbone_evidence["models"]["sana-video"]["compatibility_label"] == "incompatible"
+    assert backbone_evidence["models"]["kandinsky5-t2v"]["compatibility_label"] == "native-N/A"
+    assert backbone_evidence["aliases"]["ltx-i2v"] == "ltx-video-i2v"
+    assert (
+        backbone_evidence["processor_classes"]["mochi"]
+        == "sparsevideo.processors.mochi.SparseMochiAttnProcessor"
+    )
     assert audit["methods"]["dense"]["status"] == "pass"
     assert audit["methods"]["svg2"]["status"] == "partial"
     assert "needs a 50-step mp4 quality record" in audit["methods"]["svg2"]["missing"]
 
 
-def test_flashomni_global_random_is_not_parity_evidence(tmp_path):
+def test_all_backbone_smoke_gate_counts_latent_smoke_and_aliases(tmp_path, monkeypatch):
     audit_mod = _load_audit_module()
+    monkeypatch.setattr(
+        audit_mod,
+        "EXPECTED_BACKBONE_SMOKE_METHODS",
+        {"cogvideox-t2v": ("dense", "svg2")},
+    )
+    dry_run = _record("dense", tmp_path, steps=1)
+    dry_run["model_arg"] = "cogvideox"
+    dry_run["status"] = "dry_run"
+
+    dense = _record("dense", tmp_path, steps=1)
+    dense["model_arg"] = "cogvideox"
+    dense["skip_decode"] = True
+    dense["strict_kernels"] = False
+    dense["allow_debug_fallbacks"] = True
+
+    svg2 = _record("svg2", tmp_path, steps=1)
+    svg2["model_arg"] = "cog"
+    svg2["skip_decode"] = True
+    svg2["strict_kernels"] = False
+    svg2["allow_debug_fallbacks"] = True
+    svg2["sparse_attention_handle"]["method_runtime"]["backend_counts"] = {"flashinfer": 41}
+    svg2["sparse_attention_handle"]["method_runtime"]["dispatch_counts"] = {
+        "dense": 1,
+        "sparse": 41,
+    }
+
+    gate = audit_mod._all_backbone_smoke_evidence_gate([dry_run, dense, svg2])
+
+    assert gate["status"] == "pass"
+    assert gate["missing"] == []
+    methods = gate["evidence"]["models"]["cogvideox-t2v"]["methods"]
+    assert methods["dense"]["status"] == "ok"
+    assert methods["svg2"]["backend_counts"] == {"flashinfer": 41}
+    assert methods["svg2"]["strict_kernels"] is False
+
+
+def test_new_backbone_smoke_gate_requires_all_public_sparse_methods():
+    audit_mod = _load_audit_module()
+
+    methods = audit_mod.EXPECTED_BACKBONE_SMOKE_METHODS["cogvideox-t2v"]
+
+    assert methods == audit_mod.EXPECTED_FULL_BACKBONE_METHODS
+    assert set(methods) == set(audit_mod.EXPECTED_METHODS)
+
+
+def test_all_backbone_smoke_gate_reports_missing_and_ignores_dry_run(tmp_path, monkeypatch):
+    audit_mod = _load_audit_module()
+    monkeypatch.setattr(
+        audit_mod,
+        "EXPECTED_BACKBONE_SMOKE_METHODS",
+        {"mochi-1": ("dense", "svg2")},
+    )
+    dry_run = _record("dense", tmp_path, steps=1)
+    dry_run["model_arg"] = "mochi"
+    dry_run["status"] = "dry_run"
+
+    gate = audit_mod._all_backbone_smoke_evidence_gate([dry_run])
+
+    assert gate["status"] == "fail"
+    assert gate["evidence"]["models"]["mochi-1"]["records_seen"] == 1
+    assert "mochi-1/dense: needs >=1-step status=ok smoke record" in gate["missing"]
+    assert "mochi-1/svg2: needs >=1-step status=ok smoke record" in gate["missing"]
+
+
+def test_all_backbone_checkpoint_gate_reports_missing_index_refs(tmp_path, monkeypatch):
+    audit_mod = _load_audit_module()
+    model_root = tmp_path / "models"
+    transformer = model_root / "mochi-1" / "transformer"
+    transformer.mkdir(parents=True)
+    (transformer / "present.safetensors").write_bytes(b"weights")
+    (transformer / "model.safetensors.index.json").write_text(
+        """
+        {
+          "metadata": {},
+          "weight_map": {
+            "a": "present.safetensors",
+            "b": "missing.safetensors"
+          }
+        }
+        """,
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        audit_mod,
+        "EXPECTED_BACKBONE_SMOKE_METHODS",
+        {"mochi-1": ("dense",)},
+    )
+
+    gate = audit_mod._all_backbone_checkpoint_availability_gate(model_root)
+
+    assert gate["status"] == "fail"
+    assert gate["evidence"]["models"]["mochi-1"]["status"] == "missing_index_refs"
+    assert gate["evidence"]["models"]["mochi-1"]["missing_index_refs"] == [
+        "transformer/missing.safetensors"
+    ]
+    assert "mochi-1: missing 1/2 indexed checkpoint files" in gate["missing"]
+
+
+def test_all_backbone_checkpoint_gate_reports_missing_dir(tmp_path, monkeypatch):
+    audit_mod = _load_audit_module()
+    monkeypatch.setattr(
+        audit_mod,
+        "EXPECTED_BACKBONE_SMOKE_METHODS",
+        {"easyanimate-v5-t2v-12b": ("dense",)},
+    )
+
+    gate = audit_mod._all_backbone_checkpoint_availability_gate(tmp_path / "models")
+
+    assert gate["status"] == "fail"
+    assert gate["evidence"]["models"]["easyanimate-v5-t2v-12b"]["status"] == "missing_dir"
+    assert "easyanimate-v5-t2v-12b: checkpoint status=missing_dir" in gate["missing"]
+
+
+def test_flashomni_global_random_is_not_parity_evidence(tmp_path, monkeypatch):
+    audit_mod = _load_audit_module()
+    _patch_valid_video_artifacts(monkeypatch, audit_mod)
     record = _record("flashomni", tmp_path)
     record["method_config"] = {"sparse_pattern": "global_random"}
     record["sparse_attention_handle"]["method_runtime"]["backend_counts"] = {
@@ -79,8 +228,9 @@ def test_flashomni_global_random_is_not_parity_evidence(tmp_path):
     assert any("explicit sparse_info" in item for item in audit["methods"]["flashomni"]["missing"])
 
 
-def test_flashomni_explicit_kernel_record_still_needs_video_policy(tmp_path):
+def test_flashomni_explicit_kernel_record_still_needs_video_policy(tmp_path, monkeypatch):
     audit_mod = _load_audit_module()
+    _patch_valid_video_artifacts(monkeypatch, audit_mod)
     record = _record("flashomni", tmp_path)
     record["method_config"] = {"sparse_pattern": "explicit"}
     record["sparse_attention_handle"]["method_runtime"]["backend_counts"] = {
@@ -125,7 +275,9 @@ def test_flashomni_explicit_kernel_record_still_needs_video_policy(tmp_path):
         "example/hunyuan/models/flashomni_attn_processor/attention_processor.py"
         in public_status["anonymous_hunyuan_policy_files"]
     )
-    assert "Taylor-cache method path" in public_status["remaining_gap"]
+    assert "no remaining FlashOmni software gap" in public_status["completion_note"]
+    assert "transformer forward/Taylor-cache path" in public_status["completion_note"]
+    assert "artifact visual acceptance remains separate" in public_status["completion_note"]
     assert "issues" in public_status["github_issues_status"]
     assert "404" in public_status["github_issues_status"]
     assert "FlashOmni/example/hunyuan/nvprof" in public_status["openreview_rebuttal_referenced_paths"]
@@ -167,8 +319,9 @@ def test_flashomni_explicit_kernel_record_still_needs_video_policy(tmp_path):
     assert not any("GEMM-Q/GEMM-O integration" in item for item in audit["required_next_artifacts"]["flashomni"])
 
 
-def test_flashomni_paper_policy_record_counts_as_runtime_but_not_code_parity(tmp_path):
+def test_flashomni_paper_policy_record_requires_hunyuan_target_quality(tmp_path, monkeypatch):
     audit_mod = _load_audit_module()
+    _patch_valid_video_artifacts(monkeypatch, audit_mod)
     record = _mark_current_flashomni_policy(_record("flashomni", tmp_path), audit_mod)
     record["method_config"] = {"sparse_pattern": "paper_mmdit"}
     record["sparse_attention_handle"]["method_runtime"]["backend_counts"] = {
@@ -183,9 +336,7 @@ def test_flashomni_paper_policy_record_counts_as_runtime_but_not_code_parity(tmp
     audit = audit_mod.build_audit([record], min_steps=50)
 
     assert audit["methods"]["flashomni"]["status"] == "partial"
-    assert audit["methods"]["flashomni"]["evidence"]["paper_policy_runtime"]["method_config"] == {
-        "sparse_pattern": "paper_mmdit"
-    }
+    assert audit["methods"]["flashomni"]["evidence"]["paper_policy_runtime"] is None
     assert audit["methods"]["flashomni"]["evidence"]["reported_hunyuan_config"] == {
         "threshold_q": 0.5,
         "threshold_kv": 0.05,
@@ -203,17 +354,17 @@ def test_flashomni_paper_policy_record_counts_as_runtime_but_not_code_parity(tmp
     assert [item["status"] for item in audit["methods"]["flashomni"]["evidence"]["goal_checklist"]] == [
         "pass",
         "pass",
-        "pass",
+        "missing",
         "pass",
         "pass",
     ]
-    assert "reported HunyuanVideo" in audit["methods"]["flashomni"]["evidence"]["goal_checklist"][2]["caveat"]
-    assert not any("needs real 50-step video inference" in item for item in audit["methods"]["flashomni"]["missing"])
+    assert any("Hunyuan 720p/129-frame/50-step" in item for item in audit["methods"]["flashomni"]["missing"])
     assert any("explicit sparse_info" in item for item in audit["methods"]["flashomni"]["missing"])
 
 
-def test_flashomni_reported_hunyuan_record_with_current_source_passes_flashomni_gate(tmp_path):
+def test_flashomni_reported_hunyuan_record_with_current_source_passes_flashomni_gate(tmp_path, monkeypatch):
     audit_mod = _load_audit_module()
+    _patch_valid_video_artifacts(monkeypatch, audit_mod)
     explicit = _record("flashomni", tmp_path)
     explicit["method_config"] = {"sparse_pattern": "explicit"}
     explicit["sparse_attention_handle"]["method_runtime"]["backend_counts"] = {
@@ -248,16 +399,16 @@ def test_flashomni_reported_hunyuan_record_with_current_source_passes_flashomni_
     assert flashomni["evidence"]["paper_policy_matches_reported_hunyuan_config"] is True
     goal_checklist = flashomni["evidence"]["goal_checklist"]
     assert [item["status"] for item in goal_checklist] == ["pass", "pass", "pass", "pass", "pass"]
-    assert "runtime/dispatch evidence only" in goal_checklist[2]["caveat"]
-    assert "artifact QC warnings" in goal_checklist[2]["caveat"]
-    assert not any("needs real 50-step video inference" in item for item in flashomni["missing"])
+    assert goal_checklist[2]["caveat"] is None
+    assert not any("Hunyuan 720p/129-frame/50-step" in item for item in flashomni["missing"])
     assert not any("explicit sparse_info" in item for item in flashomni["missing"])
     assert flashomni["missing"] == []
     assert audit["required_next_artifacts"].get("flashomni") in (None, [])
 
 
-def test_flashomni_paper_policy_record_without_current_source_hash_is_stale(tmp_path):
+def test_flashomni_paper_policy_record_without_current_source_hash_is_stale(tmp_path, monkeypatch):
     audit_mod = _load_audit_module()
+    _patch_valid_video_artifacts(monkeypatch, audit_mod)
     record = _record("flashomni", tmp_path)
     record["method_config"] = {
         "sparse_pattern": "paper_mmdit",
@@ -280,11 +431,12 @@ def test_flashomni_paper_policy_record_without_current_source_hash_is_stale(tmp_
 
     flashomni = audit["methods"]["flashomni"]
     assert flashomni["evidence"]["paper_policy_runtime"] is None
-    assert any("needs real 50-step video inference" in item for item in flashomni["missing"])
+    assert any("Hunyuan 720p/129-frame/50-step" in item for item in flashomni["missing"])
 
 
-def test_flashomni_paper_policy_record_with_stale_method_hash_is_stale(tmp_path):
+def test_flashomni_paper_policy_record_with_stale_method_hash_is_stale(tmp_path, monkeypatch):
     audit_mod = _load_audit_module()
+    _patch_valid_video_artifacts(monkeypatch, audit_mod)
     record = _mark_current_flashomni_policy(_record("flashomni", tmp_path), audit_mod)
     record["source_fingerprints"]["flashomni_method_sha256"] = "stale"
     record["method_config"] = {
@@ -308,7 +460,7 @@ def test_flashomni_paper_policy_record_with_stale_method_hash_is_stale(tmp_path)
 
     flashomni = audit["methods"]["flashomni"]
     assert flashomni["evidence"]["paper_policy_runtime"] is None
-    assert any("needs real 50-step video inference" in item for item in flashomni["missing"])
+    assert any("Hunyuan 720p/129-frame/50-step" in item for item in flashomni["missing"])
 
 
 def test_video_artifact_qc_warns_on_tiny_720p_output(tmp_path):
@@ -324,10 +476,13 @@ def test_video_artifact_qc_warns_on_tiny_720p_output(tmp_path):
     assert artifact_qc["exists"] is True
     assert artifact_qc["size_bytes"] < 1_000_000
     assert "very_small_file_for_720p_video_quality_claim" in artifact_qc["warnings"]
+    assert "ffprobe_failed" in artifact_qc["warnings"]
+    assert audit_mod._has_quality_output(record, min_steps=50) is False
 
 
 def test_sta_audit_reports_hardware_evidence(tmp_path, monkeypatch):
     audit_mod = _load_audit_module()
+    _patch_valid_video_artifacts(monkeypatch, audit_mod)
     record = _record("sta", tmp_path)
     record["sparse_attention_handle"]["method_runtime"]["backend_counts"] = {
         "fastvideo_sta_a100_triton": 10

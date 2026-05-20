@@ -138,6 +138,129 @@ def warmup_dimensions(pipe, *, model_type: str, height: int, width: int, num_fra
             "include_rmsnorm": False,
         }
 
+    if model_type == "cogvideox":
+        patch_size = int(transformer.config.patch_size)
+        patch_size_t = getattr(transformer.config, "patch_size_t", None)
+        temporal_scale = int(getattr(pipe, "vae_scale_factor_temporal", 4))
+        spatial_scale = int(getattr(pipe, "vae_scale_factor_spatial", 8))
+        latent_frames = (int(num_frames) - 1) // temporal_scale + 1
+        if patch_size_t is not None:
+            patch_size_t = int(patch_size_t)
+            latent_frames = (latent_frames + patch_size_t - 1) // patch_size_t
+        frame_size = (int(height) // (spatial_scale * patch_size)) * (
+            int(width) // (spatial_scale * patch_size)
+        )
+        seq_len = latent_frames * frame_size
+        context_length = int(
+            config.get("context_length")
+            or getattr(transformer.config, "max_text_seq_length", 226)
+        )
+        return {
+            "model_name": "CogVideoX",
+            "num_heads": num_heads,
+            "head_dim": head_dim,
+            "block_hidden_dim": block_hidden_dim,
+            "norm_hidden_dim": head_dim,
+            "seq_len": seq_len,
+            "inverse_seq_len": context_length + seq_len,
+            "include_wan_block_kernels": False,
+            "include_rmsnorm": False,
+        }
+
+    if model_type == "ltx_video":
+        patch_size = int(getattr(transformer.config, "patch_size", 1))
+        patch_size_t = int(getattr(transformer.config, "patch_size_t", 1))
+        temporal_scale = int(
+            _first_attr(pipe, ("vae_temporal_compression_ratio", "vae_scale_factor_temporal"), 8)
+        )
+        spatial_scale = int(
+            _first_attr(pipe, ("vae_spatial_compression_ratio", "vae_scale_factor_spatial"), 32)
+        )
+        latent_frames = (int(num_frames) - 1) // temporal_scale + 1
+        latent_frames = latent_frames // patch_size_t
+        frame_size = (int(height) // (spatial_scale * patch_size)) * (
+            int(width) // (spatial_scale * patch_size)
+        )
+        seq_len = latent_frames * frame_size
+        return {
+            "model_name": "LTX Video",
+            "num_heads": num_heads,
+            "head_dim": head_dim,
+            "block_hidden_dim": block_hidden_dim,
+            "norm_hidden_dim": head_dim,
+            "seq_len": seq_len,
+            "inverse_seq_len": None,
+            "include_wan_block_kernels": False,
+            "include_rmsnorm": False,
+        }
+
+    if model_type == "allegro":
+        patch_size = int(getattr(transformer.config, "patch_size", 2))
+        patch_size_t = int(getattr(transformer.config, "patch_size_t", 1))
+        vae_spatial_scale = int(getattr(pipe, "vae_scale_factor_spatial", 8))
+        vae_temporal_scale = int(getattr(pipe, "vae_scale_factor_temporal", 4))
+        latent_frames = (int(num_frames) - 1) // vae_temporal_scale + 1
+        latent_frames = latent_frames // patch_size_t
+        frame_size = (int(height) // (vae_spatial_scale * patch_size)) * (
+            int(width) // (vae_spatial_scale * patch_size)
+        )
+        seq_len = latent_frames * frame_size
+        return {
+            "model_name": "Allegro",
+            "num_heads": num_heads,
+            "head_dim": head_dim,
+            "block_hidden_dim": block_hidden_dim,
+            "norm_hidden_dim": head_dim,
+            "seq_len": seq_len,
+            "inverse_seq_len": None,
+            "include_wan_block_kernels": False,
+            "include_rmsnorm": False,
+        }
+
+    if model_type == "mochi":
+        patch_size = int(getattr(transformer.config, "patch_size", 2))
+        vae_spatial_scale = int(getattr(pipe, "vae_scale_factor_spatial", 8))
+        vae_temporal_scale = int(getattr(pipe, "vae_scale_factor_temporal", 6))
+        latent_frames = (int(num_frames) - 1) // vae_temporal_scale + 1
+        frame_size = (int(height) // (vae_spatial_scale * patch_size)) * (
+            int(width) // (vae_spatial_scale * patch_size)
+        )
+        seq_len = latent_frames * frame_size
+        context_length = int(config.get("context_length") or getattr(transformer.config, "max_sequence_length", 256))
+        return {
+            "model_name": "Mochi",
+            "num_heads": num_heads,
+            "head_dim": head_dim,
+            "block_hidden_dim": block_hidden_dim,
+            "norm_hidden_dim": head_dim,
+            "seq_len": seq_len,
+            "inverse_seq_len": context_length + seq_len,
+            "include_wan_block_kernels": False,
+            "include_rmsnorm": False,
+        }
+
+    if model_type == "easyanimate":
+        patch_size = int(getattr(transformer.config, "patch_size", 2))
+        vae_spatial_scale = int(getattr(pipe, "vae_scale_factor_spatial", 8))
+        vae_temporal_scale = int(getattr(pipe, "vae_scale_factor_temporal", 4))
+        latent_frames = (int(num_frames) - 1) // vae_temporal_scale + 1
+        frame_size = (int(height) // (vae_spatial_scale * patch_size)) * (
+            int(width) // (vae_spatial_scale * patch_size)
+        )
+        seq_len = latent_frames * frame_size
+        context_length = int(config.get("context_length") or getattr(transformer.config, "max_text_seq_length", 256))
+        return {
+            "model_name": "EasyAnimate",
+            "num_heads": num_heads,
+            "head_dim": head_dim,
+            "block_hidden_dim": block_hidden_dim,
+            "norm_hidden_dim": head_dim,
+            "seq_len": seq_len,
+            "inverse_seq_len": context_length + seq_len,
+            "include_wan_block_kernels": False,
+            "include_rmsnorm": False,
+        }
+
     raise RuntimeError(f"SVOO warmup does not support model_type={model_type!r}")
 
 

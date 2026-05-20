@@ -6,6 +6,11 @@ import torch.nn.functional as F
 from .._base import SparseMethod
 from .._schedule import first_times_fp_requires_dense, resolve_first_layers, scheduler_timestep_from_tracker
 from ...kernels.dynamic_map import identify_dynamic_map
+from ...processors.allegro import SparseAllegroAttnProcessor
+from ...processors.cogvideox import SparseCogVideoXAttnProcessor
+from ...processors.easyanimate import SparseEasyAnimateAttnProcessor
+from ...processors.ltx_video import SparseLTXVideoAttnProcessor
+from ...processors.mochi import SparseMochiAttnProcessor
 from ...processors.wan import SparseWanAttnProcessor
 from ...processors.hunyuan_video import SparseHunyuanVideoAttnProcessor
 from . import config as method_config
@@ -25,19 +30,18 @@ class SVG2Method(SparseMethod):
         return method_config.default_config(**context)
 
     def create_processor(self, layer_idx, total_layers, original_processor, step_tracker):
-        if self.model_info.model_type not in ("wan", "hunyuan_video"):
+        if self.model_info.model_type not in (
+            "wan", "hunyuan_video", "cogvideox", "ltx_video", "allegro", "mochi", "easyanimate",
+        ):
             raise NotImplementedError(f"svg2 not yet supported for {self.model_info.model_type}")
 
         cfg = self.config
         first_layer_count = resolve_first_layers(cfg["first_layers_fp"], total_layers)
-        state = {
-            "centroids_init": False,
-            "prev_q_centroids": None,
-            "prev_k_centroids": None,
-        }
+        state = _new_runtime_state()
 
         def attn_fn(query, key, value, attention_mask, **kwargs):
             scheduler_timestep = scheduler_timestep_from_tracker(step_tracker, kwargs)
+            runtime_state = _state_for_cache_suffix(state, kwargs.get("cache_key_suffix"))
             prompt_length = kwargs.get("prompt_length")
             if prompt_length is None:
                 prompt_length = cfg.get("prompt_length")
@@ -54,7 +58,10 @@ class SVG2Method(SparseMethod):
                 if (
                     cfg["zero_step_kmeans_init"]
                     and query.is_cuda
-                    and (attention_mask is None or self.model_info.model_type == "hunyuan_video")
+                    and (
+                        attention_mask is None
+                        or self.model_info.model_type in ("hunyuan_video", "cogvideox", "mochi", "easyanimate")
+                    )
                 ):
                     _svg2_attention(
                         query, key, value,
@@ -64,7 +71,7 @@ class SVG2Method(SparseMethod):
                         num_k_centroids=cfg["num_k_centroids"],
                         kmeans_iter_init=cfg["kmeans_iter_init"],
                         kmeans_iter_step=cfg["kmeans_iter_step"],
-                        state=state,
+                        state=runtime_state,
                         initialize_only=True,
                         allow_triton_fallback=cfg["allow_triton_fallback"],
                         model_type=self.model_info.model_type,
@@ -91,7 +98,10 @@ class SVG2Method(SparseMethod):
                 return out
             if not query.is_cuda:
                 raise RuntimeError("svg2 sparse path requires CUDA self-attention without an attention mask")
-            if attention_mask is not None and self.model_info.model_type != "hunyuan_video":
+            if (
+                attention_mask is not None
+                and self.model_info.model_type not in ("hunyuan_video", "cogvideox", "mochi", "easyanimate")
+            ):
                 raise RuntimeError("svg2 sparse path requires CUDA self-attention without an attention mask")
             out = _svg2_attention(
                 query, key, value,
@@ -101,7 +111,7 @@ class SVG2Method(SparseMethod):
                 num_k_centroids=cfg["num_k_centroids"],
                 kmeans_iter_init=cfg["kmeans_iter_init"],
                 kmeans_iter_step=cfg["kmeans_iter_step"],
-                state=state,
+                state=runtime_state,
                 allow_triton_fallback=cfg["allow_triton_fallback"],
                 model_type=self.model_info.model_type,
                 text_len=kwargs.get("text_len", 0),
@@ -120,13 +130,52 @@ class SVG2Method(SparseMethod):
             return SparseWanAttnProcessor(
                 attn_fn=attn_fn, layer_idx=layer_idx, step_tracker=step_tracker,
             )
+        if self.model_info.model_type == "cogvideox":
+            return SparseCogVideoXAttnProcessor(
+                attn_fn=attn_fn, layer_idx=layer_idx, step_tracker=step_tracker,
+            )
+        if self.model_info.model_type == "ltx_video":
+            return SparseLTXVideoAttnProcessor(
+                attn_fn=attn_fn, layer_idx=layer_idx, step_tracker=step_tracker,
+            )
+        if self.model_info.model_type == "allegro":
+            return SparseAllegroAttnProcessor(
+                attn_fn=attn_fn, layer_idx=layer_idx, step_tracker=step_tracker,
+            )
+        if self.model_info.model_type == "mochi":
+            return SparseMochiAttnProcessor(
+                attn_fn=attn_fn, layer_idx=layer_idx, step_tracker=step_tracker,
+            )
+        if self.model_info.model_type == "easyanimate":
+            return SparseEasyAnimateAttnProcessor(
+                attn_fn=attn_fn, layer_idx=layer_idx, step_tracker=step_tracker,
+            )
         return SparseHunyuanVideoAttnProcessor(
             attn_fn=attn_fn, layer_idx=layer_idx, step_tracker=step_tracker,
         )
 
 
+def _new_runtime_state():
+    return {
+        "centroids_init": False,
+        "prev_q_centroids": None,
+        "prev_k_centroids": None,
+    }
+
+
+def _state_for_cache_suffix(state, cache_key_suffix):
+    if cache_key_suffix is None:
+        return state
+    suffix_states = state.setdefault("cache_suffix_states", {})
+    return suffix_states.setdefault(cache_key_suffix, _new_runtime_state())
+
+
 def _svg2_dense_backend_name(query, attention_mask, model_type):
-    if model_type == "hunyuan_video" and attention_mask is not None and query.is_cuda:
+    if (
+        model_type in ("hunyuan_video", "cogvideox", "mochi", "easyanimate")
+        and attention_mask is not None
+        and query.is_cuda
+    ):
         return "svg2_flashinfer_varlen"
     if attention_mask is not None:
         return "diffusers_dispatch"
@@ -159,19 +208,20 @@ def _svg2_attention(query, key, value, top_p_kmeans, min_kc_ratio,
     from .kmeans import triton_kmeans
 
     B, N, H, D = query.shape
-    if B != 1:
-        raise RuntimeError("SVG2 follows the upstream SAP implementation and currently requires batch size 1")
     scale = D ** -0.5
 
+    # CogVideoX classifier-free guidance arrives as a batch of negative and
+    # positive prompts. The owned kernels operate on folded batch-head slots,
+    # so each batch item remains independent without serializing the sparse path.
     q_full = query.permute(0, 2, 1, 3).contiguous().reshape(B * H, N, D)
     k_full = key.permute(0, 2, 1, 3).contiguous().reshape(B * H, N, D)
     v_full = value.permute(0, 2, 1, 3).contiguous().reshape(B * H, N, D)
 
     text_len = int(text_len or 0)
-    if model_type == "hunyuan_video" and text_len > 0:
+    if model_type in ("hunyuan_video", "cogvideox", "mochi", "easyanimate") and text_len > 0:
         if context_length is not None and int(context_length) != text_len:
             raise RuntimeError(
-                "svg2 Hunyuan context_length must match the text token tail length "
+                "svg2 context_length must match the text token tail length "
                 f"seen by the processor; got context_length={int(context_length)}, text_len={text_len}"
             )
         video_len = N - text_len
@@ -229,7 +279,7 @@ def _svg2_attention(query, key, value, top_p_kmeans, min_kc_ratio,
     k_sorted, k_sorted_idx = _svg2_permute_by_labels(k_flat, k_labels)
     v_sorted, _ = _svg2_permute_by_sorted_indices(v_flat, k_sorted_idx)
 
-    if model_type == "hunyuan_video" and text_len > 0:
+    if model_type in ("hunyuan_video", "cogvideox", "mochi", "easyanimate") and text_len > 0:
         q_sorted, k_sorted, v_sorted, dynamic_map, q_sizes, k_sizes, q_sorted_idx = _svg2_append_hunyuan_text_clusters(
             q_sorted,
             k_sorted,
@@ -272,7 +322,11 @@ def _svg2_attention(query, key, value, top_p_kmeans, min_kc_ratio,
 
 
 def _svg2_dense_attention(query, key, value, attention_mask, *, model_type):
-    if model_type == "hunyuan_video" and attention_mask is not None and query.is_cuda:
+    if (
+        model_type in ("hunyuan_video", "cogvideox", "mochi", "easyanimate")
+        and attention_mask is not None
+        and query.is_cuda
+    ):
         return _svg2_hunyuan_flashinfer_varlen(query, key, value, attention_mask)
     if attention_mask is not None:
         from diffusers.models.attention_dispatch import dispatch_attention_fn

@@ -2,7 +2,7 @@
 # Download all-backbone model weights from Hugging Face.
 # Proxy: localhost:10001
 # Usage:
-#   bash scripts/download_models.sh [--tier 1|2|3] [--all] [--dry-run] [--adopt-existing] [KEY ...]
+#   bash scripts/download_models.sh [--tier 1|2|3] [--all] [--dry-run] [KEY ...]
 #
 # Examples:
 #   bash scripts/download_models.sh --dry-run
@@ -11,6 +11,7 @@
 #   bash scripts/download_models.sh --all    # all tiers
 
 set -euo pipefail
+trap 'echo; echo "[ABORT] interrupted"; kill -- -$$ 2>/dev/null; exit 130' INT TERM
 
 # ── Config ────────────────────────────────────────────────────────────────────
 PYTHON=/home/dataset-assist-0/luojy/miniconda3/envs/sparsevideo/bin/python
@@ -21,7 +22,6 @@ MAX_ATTEMPTS=5
 BASE_DELAY=10        # seconds; doubles each retry (10 20 40 80 160)
 DRY_RUN=0
 ALL=0
-ADOPT_EXISTING=0
 TIER_FILTER=99       # 99 = no filter
 
 export HTTP_PROXY=$PROXY
@@ -36,7 +36,9 @@ CATALOGUE=(
     # Using 720P Diffusers-format repos (WanPipeline + SkyReelsV2Transformer3DModel)
     "skyreels-v2-t2v-14b|Skywork/SkyReels-V2-T2V-14B-720P-Diffusers|1|skyreels-v2-t2v-14b"
     "skyreels-v2-i2v-14b|Skywork/SkyReels-V2-I2V-14B-720P-Diffusers|1|skyreels-v2-i2v-14b"
-    # WanAnimate / WanVACE run on existing Wan weights — no separate download
+    "wan22-animate-14b|Wan-AI/Wan2.2-Animate-14B-Diffusers|1|Wan2.2-Animate-14B-Diffusers"
+    "wan21-vace-1.3b|Wan-AI/Wan2.1-VACE-1.3B-diffusers|1|Wan2.1-VACE-1.3B-diffusers"
+    "wan21-vace-14b|Wan-AI/Wan2.1-VACE-14B-diffusers|1|Wan2.1-VACE-14B-diffusers"
 
     # Tier 2 — separate self-attn, new processor needed
     "ltx-video|Lightricks/LTX-Video|2|ltx-video"
@@ -95,7 +97,7 @@ while [[ $# -gt 0 ]]; do
             ;;
         --dry-run)  DRY_RUN=1; shift ;;
         --all)      ALL=1; shift ;;
-        --adopt-existing) ADOPT_EXISTING=1; shift ;;
+        --adopt-existing) shift ;;  # Backward-compatible no-op; existing dirs are auto-checked.
         -*)         echo "Unknown option: $1"; exit 1 ;;
         *)          EXPLICIT_KEYS+=("$1"); shift ;;
     esac
@@ -161,69 +163,176 @@ marker.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding
 PYEOF
 }
 
-validate_marker() {
-    local repo=$1 marker=$2
-    $PYTHON - "$marker" "$repo" <<'PYEOF'
+check_model_state() {
+    local key=$1 repo=$2 dest=$3
+    $PYTHON - "$key" "$repo" "$dest" "$MARKER_NAME" <<'PYEOF'
 import json
+import os
 import sys
+from fnmatch import fnmatch
 from pathlib import Path
 
-marker = Path(sys.argv[1])
-repo_id = sys.argv[2]
+from huggingface_hub import HfApi
+from huggingface_hub.hf_api import RepoFile
 
-try:
-    payload = json.loads(marker.read_text(encoding="utf-8"))
-except json.JSONDecodeError as exc:
-    print(f"[ERROR] invalid download marker: {marker}: {exc}", flush=True)
-    sys.exit(1)
+key, repo_id, dest_arg, marker_name = sys.argv[1:5]
+dest = Path(dest_arg)
+marker = dest / marker_name
+ignore = ["flax_model*", "tf_model*", "rust_model*", "onnx/*", "*.msgpack", "*.h5"]
+checkpoint_suffixes = (".safetensors", ".bin", ".ckpt", ".pt", ".pth")
 
-existing_repo = payload.get("repo_id")
-if existing_repo and existing_repo != repo_id:
+def gib(num: int) -> str:
+    return f"{num / 1024**3:.1f}GiB"
+
+if marker.exists():
+    try:
+        payload = json.loads(marker.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        print(f"  [ERROR] {key}: invalid marker {marker}: {exc}", file=sys.stderr)
+        print("error")
+        sys.exit(0)
+    existing_repo = payload.get("repo_id")
+    if existing_repo and existing_repo != repo_id:
+        print(
+            f"  [ERROR] {key}: marker belongs to {existing_repo}, refusing to write {repo_id}",
+            file=sys.stderr,
+        )
+        print("error")
+        sys.exit(0)
+
+api = HfApi()
+remote = {}
+for item in api.list_repo_tree(repo_id, repo_type="model", recursive=True, expand=True):
+    if not isinstance(item, RepoFile):
+        continue
+    path = item.path
+    if any(fnmatch(path, pattern) for pattern in ignore):
+        continue
+    remote[path] = int(item.size or 0)
+
+if not remote:
+    print(f"  [ERROR] {key}: remote repo has no matching files: {repo_id}", file=sys.stderr)
+    print("error")
+    sys.exit(0)
+
+local = {}
+if dest.exists():
+    for path in dest.rglob("*"):
+        if not path.is_file():
+            continue
+        try:
+            rel = path.relative_to(dest).as_posix()
+        except ValueError:
+            continue
+        if rel == marker_name or rel.startswith(".cache/"):
+            continue
+        local[rel] = path.stat().st_size
+
+missing = [(path, size) for path, size in remote.items() if path not in local]
+size_mismatch = [
+    (path, remote_size, local[path])
+    for path, remote_size in remote.items()
+    if path in local and remote_size and local[path] != remote_size
+]
+extra_checkpoint = [
+    path for path in local
+    if path not in remote and path.endswith(checkpoint_suffixes)
+]
+incomplete_count = 0
+incomplete_size = 0
+cache_dir = dest / ".cache" / "huggingface" / "download"
+if cache_dir.exists():
+    incomplete_files = list(cache_dir.rglob("*.incomplete"))
+    incomplete_count = len(incomplete_files)
+    incomplete_size = sum(path.stat().st_size for path in incomplete_files)
+
+remote_size = sum(remote.values())
+local_expected_size = sum(size for path, size in local.items() if path in remote)
+missing_size = sum(size for _, size in missing)
+remaining_size = max(missing_size - incomplete_size, 0)
+
+if extra_checkpoint:
+    print(f"  [ERROR] {key}: found checkpoint files that are not in {repo_id}", file=sys.stderr)
+    for path in extra_checkpoint[:5]:
+        print(f"          extra checkpoint: {path}", file=sys.stderr)
+    print("error")
+elif not missing and not size_mismatch:
     print(
-        f"[ERROR] destination marker belongs to {existing_repo}, refusing to write {repo_id}",
-        flush=True,
+        f"  [CHECK] {key}: complete ({len(remote)} files, {gib(remote_size)})",
+        file=sys.stderr,
     )
-    sys.exit(1)
+    print("complete")
+else:
+    print(
+        f"  [CHECK] {key}: incomplete "
+        f"(missing={len(missing)}, damaged={len(size_mismatch)}, "
+        f"cached_partial={incomplete_count}/{gib(incomplete_size)}, need≈{gib(remaining_size)}, "
+        f"local_expected={gib(local_expected_size)}/{gib(remote_size)})",
+        file=sys.stderr,
+    )
+    for path, size in missing[:5]:
+        print(f"          missing: {path} ({gib(size)})", file=sys.stderr)
+    for path, remote_size, local_size in size_mismatch[:5]:
+        print(
+            f"          damaged: {path} local={local_size} remote={remote_size}",
+            file=sys.stderr,
+        )
+    print("incomplete")
 PYEOF
 }
 
-validate_destination() {
-    local key=$1 repo=$2 dest=$3
-    local marker="${dest}/${MARKER_NAME}"
+remove_damaged_files() {
+    local repo=$1 dest=$2
+    $PYTHON - "$repo" "$dest" "$MARKER_NAME" <<'PYEOF'
+import sys
+from fnmatch import fnmatch
+from pathlib import Path
 
-    if [[ -f "$marker" ]]; then
-        validate_marker "$repo" "$marker"
-    elif [[ -d "$dest" && -n "$(find "$dest" -mindepth 1 -maxdepth 1 ! -name ".cache" -print -quit)" ]]; then
-        if [[ $ADOPT_EXISTING -eq 1 ]]; then
-            echo "  [WARN] ${key}: will adopt existing unmarked directory as ${repo}"
-        else
-            echo "  [ERROR] ${dest} is non-empty but has no ${MARKER_NAME}" >&2
-            echo "          Refusing to mix checkpoints. If this directory is definitely ${repo}," >&2
-            echo "          rerun with --adopt-existing for this first fixed-script run." >&2
-            return 1
-        fi
-    fi
+from huggingface_hub import HfApi
+from huggingface_hub.hf_api import RepoFile
+
+repo_id, dest_arg, marker_name = sys.argv[1:4]
+dest = Path(dest_arg)
+ignore = ["flax_model*", "tf_model*", "rust_model*", "onnx/*", "*.msgpack", "*.h5"]
+
+api = HfApi()
+remote = {}
+for item in api.list_repo_tree(repo_id, repo_type="model", recursive=True, expand=True):
+    if not isinstance(item, RepoFile):
+        continue
+    path = item.path
+    if any(fnmatch(path, pattern) for pattern in ignore):
+        continue
+    remote[path] = int(item.size or 0)
+
+for rel, remote_size in remote.items():
+    path = dest / rel
+    if path.is_file() and remote_size and path.stat().st_size != remote_size:
+        print(f"  [REPAIR] removing damaged local file: {path}", flush=True)
+        path.unlink()
+PYEOF
 }
 
 prepare_destination() {
     local key=$1 repo=$2 dest=$3
-    local marker="${dest}/${MARKER_NAME}"
 
     mkdir -p "$dest"
-    if [[ -f "$marker" ]]; then
-        write_marker "$key" "$repo" "$dest" "in_progress"
-    elif [[ -n "$(find "$dest" -mindepth 1 -maxdepth 1 ! -name ".cache" -print -quit)" ]]; then
-        if [[ $ADOPT_EXISTING -eq 1 ]]; then
-            echo "  [WARN] adopting existing unmarked directory as ${repo}"
-            write_marker "$key" "$repo" "$dest" "in_progress"
-        else
-            echo "  [ERROR] ${dest} is non-empty but has no ${MARKER_NAME}" >&2
-            echo "          Refusing to mix checkpoints. If this directory is definitely ${repo}," >&2
-            echo "          rerun with --adopt-existing for this first fixed-script run." >&2
-            return 1
-        fi
+    write_marker "$key" "$repo" "$dest" "in_progress"
+}
+
+finalize_download() {
+    local key=$1 repo=$2 dest=$3
+    local state
+
+    if ! state=$(check_model_state "$key" "$repo" "$dest"); then
+        return 1
+    fi
+    if [[ "$state" == "complete" ]]; then
+        write_marker "$key" "$repo" "$dest" "complete"
+        return 0
     else
-        write_marker "$key" "$repo" "$dest" "in_progress"
+        echo "  [ERROR] ${key} is still incomplete after hf download" >&2
+        return 1
     fi
 }
 
@@ -277,8 +386,11 @@ else
 fi
 echo
 
-FAILED=()
 SELECTED=()
+STATES=()
+FAILED=()
+SKIPPED=()
+DOWNLOADED=()
 
 for entry in "${CATALOGUE[@]}"; do
     IFS='|' read -r key repo tier local_dir <<< "$entry"
@@ -301,51 +413,68 @@ if [[ ${#SELECTED[@]} -eq 0 ]]; then
     exit 1
 fi
 
-if [[ $DRY_RUN -eq 0 ]]; then
-    PREFLIGHT_FAILED=()
-    echo "Preflight:"
-    for entry in "${SELECTED[@]}"; do
-        IFS='|' read -r key repo tier local_dir <<< "$entry"
-        local_dir=${local_dir:-$key}
-        dest="${MODELS_DIR}/${local_dir}"
-        if validate_destination "$key" "$repo" "$dest"; then
-            echo "  [OK]    ${key} → ${dest}"
-        else
-            PREFLIGHT_FAILED+=("$key")
-        fi
-    done
-    echo
-    if [[ ${#PREFLIGHT_FAILED[@]} -gt 0 ]]; then
-        echo "[ERROR] preflight failed; no downloads were started" >&2
-        echo "  Failed: ${PREFLIGHT_FAILED[*]}" >&2
-        exit 1
+PREFLIGHT_FAILED=()
+echo "Preflight:"
+for entry in "${SELECTED[@]}"; do
+    IFS='|' read -r key repo tier local_dir <<< "$entry"
+    local_dir=${local_dir:-$key}
+    dest="${MODELS_DIR}/${local_dir}"
+    if state=$(check_model_state "$key" "$repo" "$dest"); then
+        STATES+=("$state")
+    else
+        state=error
+        STATES+=("$state")
     fi
+    if [[ "$state" == "error" ]]; then
+        PREFLIGHT_FAILED+=("$key")
+    fi
+done
+echo
+
+if [[ ${#PREFLIGHT_FAILED[@]} -gt 0 ]]; then
+    echo "[ERROR] preflight failed; no downloads were started" >&2
+    echo "  Failed: ${PREFLIGHT_FAILED[*]}" >&2
+    exit 1
 fi
 
-for entry in "${SELECTED[@]}"; do
+if [[ $DRY_RUN -eq 1 ]]; then
+    echo "========================================"
+    echo "Dry run. selected=${#SELECTED[@]}"
+    exit 0
+fi
+
+for index in "${!SELECTED[@]}"; do
+    entry="${SELECTED[$index]}"
+    state="${STATES[$index]}"
     IFS='|' read -r key repo tier local_dir <<< "$entry"
     local_dir=${local_dir:-$key}
     dest="${MODELS_DIR}/${local_dir}"
     echo "[Tier ${tier}] ${key}"
     echo "         ${repo}"
 
-    if [[ $DRY_RUN -eq 1 ]]; then
-        echo "         → ${dest}  (dry-run)"
+    if [[ "$state" == "complete" ]]; then
+        write_marker "$key" "$repo" "$dest" "complete"
+        SKIPPED+=("$key")
+        echo "  [SKIP]  already complete"
         echo
         continue
     fi
 
-    # hf download handles resume and skip of already-complete files internally.
-    # No shell-level skip — it would false-positive on partially downloaded repos.
-    # The marker prevents reusing a directory for a different repo after a catalogue edit.
+    # hf download resumes partial files and skips complete files. Local files with
+    # a wrong size are removed first so they are redownloaded instead of reused.
+    remove_damaged_files "$repo" "$dest"
     if ! prepare_destination "$key" "$repo" "$dest"; then
         FAILED+=("$key")
         echo
         continue
     fi
     if download_model "$key" "$repo" "$dest"; then
-        write_marker "$key" "$repo" "$dest" "complete"
-        echo "  [OK]    ${key}"
+        if finalize_download "$key" "$repo" "$dest"; then
+            DOWNLOADED+=("$key")
+            echo "  [OK]    ${key}"
+        else
+            FAILED+=("$key")
+        fi
     else
         FAILED+=("$key")
     fi
@@ -354,6 +483,8 @@ done
 
 # ── Summary ───────────────────────────────────────────────────────────────────
 echo "========================================"
-echo "Done.  selected=${#SELECTED[@]}  failed=${#FAILED[@]}"
+echo "Done.  selected=${#SELECTED[@]}  skipped=${#SKIPPED[@]}  downloaded=${#DOWNLOADED[@]}  failed=${#FAILED[@]}"
+[[ ${#SKIPPED[@]} -gt 0 ]] && echo "  Skipped:    ${SKIPPED[*]}"
+[[ ${#DOWNLOADED[@]} -gt 0 ]] && echo "  Downloaded: ${DOWNLOADED[*]}"
 [[ ${#FAILED[@]} -gt 0 ]]  && echo "  Failed:  ${FAILED[*]}" && exit 1
 exit 0

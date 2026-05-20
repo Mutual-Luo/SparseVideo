@@ -127,20 +127,17 @@ Always keep `dense` as the baseline and fallback.
 ## Current Audit State
 
 Before reworking a method, run `scripts/audit_parity.py --format markdown` and read `PARITY_STATUS.md`. As of
-2026-05-18, `dense`, `svg1`, `svg2`, `spargeattn`, `radial`, `draft`, `adacluster`, `svoo`, and `sta` on A100 pass the
-current audit and should not be repeatedly rewritten without new evidence.
+2026-05-20, the current A100 audit is complete for `dense`, `svg1`, `svg2`, `spargeattn`, `radial`, `draft`,
+`adacluster`, `svoo`, `flashomni`, and `sta` on A100. Do not repeatedly rewrite passed methods without new evidence.
 
-The remaining software gap is `flashomni`: SparseVideo owns the FlashOmni C++/CUDA runtime, attention adapter,
-GEMM-Q/GEMM-O path, paper/benchmark score-CDF `paper_mmdit` policy, tests, and a 50-step strict-dispatch run. It is
-still not code-level upstream Wan/Hunyuan video-method parity because the public upstream reference exposes only the
-engine/runtime and benchmark helpers, not a Wan/Hunyuan video sparse-symbol policy. The public paper also says
-`tau_q`/`tau_kv` progressively converge during denoising, but no public code-level schedule formula is available; the
-current `paper_mmdit` path uses the reported target values directly. The audit also checks the local FlashOmni git
-history for hidden policy filenames; avoid repeating that source archaeology unless new upstream refs appear. Do not
-claim `flashomni` complete unless concrete upstream video-policy source/evidence appears and the owned policy is
-compared against it.
+`flashomni` now has owned C++/CUDA runtime, attention adapter, GEMM-Q/GEMM-O path, paper/benchmark score-CDF policy,
+anonymous Hunyuan sparse-symbol policy evidence, owned Hunyuan forward/Taylor-cache path, tests, and 50-step
+strict-dispatch Hunyuan reported-config evidence. The current gate is complete, but the FlashOmni artifact QC still
+records low-bitrate/small-file warnings; treat that as separate visual acceptance work, not a missing software gate.
 
-`sta_h100` is hardware-deferred on this A100-only machine. A100 STA evidence does not prove Hopper/TK dispatch.
+`sta_h100` is hardware-deferred on this A100-only machine. A100 STA evidence does not prove Hopper/TK dispatch. When an
+H100/Hopper machine is available, rerun the STA H100 strict-dispatch and 50-step quality evidence before claiming H100
+parity.
 
 ## Engineering Rules
 

@@ -4,8 +4,13 @@ import torch
 import torch.nn.functional as F
 
 from .._base import SparseMethod
+from ...processors.allegro import SparseAllegroAttnProcessor
+from ...processors.cogvideox import SparseCogVideoXAttnProcessor
+from ...processors.easyanimate import SparseEasyAnimateAttnProcessor
 from ...processors.wan import SparseWanAttnProcessor
 from ...processors.hunyuan_video import SparseHunyuanVideoAttnProcessor
+from ...processors.ltx_video import SparseLTXVideoAttnProcessor
+from ...processors.mochi import SparseMochiAttnProcessor
 from . import config as method_config
 
 
@@ -28,7 +33,9 @@ class AdaClusterMethod(SparseMethod):
         return method_config.default_config(**context)
 
     def create_processor(self, layer_idx, total_layers, original_processor, step_tracker):
-        if self.model_info.model_type not in ("wan", "hunyuan_video"):
+        if self.model_info.model_type not in (
+            "wan", "hunyuan_video", "cogvideox", "ltx_video", "allegro", "mochi", "easyanimate",
+        ):
             raise NotImplementedError(f"adacluster not yet supported for {self.model_info.model_type}")
 
         cfg = self.config
@@ -95,6 +102,26 @@ class AdaClusterMethod(SparseMethod):
 
         if self.model_info.model_type == "wan":
             return SparseWanAttnProcessor(
+                attn_fn=attn_fn, layer_idx=layer_idx, step_tracker=step_tracker,
+            )
+        if self.model_info.model_type == "cogvideox":
+            return SparseCogVideoXAttnProcessor(
+                attn_fn=attn_fn, layer_idx=layer_idx, step_tracker=step_tracker,
+            )
+        if self.model_info.model_type == "ltx_video":
+            return SparseLTXVideoAttnProcessor(
+                attn_fn=attn_fn, layer_idx=layer_idx, step_tracker=step_tracker,
+            )
+        if self.model_info.model_type == "allegro":
+            return SparseAllegroAttnProcessor(
+                attn_fn=attn_fn, layer_idx=layer_idx, step_tracker=step_tracker,
+            )
+        if self.model_info.model_type == "mochi":
+            return SparseMochiAttnProcessor(
+                attn_fn=attn_fn, layer_idx=layer_idx, step_tracker=step_tracker,
+            )
+        if self.model_info.model_type == "easyanimate":
+            return SparseEasyAnimateAttnProcessor(
                 attn_fn=attn_fn, layer_idx=layer_idx, step_tracker=step_tracker,
             )
         return SparseHunyuanVideoAttnProcessor(
@@ -233,13 +260,19 @@ def _adacluster_attention(query, key, value, topk_num, q_kernel_num, kv_kernel_n
     query/key/value: [B, N, H, D]
     """
     B, NQ, H, D = query.shape
+    original_head_dim = D
     NK = key.shape[1]
-    scale = D ** -0.5
+    scale = original_head_dim ** -0.5
 
     if state.get("use_full_attention"):
         if backend_trace is not None:
             backend_trace.append(_adacluster_dense_backend_name(query, model_type))
         return _adacluster_dense_attention(query, key, value, model_type=model_type)
+
+    kernel_head_dim = _adacluster_kernel_head_dim(original_head_dim)
+    if kernel_head_dim != original_head_dim:
+        query, key, value = _adacluster_pad_head_dim(query, key, value, kernel_head_dim)
+        D = kernel_head_dim
 
     q_bhsd = query.permute(0, 2, 1, 3).contiguous()
     k_bhsd = key.permute(0, 2, 1, 3).contiguous()
@@ -358,7 +391,19 @@ def _adacluster_attention(query, key, value, topk_num, q_kernel_num, kv_kernel_n
 
     if backend_trace is not None:
         backend_trace.append("triton_cluster_sparse_attn")
-    return out_bhsd.permute(0, 2, 1, 3).contiguous()
+    return out_bhsd[..., :original_head_dim].permute(0, 2, 1, 3).contiguous()
+
+
+def _adacluster_kernel_head_dim(head_dim: int) -> int:
+    for supported in (16, 32, 64, 128, 256):
+        if head_dim <= supported:
+            return supported
+    raise RuntimeError(f"adacluster cannot pad head_dim={head_dim} to a supported kernel width")
+
+
+def _adacluster_pad_head_dim(query, key, value, kernel_head_dim: int):
+    pad = (0, kernel_head_dim - query.shape[-1])
+    return F.pad(query, pad), F.pad(key, pad), F.pad(value, pad)
 
 
 def _adacluster_reuse_policy(reuse_prev_centroids) -> tuple[bool, bool]:
