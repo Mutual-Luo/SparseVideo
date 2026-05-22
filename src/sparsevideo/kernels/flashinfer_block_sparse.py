@@ -64,7 +64,7 @@ def _next_power_of_two(value: int) -> int:
 
 
 def _flashinfer_kernel_head_dim(dtype: torch.dtype, head_dim: int) -> int:
-    if dtype == torch.bfloat16 and head_dim & (head_dim - 1):
+    if dtype in (torch.float16, torch.bfloat16) and head_dim & (head_dim - 1):
         padded = _next_power_of_two(head_dim)
         if padded <= 256:
             return padded
@@ -447,11 +447,12 @@ def _variable_block_sparse_attn_impl(
 
     assert dynamic_map.shape == (BH, nqc, nkc)
 
+    dev = q.device
     workspace_bytes = _env_int_first(
         ("SVOO_FLASHINFER_SPARSE_WORKSPACE_BYTES", "SV_FLASHINFER_WORKSPACE_BYTES"),
         128 * 1024 * 1024,
     )
-    f_buffer = torch.empty((workspace_bytes,), dtype=torch.uint8, device=q.device)
+    f_buffer = torch.empty((workspace_bytes,), dtype=torch.uint8, device=dev)
     backend = _env_str_first(
         ("SVOO_FLASHINFER_SPARSE_BACKEND", "SV_FLASHINFER_BACKEND"),
         "auto",

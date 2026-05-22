@@ -183,6 +183,34 @@ def test_svg1_hunyuan_flex_attention_uses_upstream_compile_settings(monkeypatch)
     ]
 
 
+def test_svg1_flex_attention_pads_non_power_of_two_head_dim(monkeypatch):
+    import sparsevideo.methods.svg1.method as svg1_method
+
+    calls = []
+
+    def fake_compile(fn, *, dynamic, mode=None):
+        calls.append({"dynamic": dynamic, "mode": mode})
+
+        def compiled(query, key, value, *, block_mask, scale=None):
+            calls.append({"shape": tuple(query.shape), "block_mask": block_mask, "scale": scale})
+            return query
+
+        return compiled
+
+    monkeypatch.setattr(svg1_method, "_SVG_FLEX_ATTENTION", {})
+    monkeypatch.setattr(torch, "compile", fake_compile)
+
+    query = torch.zeros((1, 1, 2, 96))
+    block_mask = object()
+    out = svg1_method._svg_flex_attention(query, query, query, block_mask, model_type="allegro")
+
+    assert out.shape == query.shape
+    assert calls == [
+        {"dynamic": False, "mode": "max-autotune-no-cudagraphs"},
+        {"shape": (1, 1, 2, 128), "block_mask": block_mask, "scale": 96 ** -0.5},
+    ]
+
+
 def test_svg1_temporal_profile_sink_is_token_major_like_upstream_wan():
     frame_size = 256
     num_frames = 3

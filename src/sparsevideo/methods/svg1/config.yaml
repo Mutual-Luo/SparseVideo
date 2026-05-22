@@ -141,7 +141,7 @@ model_defaults:
   allegro:
     dense_warmup_step_ratio: 0.1
     dense_warmup_layer_ratio: 0.03
-    num_sampled_rows: 64
+    num_sampled_rows: 256
     sample_mse_max_row: 10000
     sparsity: 0.2
     context_length: null

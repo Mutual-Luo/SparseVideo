@@ -205,6 +205,16 @@ def _svg_attention(query, key, value, sparsity, num_sampled_rows,
 def _svg_flex_attention(query, key, value, block_mask, model_type="wan"):
     global _SVG_FLEX_ATTENTION
 
+    original_head_dim = int(query.shape[-1])
+    kernel_head_dim = _svg_kernel_head_dim(original_head_dim)
+    scale = None
+    if kernel_head_dim != original_head_dim:
+        scale = original_head_dim ** -0.5
+        pad = kernel_head_dim - original_head_dim
+        query = F.pad(query, (0, pad))
+        key = F.pad(key, (0, pad))
+        value = F.pad(value, (0, pad))
+
     if model_type not in _SVG_FLEX_ATTENTION:
         from torch.nn.attention.flex_attention import flex_attention
 
@@ -223,7 +233,18 @@ def _svg_flex_attention(query, key, value, block_mask, model_type="wan"):
                 dynamic=False,
                 mode="max-autotune-no-cudagraphs",
             )
-    return _SVG_FLEX_ATTENTION[model_type](query, key, value, block_mask=block_mask)
+    if scale is None:
+        return _SVG_FLEX_ATTENTION[model_type](query, key, value, block_mask=block_mask)
+    out = _SVG_FLEX_ATTENTION[model_type](query, key, value, block_mask=block_mask, scale=scale)
+    return out[..., :original_head_dim].contiguous()
+
+
+def _svg_kernel_head_dim(head_dim):
+    if head_dim > 0 and head_dim & (head_dim - 1):
+        padded = 1 << (head_dim - 1).bit_length()
+        if padded <= 256:
+            return padded
+    return head_dim
 
 
 def _svg1_dense_attention(query, key, value, attention_mask, *, model_type):

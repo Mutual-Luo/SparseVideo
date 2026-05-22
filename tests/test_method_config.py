@@ -661,6 +661,7 @@ def test_720p_token_layout_inference_matches_upstream_shapes():
     assert infer_video_frame_shape(30 * 48 * 80, model_type="hunyuan_video") == (30, 48, 80)
     assert infer_video_frame_shape(13 * 60 * 90, model_type="cogvideox") == (13, 60, 90)
     assert infer_video_frame_shape(22 * 45 * 80, model_type="allegro") == (22, 45, 80)
+    assert infer_video_frame_shape(8 * 45 * 80, model_type="allegro") == (8, 45, 80)
 
 
 def test_sta_seq_shape_override_must_match_video_tokens():

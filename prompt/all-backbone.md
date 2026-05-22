@@ -60,23 +60,28 @@ LongCat bundle under `Longcat/weights/LongCat-Video` is detected without redownl
 `dense` baseline and all-public-sparse-method load/apply/restore evidence, patching 48 DiffSynth
 `_process_attn(q, k, v, shape)` paths for each sparse method and reporting LongCat cross-attention as an unpatched path.
 Wan2.1 SpeedControl 1.3B, Wan2.1-Fun 1.3B Control/InP, Wan2.1-Fun 14B Control/InP, Wan2.1-Fun V1.1 1.3B
-Control/Control-Camera, and Wan2.1-Fun V1.1 14B Control now have real `dense` baseline and all-public-sparse-method
+Control/Control-Camera, and Wan2.1-Fun V1.1 14B Control/Control-Camera now have real `dense` baseline and all-public-sparse-method
 `--apply-only` evidence after their local bundles completed; the SVOO defaults use online clustering for these
-unprofiled Wan-family variants instead of borrowing an unrelated dynamic sparsity CSV. The
-reproducible sweep entrypoint is
+unprofiled Wan-family variants instead of borrowing an unrelated dynamic sparsity CSV. Wan2.2-Fun A14B
+Control/Control-Camera now have real `dense` baseline and all-public-sparse-method `--apply-only` evidence after their
+high-noise DiTs completed locally. Video-as-Prompt Wan2.1 14B now has real `dense` baseline and
+all-public-sparse-method `--apply-only` evidence after all five native shards completed locally; VAP
+`MotWanAttentionBlock.flash_attention` is reported as an unpatched auxiliary path.
+The reproducible sweep entrypoint is
 `scripts/smoke_diffsynth_methods.py`, whose default `--methods all` includes `dense` plus every public sparse method;
 use `--methods sparse` only for sparse-method-only debugging, and use `--list-models` or `--models all` to inspect or
 sweep the full DiffSynth catalog. The test suite now checks the active downloader/catalog against the installed
 DiffSynth video model-config examples for Wan/MOVA/LTX2, allowing only documented converted/shared-file alternatives
 and explicit deferred/local-only entries. The current strict audit requires each DiffSynth smoke/inference record to include
 `resolved_model.complete=true` for the same local bundle it loaded. The audit reports `diffsynth_checkpoint_availability`
-failing on 7 incomplete active local bundles with 22 missing component checks, plus 1 explicit deferred/local-only
-WanToDance bundle; `diffsynth_apply_restore_evidence` is missing 70 method records for those incomplete active bundles.
-The 22 complete local bundles have regenerated `dense` plus all-public-sparse-method apply/restore
+failing on 3 incomplete active local bundles with 15 missing component checks, plus 1 explicit deferred/local-only
+WanToDance bundle; `diffsynth_apply_restore_evidence` is missing 30 method records for those incomplete active bundles.
+The 26 complete local bundles have regenerated `dense` plus all-public-sparse-method apply/restore
 records with resolved local bundle metadata: Wan2.1 T2V 1.3B/14B, Wan2.1 I2V 14B 480p/720p, Wan2.1 FLF2V 14B 720p,
 Wan2.1 SpeedControl 1.3B, Wan2.1-Fun 1.3B Control/InP, Wan2.1-Fun 14B Control/InP, Wan2.1-Fun V1.1 1.3B
-Control/Control-Camera, Wan2.1-Fun V1.1 14B Control, Wan2.1 VACE 1.3B/14B, Wan2.2 Animate 14B, Wan2.2 T2V A14B,
-Wan2.2 I2V A14B, Wan2.2 TI2V 5B, Wan2.2 S2V 14B, Krea realtime video 14B, and LongCat-Video. Older local
+Control/Control-Camera, Wan2.1-Fun V1.1 14B Control/Control-Camera, Wan2.1 VACE 1.3B/14B, Wan2.2 Animate 14B, Wan2.2 T2V A14B,
+Wan2.2 I2V A14B, Wan2.2 TI2V 5B, Wan2.2 S2V 14B, Wan2.2-Fun A14B Control/Control-Camera, Video-as-Prompt Wan2.1 14B,
+Krea realtime video 14B, and LongCat-Video. Older local
 apply/restore records without resolved bundle metadata no longer count. Full DiffSynth status remains incomplete until
 the remaining bundles are downloaded and rerun with native load/apply/restore records that include resolved local bundle
 metadata and normal-step quality evidence across the target model families.
