@@ -349,12 +349,15 @@ def adacluster_load_status() -> Dict[str, Any]:
         "import_error": None,
         "fast_kmeans_module_file": None,
         "cluster_sparse_attn_module_file": None,
+        "cluster_sparse_attn_topk_module_file": None,
         "training_free_runtime_detected": False,
         "owned_runtime": False,
         "flash_kmeans_single": False,
         "triton_cluster_sparse_attn": False,
+        "triton_cluster_sparse_attn_topk": False,
         "kmeans_jit_kernels": False,
         "cluster_sparse_attn_jit_kernel": False,
+        "cluster_sparse_attn_topk_jit_kernel": False,
     }
     expected_root = (
         _repo_root() / "src" / "sparsevideo" / "kernels" / "native" / "adacluster"
@@ -366,6 +369,9 @@ def adacluster_load_status() -> Dict[str, Any]:
         cluster_attn = importlib.import_module(
             "sparsevideo.kernels.native.adacluster.triton_cluster_sparse_attn"
         )
+        cluster_attn_topk = importlib.import_module(
+            "sparsevideo.kernels.native.adacluster.triton_cluster_sparse_attn_topk"
+        )
     except Exception as exc:
         status["import_error_type"] = type(exc).__name__
         status["import_error"] = str(exc)
@@ -373,9 +379,11 @@ def adacluster_load_status() -> Dict[str, Any]:
 
     fast_file = getattr(fast_kmeans, "__file__", None)
     cluster_file = getattr(cluster_attn, "__file__", None)
+    cluster_topk_file = getattr(cluster_attn_topk, "__file__", None)
     status["fast_kmeans_module_file"] = fast_file
     status["cluster_sparse_attn_module_file"] = cluster_file
-    module_paths = [Path(path).resolve() for path in (fast_file, cluster_file) if path]
+    status["cluster_sparse_attn_topk_module_file"] = cluster_topk_file
+    module_paths = [Path(path).resolve() for path in (fast_file, cluster_file, cluster_topk_file) if path]
     if _has_training_free_path(module_paths):
         status["training_free_runtime_detected"] = True
         status["import_error_type"] = "ImportError"
@@ -400,6 +408,9 @@ def adacluster_load_status() -> Dict[str, Any]:
     status["triton_cluster_sparse_attn"] = callable(
         getattr(cluster_attn, "triton_cluster_sparse_attn", None)
     )
+    status["triton_cluster_sparse_attn_topk"] = callable(
+        getattr(cluster_attn_topk, "triton_cluster_sparse_attn_topk", None)
+    )
     status["kmeans_jit_kernels"] = all(
         callable(getattr(fast_kmeans, name, None))
         for name in (
@@ -410,6 +421,9 @@ def adacluster_load_status() -> Dict[str, Any]:
     )
     status["cluster_sparse_attn_jit_kernel"] = callable(
         getattr(cluster_attn, "_cluster_sparse_attn", None)
+    )
+    status["cluster_sparse_attn_topk_jit_kernel"] = callable(
+        getattr(cluster_attn_topk, "_cluster_sparse_attn_topk", None)
     )
     return status
 
@@ -591,6 +605,10 @@ def radial_runtime_load_status() -> Dict[str, Any]:
             "build_bsr_from_mask": (
                 "sparsevideo.kernels.flashinfer_block_sparse",
                 "build_bsr_from_mask",
+            ),
+            "variable_block_sparse_attn": (
+                "sparsevideo.kernels.flashinfer_block_sparse",
+                "variable_block_sparse_attn",
             ),
             "bsr_sparse_attn": ("sparsevideo.kernels.flashinfer_block_sparse", "bsr_sparse_attn"),
             "ensure_cuda_home_for_flashinfer_jit": (
@@ -1247,6 +1265,10 @@ def optional_kernel_status() -> Dict[str, Any]:
                 repo_root / "src" / "sparsevideo" / "kernels" / "native" / "adacluster",
                 ("triton_cluster_sparse_attn.py",),
             ),
+            "triton_cluster_sparse_attn_topk": _source_dir_status(
+                repo_root / "src" / "sparsevideo" / "kernels" / "native" / "adacluster",
+                ("triton_cluster_sparse_attn_topk.py",),
+            ),
             "methods": ["adacluster"],
         },
         "draft_kernels": {
@@ -1490,7 +1512,7 @@ def optional_kernel_status() -> Dict[str, Any]:
             "package": bool(flashinfer_locations),
             "sparse_module": _has_submodule_file(flashinfer_locations, "sparse"),
             "cuda_toolkit": _cuda_toolkit_status(),
-            "methods": ["radial", "svg2", "svoo"],
+            "methods": ["adacluster", "radial", "svg2", "svoo"],
         },
         "flash_attn": _flash_attn_status(flash_attn_locations),
         "svg_svoo_fused_kernels": {

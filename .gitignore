@@ -122,3 +122,5 @@ benchmark_outputs/
 AGENTS.md
 CLAUDE.md
 .tmp*
+.pytest-of-batchcom
+pytest-of-batchcom

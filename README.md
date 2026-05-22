@@ -11,13 +11,16 @@ pip install sparsevideo
 For methods that require Triton or FlashInfer backends:
 
 ```bash
-# All optional kernels
+# All optional kernels plus DiffSynth-Studio backend
 pip install sparsevideo[all]
 
 # Per-method extras
 pip install sparsevideo[svoo]        # FlashInfer + Triton
 pip install sparsevideo[spargeattn]  # Triton
 pip install sparsevideo[sta]         # Triton
+
+# DiffSynth-Studio scripts/backend only
+pip install sparsevideo[diffsynth]
 ```
 
 ### Building Native CUDA Kernels
@@ -49,13 +52,13 @@ pipe = WanPipeline.from_pretrained("Wan-AI/Wan2.1-T2V-14B-Diffusers", torch_dtyp
 pipe.to("cuda")
 
 # Replace attention with a sparse method (one line)
-handle = sparsevideo.replace_attention(pipe, method="svoo")
+pipe = sparsevideo.replace_attention(pipe, method="svoo")
 
 # Generate video as usual
 video = pipe("A cat playing piano", num_frames=81, num_inference_steps=50).frames[0]
 
 # Restore dense attention when done
-sparsevideo.restore_sparse_attention(handle)
+sparsevideo.restore_sparse_attention(pipe)
 ```
 
 ## Supported Methods
@@ -81,18 +84,18 @@ visual acceptance. `sta_h100` remains hardware-deferred until a Hopper/H100 mach
 
 ```python
 # Replace attention in a pipeline
-handle = sparsevideo.replace_attention(
+pipe = sparsevideo.replace_attention(
     pipe,                        # Diffusers pipeline
     method="svoo",               # Method name
     config={"sparse_backend": "flashinfer"},  # Optional config overrides
 )
 
-# Existing aliases are kept for compatibility:
-# sparsevideo.apply_sparse_attention(...)
-# sparsevideo.apply(...)
+# Low-level API returns a handle for explicit runtime summaries/restoration:
+# handle = sparsevideo.apply_sparse_attention(...)
+# sparsevideo.apply(...) is kept for compatibility.
 
 # Restore original dense attention
-sparsevideo.restore_sparse_attention(handle)
+sparsevideo.restore_sparse_attention(pipe)
 
 # Get default config for a method (model-aware)
 config = sparsevideo.default_method_config("svoo", model_family="wan")
@@ -113,6 +116,28 @@ python scripts/infer.py --model wan14b --method svoo --dry-run
 
 # Use upstream benchmark profile
 python scripts/infer.py --model wan14b --method svoo --profile upstream
+```
+
+## DiffSynth-Studio
+
+DiffSynth-Studio uses its own pipeline classes and native checkpoint layout, so keep it on the separate DiffSynth
+entrypoints:
+
+```bash
+# List supported DiffSynth bundle keys, including deferred/local-only entries
+bash scripts/download_diffsynth_models.sh --list
+
+# Prefer ModelScope when available, then fall back to Hugging Face through an HF mirror.
+bash scripts/download_diffsynth_models.sh --all --source modelscope-first --hf-endpoint https://hf-mirror.com --no-proxy
+
+# Prefer Hugging Face/HF mirror first, then fall back to ModelScope when useful.
+bash scripts/download_diffsynth_models.sh --all --source hf-first --hf-endpoint https://hf-mirror.com --no-proxy
+
+# Resolve local files without loading a model
+python scripts/infer_diffsynth.py --model wan21-t2v-1.3b --dry-run --print-json
+
+# Apply/restore SparseVideo on a downloaded DiffSynth bundle without generation
+python scripts/smoke_diffsynth_methods.py --model wan21-t2v-1.3b --methods dense,svg2 --apply-only
 ```
 
 ## Runtime Kernel Status
@@ -136,6 +161,7 @@ for name, info in status.items():
 Optional (method-dependent):
 - triton >= 2.2.0
 - flashinfer-python >= 0.1.0
+- diffsynth >= 2.0.12 for DiffSynth-Studio pipelines
 - CUDA toolkit (for building native extensions)
 
 ## License

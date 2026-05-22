@@ -24,7 +24,7 @@ from sparsevideo.methods.svg1.method import (
     _svg_profile_mask_rows,
     _svg_window_width,
 )
-from sparsevideo.methods._schedule import first_times_fp_requires_dense, resolve_first_steps
+from sparsevideo.methods._schedule import configured_dense_warmup_requires_dense
 
 
 def test_svg1_wan_full_attention_uses_upstream_sdpa_layout(monkeypatch):
@@ -521,27 +521,18 @@ def test_svg1_hunyuan_window_width_uses_upstream_context_tail_length():
     )
 
 
-def test_svg1_warmup_step_gate_matches_upstream_threshold_semantics():
-    timesteps = torch.linspace(999, 0, 50)
-    first_times_fp = 0.2
-    num_fp_timesteps = resolve_first_steps(first_times_fp, len(timesteps))
-    upstream_threshold = timesteps[num_fp_timesteps - 1] - 1
+def test_svg1_warmup_step_gate_uses_dense_warmup_ratio():
+    config = {"dense_warmup_step_ratio": 0.2}
 
-    upstream_dense = [bool(timestep > upstream_threshold) for timestep in timesteps]
-    sparsevideo_dense = [
-        first_times_fp_requires_dense(
-            float(upstream_threshold),
-            len(timesteps),
-            step=step,
-            timestep=float(timestep),
-        )
-        for step, timestep in enumerate(timesteps, start=1)
+    dense_steps = [
+        configured_dense_warmup_requires_dense(config, 50, step=step)
+        for step in range(1, 13)
     ]
 
-    assert upstream_dense == sparsevideo_dense
+    assert dense_steps == [True] * 10 + [False, False]
 
 
-def test_svg1_method_prefers_processor_timestep_over_tracker_for_warmup(monkeypatch):
+def test_svg1_method_uses_dense_warmup_step_ratio(monkeypatch):
     from sparsevideo.methods.svg1 import method as svg1_method
     from sparsevideo.methods.svg1.method import SVG1Method
 
@@ -559,19 +550,23 @@ def test_svg1_method_prefers_processor_timestep_over_tracker_for_warmup(monkeypa
     monkeypatch.setattr(svg1_method, "_svg_attention", fake_sparse)
 
     method = SVG1Method(
-        {"first_layers_fp": 0, "first_times_fp": 925},
+        {
+            "dense_warmup_step_ratio": 0.5,
+            "dense_warmup_layer_ratio": 0.0,
+            "num_inference_steps": 50,
+        },
         SimpleNamespace(model_type="wan", model_key=None),
     )
     step_tracker = SimpleNamespace(step=20, timestep=0)
     processor = method.create_processor(0, 2, None, step_tracker)
     query = torch.zeros(1, 8, 1, 4)
 
-    processor.attn_fn(query, query, query, None, timestep=torch.tensor([926]))
+    processor.attn_fn(query, query, query, None, timestep=torch.tensor([0]))
 
     assert calls == ["dense"]
 
 
-def test_svg1_method_uses_tracker_float_to_avoid_tensor_timestep_sync(monkeypatch):
+def test_svg1_method_uses_tracker_step_for_dense_warmup(monkeypatch):
     from sparsevideo.methods.svg1 import method as svg1_method
     from sparsevideo.methods.svg1.method import SVG1Method
 
@@ -587,18 +582,23 @@ def test_svg1_method_uses_tracker_float_to_avoid_tensor_timestep_sync(monkeypatc
 
     monkeypatch.setattr(svg1_method, "_svg1_dense_attention", fake_dense)
     monkeypatch.setattr(svg1_method, "_svg_attention", fake_sparse)
+    monkeypatch.setattr(torch.Tensor, "is_cuda", property(lambda self: True))
 
     method = SVG1Method(
-        {"first_layers_fp": 0, "first_times_fp": 925},
+        {
+            "dense_warmup_step_ratio": 0.5,
+            "dense_warmup_layer_ratio": 0.0,
+            "num_inference_steps": 50,
+        },
         SimpleNamespace(model_type="wan", model_key=None),
     )
-    step_tracker = SimpleNamespace(step=20, timestep=926.0)
+    step_tracker = SimpleNamespace(step=26, timestep=926.0)
     processor = method.create_processor(0, 2, None, step_tracker)
     query = torch.zeros(1, 8, 1, 4)
 
     processor.attn_fn(query, query, query, None, timestep=torch.tensor([0]))
 
-    assert calls == ["dense"]
+    assert calls == ["sparse"]
 
 
 def test_svg1_hunyuan_uses_config_prompt_length_fallback_like_upstream(monkeypatch):
@@ -617,8 +617,8 @@ def test_svg1_hunyuan_uses_config_prompt_length_fallback_like_upstream(monkeypat
 
     method = SVG1Method(
         {
-            "first_layers_fp": 0,
-            "first_times_fp": 0,
+            "dense_warmup_layer_ratio": 0.0,
+            "dense_warmup_step_ratio": 0.0,
             "context_length": 4,
             "prompt_length": 3,
         },
@@ -648,8 +648,8 @@ def test_svg1_hunyuan_runtime_prompt_length_overrides_config_fallback(monkeypatc
 
     method = SVG1Method(
         {
-            "first_layers_fp": 0,
-            "first_times_fp": 0,
+            "dense_warmup_layer_ratio": 0.0,
+            "dense_warmup_step_ratio": 0.0,
             "context_length": 4,
             "prompt_length": 4,
         },
@@ -686,7 +686,7 @@ def test_svg1_hunyuan_rejects_context_length_mismatch_like_upstream_assertion():
 
 def test_svg1_warmup_ratio_gate_still_covers_first_ratio_steps_without_scheduler_threshold():
     dense = [
-        first_times_fp_requires_dense(0.2, 50, step=step, timestep=0)
+        configured_dense_warmup_requires_dense({"dense_warmup_step_ratio": 0.2}, 50, step=step)
         for step in range(1, 13)
     ]
 

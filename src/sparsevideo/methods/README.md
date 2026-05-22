@@ -7,6 +7,8 @@ Required layout:
 ```text
 methods/<name>/
   __init__.py   # lazy public exports only
+  config.yaml   # editable default hyperparameters
+  config.py     # YAML loading, aliases, dynamic/model-aware logic
   method.py     # SparseMethod adapter and processor wiring
 ```
 
@@ -14,7 +16,6 @@ Complex methods should split local concerns instead of growing `method.py`:
 
 ```text
 methods/<name>/
-  config.py     # upstream names, defaults, aliases, unsupported flags
   ops.py        # method-specific attention logic and state helpers
   kernels/      # kernels used only by this method
 ```
@@ -30,6 +31,23 @@ method package must not rename an upstream public parameter unless it is kept
 only as a compatibility alias. If an upstream option is recognized but not
 ported, the method should reject it when enabled instead of silently changing
 behavior.
+
+## Config Defaults
+
+Each method has `methods/<name>/config.yaml`. Edit `defaults` for generic
+fallbacks and `model_defaults` for concrete backbone keys such as
+`wan21-t2v-1.3b` or `cogvideox-i2v`. Do not add family-wide groups such as
+`wan` or `hunyuan_video`; config resolution only applies exact `model_key`
+entries. `config.py` should only keep alias validation and dynamic values such
+as local asset paths.
+
+## Common Dense Warmup
+
+All sparse methods accept `dense_warmup_step_ratio` and
+`dense_warmup_layer_ratio`. They are clearer ratio-only controls for keeping the
+first fraction of denoising steps or layers on dense attention. Defaults are
+0.1 and 0.03 for every sparse method and model context; set either value to 0
+to disable that common gate.
 
 Current status:
 
@@ -203,9 +221,9 @@ svoo        SparseVideo-owned native/Triton path by default. The old
             but RoPE stays on the stock PyTorch path rather than the Hunyuan
             native fused RoPE path.
             SVOO_ENABLE_MEM_SAVE/enable_mem_save follows upstream's default
-            early release of large sparse-attention intermediates. Measurement,
-            global constraints, and routing-transformer clustering branches are
-            ported with owned SparseVideo code/kernels. FlashInfer sparse
+            early release of large sparse-attention intermediates. Measurement
+            and global constraints are ported with owned SparseVideo code/kernels.
+            FlashInfer sparse
             backend preflights loadability and the sparse VariableBlock wrapper
             APIs needed by the upstream path; strict preflight also imports the
             owned Triton/helper modules and checks co-cluster, norm, modulation,

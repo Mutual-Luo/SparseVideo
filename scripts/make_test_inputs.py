@@ -2,23 +2,54 @@
 #
 # Generate test inputs for SparseVideo backbone/method testing.
 #
-# Sources used:
-#   - portrait.jpg  (I2V):  training_free/FastVideo/assets/girl.png  (real face photo)
-#   - character.jpg (WanAnimate): synthetically drawn standing full-body figure
-#   - video_ref.mp4:  training_free/FastVideo/assets/motorcycle.mp4  (real footage)
-#   - video_mask.mp4: oval sweep mask
-#   - pose_video.mp4: DWPose-style COCO-17 standing sway (upper-body motion only,
-#                     compatible with a standing full-body reference)
-#   - face_video.mp4: face crop from portrait + slight zoom
+# ─────────────────────────────────────────────────────────────────────────────
+# File purposes and consistency requirements
+# ─────────────────────────────────────────────────────────────────────────────
 #
-# WanAnimate requires a FULL-BODY STANDING character image.  Using a close-up
-# portrait (like the café girl) with a standing-walk pose video is semantically
-# wrong; the model cannot reconcile them.  character.jpg is a simple drawn
-# standing figure that correctly matches the pose video.
+#  portrait.jpg     → I2V models (--image)
+#                     The STARTING FRAME the model extends into a video.
+#                     Any real scene works.  Uses girl.png (real café photo).
 #
-# Usage:
-#   python scripts/make_test_inputs.py
-#   python scripts/make_test_inputs.py --output-dir /path/to/dir
+#  character.jpg    → WanAnimate (--image)
+#                     The CHARACTER WHOSE APPEARANCE is animated.
+#                     Must be a FULL-BODY STANDING person so the model has all
+#                     body parts to animate.  We draw a standing figure.
+#
+#  pose_video.mp4   → WanAnimate (--pose-video)
+#                     DWPose-style COCO-17 skeleton frames showing the motion
+#                     to apply.  Must be:
+#                       1. From the same "driver" as face_video (temporally
+#                          aligned frame-for-frame).
+#                       2. Full-body standing motion (matching character.jpg).
+#                     We derive it from the same animation timeline as the
+#                     other WanAnimate files.
+#
+#  face_video.mp4   → WanAnimate (--face-video)
+#                     Face-identity video of the DRIVER (not the character).
+#                     The model maps the driver's face expressions onto the
+#                     character.  Must be frame-for-frame aligned with
+#                     pose_video so the face matches the body motion at each t.
+#                     We render the face region of the same drawn figure at
+#                     the exact same animation phases as pose_video.
+#
+#  video_ref.mp4    → WanVACE (--reference-video)
+#                     The SOURCE SCENE to edit/continue.  Uses real motorcycle
+#                     footage (17 frames sampled uniformly).
+#
+#  video_mask.mp4   → WanVACE (--mask-video)
+#                     Binary mask: WHITE = regenerate, BLACK = keep.
+#                     Must have the same resolution and frame count as
+#                     video_ref.mp4.  An oval that sweeps left→right defines
+#                     a moving inpaint region over the scene.
+#
+# ─────────────────────────────────────────────────────────────────────────────
+# WanAnimate note
+# ─────────────────────────────────────────────────────────────────────────────
+# For high-quality output you need a REAL driving video of a standing person +
+# DWPose extraction.  No such video exists on this machine, so all three files
+# (character / pose / face) are derived from the same synthetic standing figure
+# at the same animation phases, making them mutually consistent for a pipeline
+# smoke test.  Replace with real inputs for quality evaluation.
 #
 from __future__ import annotations
 
@@ -29,17 +60,66 @@ from pathlib import Path
 import numpy as np
 from PIL import Image, ImageDraw
 
-# ---------------------------------------------------------------------------
-# Paths to real source files
-# ---------------------------------------------------------------------------
-_REPO_ROOT = Path(__file__).resolve().parent.parent
-_REAL_PORTRAIT  = _REPO_ROOT / "training_free/FastVideo/assets/girl.png"
-_REAL_VIDEO     = _REPO_ROOT / "training_free/FastVideo/assets/motorcycle.mp4"
+_REPO_ROOT   = Path(__file__).resolve().parent.parent
+_REAL_PORTRAIT = _REPO_ROOT / "training_free/FastVideo/assets/girl.png"
+_REAL_VIDEO    = _REPO_ROOT / "training_free/FastVideo/assets/motorcycle.mp4"
 
 
-# ---------------------------------------------------------------------------
-# DWPose / COCO-17 skeleton
-# ---------------------------------------------------------------------------
+# ─────────────────────────────────────────────────────────────────────────────
+# Shared animation timeline
+# ─────────────────────────────────────────────────────────────────────────────
+# All WanAnimate files (character / pose / face) derive from the same set of
+# animation phases.  At frame t the phase is phases[t].  character.jpg uses
+# phase=0 (neutral standing).
+
+def _make_phases(n_frames: int, n_cycles: float = 3.0) -> list[float]:
+    return [2 * math.pi * t / max(n_frames, 1) * n_cycles for t in range(n_frames)]
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Body geometry  (all coordinates as fractions of frame W / H)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _body_at_phase(phase: float) -> dict:
+    """Return a dict of landmark positions (fractions of W, H) for a given animation phase."""
+    sway      = 0.015 * math.sin(phase)
+    arm_swing = 0.04  * math.sin(phase)
+    head_tilt = 0.008 * math.sin(phase * 0.7)
+    chin_bob  = 0.005 * abs(math.sin(phase))     # very subtle vertical bob
+
+    return dict(
+        # face/head
+        nose_xf   = 0.50 + head_tilt,
+        nose_yf   = 0.10 + chin_bob,
+        head_rf   = 0.09,
+        # shoulders
+        ls_xf = 0.50 - 0.10 + sway,   ls_yf = 0.25,
+        rs_xf = 0.50 + 0.10 + sway,   rs_yf = 0.25,
+        # elbows
+        le_xf = 0.50 - 0.10 - arm_swing,   le_yf = 0.40,
+        re_xf = 0.50 + 0.10 + arm_swing,   re_yf = 0.40,
+        # wrists
+        lw_xf = 0.50 - 0.10 - arm_swing * 1.4,  lw_yf = 0.54,
+        rw_xf = 0.50 + 0.10 + arm_swing * 1.4,  rw_yf = 0.54,
+        # hips (stable)
+        lh_xf = 0.50 - 0.07,  lh_yf = 0.55,
+        rh_xf = 0.50 + 0.07,  rh_yf = 0.55,
+        # knees / ankles (stable)
+        lk_xf = 0.49,  lk_yf = 0.73,
+        rk_xf = 0.51,  rk_yf = 0.73,
+        la_xf = 0.49,  la_yf = 0.92,
+        ra_xf = 0.51,  ra_yf = 0.92,
+    )
+
+
+def _px(frac_x: float, frac_y: float, w: int, h: int):
+    return (int(frac_x * w), int(frac_y * h))
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# DWPose-style skeleton frame (black bg + COCO-17 joints + bones)
+# ─────────────────────────────────────────────────────────────────────────────
+
 _COCO_SKELETON = [
     (0, 1), (0, 2), (1, 3), (2, 4),
     (5, 6),
@@ -52,347 +132,359 @@ _COCO_SKELETON = [
 ]
 
 _JOINT_COLORS = [
-    (255, 0, 0),    # 0  nose
-    (255, 85, 0),   # 1  l-eye
-    (255, 170, 0),  # 2  r-eye
-    (255, 255, 0),  # 3  l-ear
-    (170, 255, 0),  # 4  r-ear
-    (85, 255, 0),   # 5  l-shoulder
-    (0, 255, 0),    # 6  r-shoulder
-    (0, 255, 85),   # 7  l-elbow
-    (0, 255, 170),  # 8  r-elbow
-    (0, 255, 255),  # 9  l-wrist
-    (0, 170, 255),  # 10 r-wrist
-    (0, 85, 255),   # 11 l-hip
-    (0, 0, 255),    # 12 r-hip
-    (85, 0, 255),   # 13 l-knee
-    (170, 0, 255),  # 14 r-knee
-    (255, 0, 255),  # 15 l-ankle
-    (255, 0, 170),  # 16 r-ankle
+    (255,0,0),(255,85,0),(255,170,0),(255,255,0),(170,255,0),
+    (85,255,0),(0,255,0),(0,255,85),(0,255,170),(0,255,255),
+    (0,170,255),(0,85,255),(0,0,255),(85,0,255),(170,0,255),
+    (255,0,255),(255,0,170),
 ]
 
 _BONE_COLOR = (128, 128, 128)
 
 
-def _get_coco17_keypoints_sway(h: int, w: int, phase: float) -> np.ndarray:
-    """
-    Standing figure with gentle upper-body sway and arm swing.
-    Hips and legs stay nearly still — compatible with a standing character portrait.
-    """
-    cx = w * 0.5
-    # Anchor points (fractions of frame)
-    nose_y    = h * 0.10
-    sh_y      = h * 0.25
-    sh_dx     = w * 0.10
-    elbow_y   = h * 0.40
-    wrist_y   = h * 0.54
-    hip_y     = h * 0.55
-    hip_dx    = w * 0.07
-    knee_y    = h * 0.73
-    ankle_y   = h * 0.92
-
-    sway      = w * 0.015 * math.sin(phase)          # gentle torso sway
-    arm_swing = w * 0.04  * math.sin(phase)           # arms swing opposite to sway
-    head_tilt = w * 0.008 * math.sin(phase * 0.7)
-
-    kp = np.zeros((17, 2), dtype=np.float32)
-    kp[0]  = [cx + head_tilt,              nose_y]
-    kp[1]  = [cx - w*0.02  + head_tilt,   nose_y - h*0.02]
-    kp[2]  = [cx + w*0.02  + head_tilt,   nose_y - h*0.02]
-    kp[3]  = [cx - w*0.04  + head_tilt,   nose_y]
-    kp[4]  = [cx + w*0.04  + head_tilt,   nose_y]
-    kp[5]  = [cx - sh_dx   + sway,        sh_y]
-    kp[6]  = [cx + sh_dx   + sway,        sh_y]
-    kp[7]  = [cx - sh_dx   - arm_swing,   elbow_y]
-    kp[8]  = [cx + sh_dx   + arm_swing,   elbow_y]
-    kp[9]  = [cx - sh_dx   - arm_swing * 1.4, wrist_y]
-    kp[10] = [cx + sh_dx   + arm_swing * 1.4, wrist_y]
-    kp[11] = [cx - hip_dx,                hip_y]
-    kp[12] = [cx + hip_dx,                hip_y]
-    kp[13] = [cx - hip_dx  + w*0.01,      knee_y]
-    kp[14] = [cx + hip_dx  - w*0.01,      knee_y]
-    kp[15] = [cx - hip_dx,                ankle_y]
-    kp[16] = [cx + hip_dx,                ankle_y]
-    return kp
+def _keypoints_from_body(b: dict, w: int, h: int) -> list[tuple[int, int]]:
+    """17 COCO keypoints in pixel space from a body-at-phase dict."""
+    cx = int(0.50 * w)
+    nose  = _px(b["nose_xf"], b["nose_yf"], w, h)
+    l_eye = (cx - int(0.02 * w) + int(b["head_tilt"] if "head_tilt" in b else 0),
+             int((b["nose_yf"] - 0.02) * h))
+    # recompute simply from the dict
+    nx, ny = int(b["nose_xf"] * w), int(b["nose_yf"] * h)
+    hr     = int(b["head_rf"] * h)
+    return [
+        (nx, ny),                                # 0  nose
+        (nx - int(0.02*w), ny - int(0.02*h)),   # 1  l-eye
+        (nx + int(0.02*w), ny - int(0.02*h)),   # 2  r-eye
+        (nx - int(0.04*w), ny),                  # 3  l-ear
+        (nx + int(0.04*w), ny),                  # 4  r-ear
+        _px(b["ls_xf"], b["ls_yf"], w, h),       # 5  l-shoulder
+        _px(b["rs_xf"], b["rs_yf"], w, h),       # 6  r-shoulder
+        _px(b["le_xf"], b["le_yf"], w, h),       # 7  l-elbow
+        _px(b["re_xf"], b["re_yf"], w, h),       # 8  r-elbow
+        _px(b["lw_xf"], b["lw_yf"], w, h),       # 9  l-wrist
+        _px(b["rw_xf"], b["rw_yf"], w, h),       # 10 r-wrist
+        _px(b["lh_xf"], b["lh_yf"], w, h),       # 11 l-hip
+        _px(b["rh_xf"], b["rh_yf"], w, h),       # 12 r-hip
+        _px(b["lk_xf"], b["lk_yf"], w, h),       # 13 l-knee
+        _px(b["rk_xf"], b["rk_yf"], w, h),       # 14 r-knee
+        _px(b["la_xf"], b["la_yf"], w, h),       # 15 l-ankle
+        _px(b["ra_xf"], b["ra_yf"], w, h),       # 16 r-ankle
+    ]
 
 
-def _draw_pose_frame(h: int, w: int, phase: float) -> np.ndarray:
+def _draw_pose_frame(w: int, h: int, phase: float) -> np.ndarray:
+    b   = _body_at_phase(phase)
+    kp  = _keypoints_from_body(b, w, h)
     img  = Image.new("RGB", (w, h), (0, 0, 0))
     draw = ImageDraw.Draw(img)
-    kp   = _get_coco17_keypoints_sway(h, w, phase)
     lw   = max(1, w // 120)
-
     for i, j in _COCO_SKELETON:
-        x1, y1 = float(kp[i][0]), float(kp[i][1])
-        x2, y2 = float(kp[j][0]), float(kp[j][1])
-        draw.line([(x1, y1), (x2, y2)], fill=_BONE_COLOR, width=lw)
-
+        draw.line([kp[i], kp[j]], fill=_BONE_COLOR, width=lw)
     r = max(2, w // 80)
     for idx, (x, y) in enumerate(kp):
-        x, y = float(x), float(y)
-        draw.ellipse([x - r, y - r, x + r, y + r], fill=_JOINT_COLORS[idx])
-
+        draw.ellipse([x-r, y-r, x+r, y+r], fill=_JOINT_COLORS[idx])
     return np.array(img)
 
 
-# ---------------------------------------------------------------------------
-# Standing full-body character illustration  (for WanAnimate)
-# ---------------------------------------------------------------------------
+# ─────────────────────────────────────────────────────────────────────────────
+# Full-body character illustration  (same geometry as pose video at phase=0)
+# ─────────────────────────────────────────────────────────────────────────────
 
-def _draw_standing_character(size: int = 512) -> np.ndarray:
-    """
-    Simple drawn full-body standing person on a plain background.
-    Proportions match the COCO-17 keypoint layout in the pose video.
-    """
+def _draw_character(size: int = 512, phase: float = 0.0) -> np.ndarray:
     w, h = size, size
-    img  = Image.new("RGB", (w, h), (240, 235, 230))   # warm off-white
+    img  = Image.new("RGB", (w, h), (235, 230, 225))
     draw = ImageDraw.Draw(img)
+    b    = _body_at_phase(phase)
 
-    cx   = w // 2
-    skin = (220, 180, 150)
-    hair = (60, 40, 30)
-    cloth_top    = (80, 100, 160)
-    cloth_bottom = (50, 60, 100)
-    shoe_col     = (40, 35, 30)
+    skin  = (220, 180, 150)
+    hair  = (55, 38, 28)
+    shirt = (75, 95, 160)
+    pants = (45, 55, 95)
+    shoes = (38, 32, 28)
 
-    # Proportions (matching _get_coco17_keypoints_sway with phase=0)
-    nose_y  = int(h * 0.10)
-    sh_y    = int(h * 0.25)
-    sh_dx   = int(w * 0.10)
-    hip_y   = int(h * 0.55)
-    hip_dx  = int(w * 0.07)
-    knee_y  = int(h * 0.73)
-    ankle_y = int(h * 0.92)
-    head_r  = int(h * 0.09)
+    ls = _px(b["ls_xf"], b["ls_yf"], w, h)
+    rs = _px(b["rs_xf"], b["rs_yf"], w, h)
+    le = _px(b["le_xf"], b["le_yf"], w, h)
+    re = _px(b["re_xf"], b["re_yf"], w, h)
+    lw_pt = _px(b["lw_xf"], b["lw_yf"], w, h)
+    rw_pt = _px(b["rw_xf"], b["rw_yf"], w, h)
+    # Hips wider apart, knees and ankles also separate left/right properly
+    lh = _px(b["lh_xf"], b["lh_yf"], w, h)
+    rh = _px(b["rh_xf"], b["rh_yf"], w, h)
+    lk = (lh[0] + int(w * 0.01), _px(b["lk_xf"], b["lk_yf"], w, h)[1])
+    rk = (rh[0] - int(w * 0.01), _px(b["rk_xf"], b["rk_yf"], w, h)[1])
+    la = (lh[0], _px(b["la_xf"], b["la_yf"], w, h)[1])
+    ra = (rh[0], _px(b["ra_xf"], b["ra_yf"], w, h)[1])
+    nx = int(b["nose_xf"] * w)
+    ny = int(b["nose_yf"] * h)
+    hr = int(b["head_rf"] * h)
 
-    # Legs
-    draw.rectangle([cx - hip_dx - 8, hip_y, cx - hip_dx + 8, ankle_y], fill=cloth_bottom)
-    draw.rectangle([cx + hip_dx - 8, hip_y, cx + hip_dx + 8, ankle_y], fill=cloth_bottom)
+    aw = max(7, w // 50)
+
+    # Legs (each leg stays under its hip)
+    draw.line([lh, lk, la], fill=pants, width=aw)
+    draw.line([rh, rk, ra], fill=pants, width=aw)
     # Shoes
-    draw.ellipse([cx - hip_dx - 14, ankle_y - 6, cx - hip_dx + 18, ankle_y + 10], fill=shoe_col)
-    draw.ellipse([cx + hip_dx - 18, ankle_y - 6, cx + hip_dx + 14, ankle_y + 10], fill=shoe_col)
+    draw.ellipse([la[0]-14, la[1]-4, la[0]+18, la[1]+10], fill=shoes)
+    draw.ellipse([ra[0]-18, ra[1]-4, ra[0]+14, ra[1]+10], fill=shoes)
     # Torso
-    draw.polygon(
-        [(cx - sh_dx, sh_y), (cx + sh_dx, sh_y),
-         (cx + hip_dx + 4, hip_y), (cx - hip_dx - 4, hip_y)],
-        fill=cloth_top,
-    )
-    # Arms (hanging straight at phase=0)
-    elbow_y = int(h * 0.40)
-    wrist_y = int(h * 0.54)
-    draw.rectangle([cx - sh_dx - 7, sh_y, cx - sh_dx + 1, wrist_y], fill=cloth_top)
-    draw.rectangle([cx + sh_dx - 1, sh_y, cx + sh_dx + 7, wrist_y], fill=cloth_top)
+    draw.polygon([ls, rs, rh, lh], fill=shirt)
+    # Arms
+    draw.line([ls, le, lw_pt], fill=shirt, width=aw - 1)
+    draw.line([rs, re, rw_pt], fill=shirt, width=aw - 1)
     # Hands
-    draw.ellipse([cx - sh_dx - 10, wrist_y, cx - sh_dx + 4, wrist_y + 14], fill=skin)
-    draw.ellipse([cx + sh_dx - 4,  wrist_y, cx + sh_dx + 10, wrist_y + 14], fill=skin)
-    # Neck
-    draw.rectangle([cx - 7, int(h * 0.17), cx + 7, sh_y], fill=skin)
-    # Head circle
-    draw.ellipse(
-        [cx - head_r, nose_y - head_r, cx + head_r, nose_y + head_r],
-        fill=skin,
-    )
+    draw.ellipse([lw_pt[0]-9, lw_pt[1], lw_pt[0]+5, lw_pt[1]+14], fill=skin)
+    draw.ellipse([rw_pt[0]-5, rw_pt[1], rw_pt[0]+9, rw_pt[1]+14], fill=skin)
+    # Neck (centered column, not a V)
+    nk_x0, nk_x1 = nx - 6, nx + 6
+    nk_y0 = ny + hr - 4
+    nk_y1 = ls[1]
+    draw.rectangle([nk_x0, nk_y0, nk_x1, nk_y1], fill=skin)
+    # Head
+    draw.ellipse([nx-hr, ny-hr, nx+hr, ny+hr], fill=skin)
     # Hair
-    draw.chord(
-        [cx - head_r, nose_y - head_r, cx + head_r, nose_y + head_r * 0.3],
-        start=180, end=0, fill=hair,
-    )
-    # Eyes
-    ey = nose_y - head_r // 4
-    draw.ellipse([cx - head_r // 3 - 4, ey - 3, cx - head_r // 3 + 4, ey + 3], fill=(30, 20, 15))
-    draw.ellipse([cx + head_r // 3 - 4, ey - 3, cx + head_r // 3 + 4, ey + 3], fill=(30, 20, 15))
+    draw.chord([nx-hr, ny-hr, nx+hr, ny+int(hr*0.2)], start=180, end=0, fill=hair)
+    # Eyes (small dots, not sunglasses)
+    ey  = ny - hr // 5
+    er  = max(2, hr // 8)
+    draw.ellipse([nx-hr//3-er, ey-er, nx-hr//3+er, ey+er], fill=(28, 18, 12))
+    draw.ellipse([nx+hr//3-er, ey-er, nx+hr//3+er, ey+er], fill=(28, 18, 12))
     # Smile
-    draw.arc([cx - 10, nose_y + 2, cx + 10, nose_y + 12], start=0, end=180, fill=(160, 80, 70), width=2)
+    draw.arc([nx-9, ny + hr//6, nx+9, ny + hr//2], start=10, end=170, fill=(150, 75, 65), width=2)
 
     return np.array(img)
 
 
-# ---------------------------------------------------------------------------
-# Mask video
-# ---------------------------------------------------------------------------
+# ─────────────────────────────────────────────────────────────────────────────
+# Face frame: crop + slight head-tilt motion (in sync with phase)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _draw_face_frame(size_w: int, size_h: int, phase: float,
+                     char_size: int = 512) -> np.ndarray:
+    """
+    Render the character's head region at this phase and resize to (size_w, size_h).
+    The head position changes with phase, so the face video is temporally aligned
+    with the pose video.
+    """
+    b  = _body_at_phase(phase)
+    nx = int(b["nose_xf"] * char_size)
+    ny = int(b["nose_yf"] * char_size)
+    hr = int(b["head_rf"] * char_size)
+
+    char_arr = _draw_character(char_size, phase)
+    char_img = Image.fromarray(char_arr)
+
+    pad = int(hr * 1.6)
+    x0  = max(0, nx - pad)
+    y0  = max(0, ny - pad)
+    x1  = min(char_size, nx + pad)
+    y1  = min(char_size, ny + pad)
+    face_crop = char_img.crop((x0, y0, x1, y1))
+    return np.array(face_crop.resize((size_w, size_h), Image.LANCZOS))
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Mask video (for WanVACE)
+# ─────────────────────────────────────────────────────────────────────────────
 
 def _mask_frame(h: int, w: int, t: int, n: int) -> np.ndarray:
     frame = np.zeros((h, w, 3), dtype=np.uint8)
     cx = int(w * 0.15 + w * 0.7 * t / max(n - 1, 1))
     cy = h // 2
-    rx, ry = w // 6, h // 3
     ys, xs = np.ogrid[:h, :w]
-    mask = ((xs - cx) / rx) ** 2 + ((ys - cy) / ry) ** 2 <= 1
+    mask = ((xs - cx) / (w // 6)) ** 2 + ((ys - cy) / (h // 3)) ** 2 <= 1
     frame[mask] = 255
     return frame
 
 
-# ---------------------------------------------------------------------------
+# ─────────────────────────────────────────────────────────────────────────────
 # Video writer
-# ---------------------------------------------------------------------------
+# ─────────────────────────────────────────────────────────────────────────────
 
 def write_mp4(path: Path, frames: list[np.ndarray], fps: int = 16) -> None:
     import imageio.v3 as iio
     iio.imwrite(str(path), frames, fps=fps)
 
 
-# ---------------------------------------------------------------------------
-# Outputs
-# ---------------------------------------------------------------------------
+# ─────────────────────────────────────────────────────────────────────────────
+# Public outputs
+# ─────────────────────────────────────────────────────────────────────────────
 
 def make_portrait(output_dir: Path, size: int = 512) -> Path:
-    """Real face photo — for I2V models."""
+    """Real face photo for I2V models — just the starting frame, can be any scene."""
     path = output_dir / "portrait.jpg"
     if _REAL_PORTRAIT.exists():
         img = Image.open(_REAL_PORTRAIT).convert("RGB").resize((size, size), Image.LANCZOS)
         img.save(path, quality=95)
-        print(f"  portrait.jpg         (from {_REAL_PORTRAIT.name}, for I2V)")
+        print(f"  portrait.jpg    real photo ({_REAL_PORTRAIT.name}) — for I2V models")
     else:
-        arr = np.full((size, size, 3), [200, 160, 120], dtype=np.uint8)
-        Image.fromarray(arr).save(path, quality=95)
-        print(f"  portrait.jpg         (flat fallback, real photo unavailable)")
+        Image.fromarray(np.full((size, size, 3), [200, 160, 120], dtype=np.uint8)).save(path, quality=95)
+        print(f"  portrait.jpg    flat fallback — for I2V models")
     return path
 
 
 def make_character(output_dir: Path, size: int = 512) -> Path:
-    """Full-body standing figure — for WanAnimate (must show whole body)."""
+    """Full-body standing figure for WanAnimate — same geometry as pose_video at phase=0."""
     path = output_dir / "character.jpg"
-    arr = _draw_standing_character(size)
-    Image.fromarray(arr).save(path, quality=95)
-    print(f"  character.jpg        (drawn full-body figure, for WanAnimate)")
+    Image.fromarray(_draw_character(size, phase=0.0)).save(path, quality=95)
+    print(f"  character.jpg   full-body standing figure (phase=0) — for WanAnimate --image")
     return path
 
 
-def make_reference_video(
-    output_dir: Path, frames: int, h: int, w: int, fps: int
-) -> Path:
+def make_reference_video(output_dir: Path, frames: int, h: int, w: int, fps: int) -> Path:
+    """Real footage for WanVACE — the source scene to edit."""
     path = output_dir / "video_ref.mp4"
     if _REAL_VIDEO.exists():
         _sample_video_frames(_REAL_VIDEO, path, frames, h, w, fps)
-        print(f"  video_ref.mp4        ({frames} frames from {_REAL_VIDEO.name})")
+        print(f"  video_ref.mp4   {frames} frames from {_REAL_VIDEO.name} — for WanVACE --reference-video")
     else:
         data = []
         for t in range(frames):
             frac  = t / max(frames - 1, 1)
             frame = np.zeros((h, w, 3), dtype=np.uint8)
-            frame[:int(h * 0.6)] = [135, int(180 - 40 * frac), 210]
-            frame[int(h * 0.6):] = [80, 100, 60]
+            frame[:int(h*0.6)] = [135, int(180-40*frac), 210]
+            frame[int(h*0.6):] = [80, 100, 60]
             data.append(frame)
         write_mp4(path, data, fps)
-        print(f"  video_ref.mp4        (synthetic fallback)")
+        print(f"  video_ref.mp4   synthetic fallback — for WanVACE --reference-video")
     return path
 
 
-def _sample_video_frames(
-    src: Path, dst: Path, n_out: int, h: int, w: int, fps: int
-) -> None:
+def _sample_video_frames(src: Path, dst: Path, n_out: int, h: int, w: int, fps: int) -> None:
     import subprocess, tempfile, os
-
     with tempfile.TemporaryDirectory() as tmp:
-        probe = subprocess.run(
+        probe  = subprocess.run(
             ["ffprobe", "-v", "quiet", "-select_streams", "v:0",
              "-show_entries", "stream=nb_frames",
              "-of", "default=noprint_wrappers=1:nokey=1", str(src)],
             capture_output=True, text=True,
         )
-        total  = int(probe.stdout.strip())
-        indices = [round(i * (total - 1) / max(n_out - 1, 1)) for i in range(n_out)]
-
-        frames = []
+        total   = int(probe.stdout.strip())
+        indices = [round(i * (total-1) / max(n_out-1, 1)) for i in range(n_out)]
+        frames  = []
         for idx in indices:
-            out_path = os.path.join(tmp, f"f{idx:06d}.jpg")
+            out_p = os.path.join(tmp, f"f{idx:06d}.jpg")
             subprocess.run(
-                ["ffmpeg", "-y", "-loglevel", "error",
-                 "-i", str(src),
+                ["ffmpeg", "-y", "-loglevel", "error", "-i", str(src),
                  "-vf", f"select='eq(n\\,{idx})',scale={w}:{h}:force_original_aspect_ratio=increase,crop={w}:{h}",
-                 "-vframes", "1", out_path],
+                 "-vframes", "1", out_p],
                 check=True,
             )
-            frames.append(np.array(Image.open(out_path).convert("RGB")))
-
+            frames.append(np.array(Image.open(out_p).convert("RGB")))
     write_mp4(dst, frames, fps)
 
 
 def make_mask_video(output_dir: Path, frames: int, h: int, w: int, fps: int) -> Path:
+    """Oval-sweep mask for WanVACE — same resolution and frame count as video_ref."""
     data = [_mask_frame(h, w, t, frames) for t in range(frames)]
     path = output_dir / "video_mask.mp4"
     write_mp4(path, data, fps)
-    print(f"  video_mask.mp4       ({frames} frames)")
+    print(f"  video_mask.mp4  {frames} frames, oval sweep — for WanVACE --mask-video (pairs with video_ref)")
     return path
 
 
 def make_pose_video(output_dir: Path, frames: int, h: int, w: int, fps: int) -> Path:
-    data = []
-    for t in range(frames):
-        phase = 2 * math.pi * t / max(frames, 1) * 3   # ~3 sway cycles
-        data.append(_draw_pose_frame(h, w, phase))
-    path = output_dir / "pose_video.mp4"
+    """
+    DWPose-style skeleton animation — for WanAnimate --pose-video.
+    Uses the same animation phases as face_video so they are temporally aligned.
+    Frame t shows the skeleton at phases[t], which matches face_video frame t.
+    """
+    phases = _make_phases(frames)
+    data   = [_draw_pose_frame(w, h, p) for p in phases]
+    path   = output_dir / "pose_video.mp4"
     write_mp4(path, data, fps)
-    print(f"  pose_video.mp4       ({frames} frames, standing sway, COCO-17)")
+    print(f"  pose_video.mp4  {frames} frames, COCO-17 sway — for WanAnimate --pose-video (aligned with face_video)")
     return path
 
 
 def make_face_video(output_dir: Path, frames: int, h: int, w: int, fps: int) -> Path:
-    path = output_dir / "face_video.mp4"
-    if _REAL_PORTRAIT.exists():
-        src  = Image.open(_REAL_PORTRAIT).convert("RGB")
-        sw, sh = src.size
-        crop = src.crop((sw // 8, 0, sw * 7 // 8, sh // 2))
-        data = []
-        for t in range(frames):
-            zoom = 0.05 * t / max(frames - 1, 1)
-            dw   = int(crop.width  * zoom / 2)
-            dh   = int(crop.height * zoom / 2)
-            zoomed = crop.crop((dw, dh, crop.width - dw, crop.height - dh))
-            data.append(np.array(zoomed.resize((w, h), Image.LANCZOS)))
-        write_mp4(path, data, fps)
-        print(f"  face_video.mp4       ({frames} frames, face crop from {_REAL_PORTRAIT.name})")
-    else:
-        data = [np.full((h, w, 3), [220, 180, 150], dtype=np.uint8) for _ in range(frames)]
-        write_mp4(path, data, fps)
-        print(f"  face_video.mp4       ({frames} frames, synthetic fallback)")
+    """
+    Face of the same figure used in pose_video and character.jpg.
+    Frame t = face crop of character at phases[t], so it is temporally aligned
+    with pose_video: when the skeleton sways, the face sways too.
+    """
+    phases = _make_phases(frames)
+    data   = [_draw_face_frame(w, h, p) for p in phases]
+    path   = output_dir / "face_video.mp4"
+    write_mp4(path, data, fps)
+    print(f"  face_video.mp4  {frames} frames, face at same phases as pose — for WanAnimate --face-video (aligned with pose_video)")
     return path
 
 
-# ---------------------------------------------------------------------------
+# ─────────────────────────────────────────────────────────────────────────────
 # README
-# ---------------------------------------------------------------------------
+# ─────────────────────────────────────────────────────────────────────────────
 
 README_TEMPLATE = """\
-Test inputs generated by scripts/make_test_inputs.py
-=====================================================
+Test inputs  —  scripts/make_test_inputs.py
+===========================================
 
-Files
------
-  portrait.jpg      Real face photo (girl.png) — for I2V models.
-  character.jpg     Drawn full-body standing figure — for WanAnimate ONLY.
-                    WanAnimate requires a full-body character (not a close-up portrait).
-  video_ref.mp4     Short clip sampled from real motorcycle footage — for WanVACE.
-  video_mask.mp4    Oval-sweep mask — for WanVACE inpainting.
-  pose_video.mp4    DWPose-style COCO-17 standing-sway skeleton — for WanAnimate.
-                    Motion: gentle upper-body sway + arm swing (standing, not walking).
-  face_video.mp4    Face crop from portrait with slow zoom — for WanAnimate.
+FILE PURPOSES AND CONSISTENCY
+------------------------------
 
-WanAnimate note
----------------
-  pose_video.mp4 shows a STANDING figure with upper-body sway.
-  character.jpg shows a STANDING figure that matches.
-  Do NOT use portrait.jpg (café close-up) with this pose video — they are incompatible.
+portrait.jpg
+  Used by:  I2V models  (--image)
+  Role:     STARTING FRAME that the model extends into a video.
+  Content:  Real photo (girl.png) — any interesting image works here.
+  Pairs with: nothing specific; just needs to be a real scene.
 
-  For high-quality WanAnimate output you need real DWPose-extracted pose videos.
-  These synthetic inputs are for pipeline smoke testing (end-to-end run check) only.
+character.jpg
+  Used by:  WanAnimate  (--image)
+  Role:     CHARACTER APPEARANCE — the person to animate.
+  Content:  Full-body STANDING figure drawn at animation phase=0.
+  Must match: pose_video.mp4 — same body geometry and standing pose.
+  NOTE: I2V portrait (girl at café) must NOT be used here; she is seated
+        and cannot perform the standing skeleton poses in pose_video.
 
-Example commands (--num-inference-steps 5 for smoke tests)
-----------------------------------------------------------
+pose_video.mp4
+  Used by:  WanAnimate  (--pose-video)
+  Role:     MOTION DRIVER — skeleton of the driving person's movements.
+  Content:  DWPose COCO-17 skeleton, standing sway, 77 frames.
+  Must match: face_video.mp4 — SAME animation phases, frame-for-frame.
+              character.jpg — standing body geometry matches.
 
-T2V models:
-  python scripts/infer.py --model wan1.3b      --method dense      --num-inference-steps 5
-  python scripts/infer.py --model wan14b       --method svoo       --num-inference-steps 5
-  python scripts/infer.py --model wan22        --method svg2       --num-inference-steps 5
-  python scripts/infer.py --model hunyuan      --method adacluster --num-inference-steps 5
-  python scripts/infer.py --model skyreels-v2  --method radial     --num-inference-steps 5
-  python scripts/infer.py --model cogvideox    --method dense      --num-inference-steps 5
-  python scripts/infer.py --model ltx          --method dense      --num-inference-steps 5
-  python scripts/infer.py --model allegro      --method dense      --num-inference-steps 5
-  python scripts/infer.py --model mochi        --method dense      --num-inference-steps 5
-  python scripts/infer.py --model easyanimate  --method dense      --num-inference-steps 5
+face_video.mp4
+  Used by:  WanAnimate  (--face-video)
+  Role:     FACE IDENTITY of the driver — whose expressions to project.
+  Content:  Face crop of the same drawn figure at same animation phases.
+  Must match: pose_video.mp4 — SAME phases, so face moves with the body.
+  NOTE: Uses the drawn character's face, not the real girl from portrait.jpg.
 
-I2V models (portrait.jpg = real face photo, good starting frame):
+video_ref.mp4
+  Used by:  WanVACE  (--reference-video)
+  Role:     SOURCE SCENE to edit.
+  Content:  17 frames sampled from real motorcycle footage.
+  Pairs with: video_mask.mp4 — same resolution (480×272) and frame count (17).
+
+video_mask.mp4
+  Used by:  WanVACE  (--mask-video)
+  Role:     EDIT REGION — white=regenerate, black=keep.
+  Content:  Oval sweeping left→right defines a moving inpaint region.
+  Pairs with: video_ref.mp4 — same resolution and frame count.
+
+KNOWN LIMITATION
+----------------
+For high-quality WanAnimate output you need a REAL driving video of a standing
+person, DWPose-extracted pose_video, and a real face track.  No suitable real
+driving video is available on this machine.  The three WanAnimate files are
+internally consistent (all from the same drawn figure / same phases) but are
+synthetic — suitable for pipeline smoke testing only.
+
+EXAMPLE COMMANDS  (--num-inference-steps 5 = smoke test)
+---------------------------------------------------------
+
+T2V:
+  python scripts/infer.py --model wan1.3b     --method dense      --num-inference-steps 5
+  python scripts/infer.py --model wan14b      --method svoo       --num-inference-steps 5
+  python scripts/infer.py --model wan22       --method svg2       --num-inference-steps 5
+  python scripts/infer.py --model hunyuan     --method adacluster --num-inference-steps 5
+  python scripts/infer.py --model skyreels-v2 --method radial     --num-inference-steps 5
+  python scripts/infer.py --model cogvideox   --method dense      --num-inference-steps 5
+  python scripts/infer.py --model ltx         --method dense      --num-inference-steps 5
+  python scripts/infer.py --model allegro     --method dense      --num-inference-steps 5
+  python scripts/infer.py --model mochi       --method dense      --num-inference-steps 5
+  python scripts/infer.py --model easyanimate --method dense      --num-inference-steps 5
+
+I2V  (portrait.jpg = real starting frame):
   python scripts/infer.py --model wan14b-i2v    --method svoo  --image test_inputs/portrait.jpg --num-inference-steps 5
   python scripts/infer.py --model wan22-i2v     --method dense --image test_inputs/portrait.jpg --num-inference-steps 5
   python scripts/infer.py --model hunyuan-i2v   --method dense --image test_inputs/portrait.jpg --num-inference-steps 5
@@ -400,12 +492,12 @@ I2V models (portrait.jpg = real face photo, good starting frame):
   python scripts/infer.py --model cogvideox-i2v --method dense --image test_inputs/portrait.jpg --num-inference-steps 5
   python scripts/infer.py --model ltx-i2v       --method dense --image test_inputs/portrait.jpg --num-inference-steps 5
 
-WanVACE:
+WanVACE  (video_ref + video_mask are paired):
   python scripts/infer.py --model wan-vace --method dense \\
       --reference-video test_inputs/video_ref.mp4 \\
       --mask-video test_inputs/video_mask.mp4 --num-inference-steps 5
 
-WanAnimate (uses character.jpg, not portrait.jpg):
+WanAnimate  (character.jpg + pose_video + face_video are all aligned):
   python scripts/infer.py --model wananimate --method dense \\
       --image test_inputs/character.jpg \\
       --pose-video test_inputs/pose_video.mp4 \\
@@ -414,21 +506,21 @@ WanAnimate (uses character.jpg, not portrait.jpg):
 """
 
 
-# ---------------------------------------------------------------------------
+# ─────────────────────────────────────────────────────────────────────────────
 # CLI
-# ---------------------------------------------------------------------------
+# ─────────────────────────────────────────────────────────────────────────────
 
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description="Generate test inputs for SparseVideo.")
-    p.add_argument("--output-dir",    type=Path, default=Path("test_inputs"))
-    p.add_argument("--img-size",      type=int,  default=512)
-    p.add_argument("--video-size",    type=str,  default="480x272",
-                   help="Video WxH, both must be divisible by 16 (default 480x272).")
-    p.add_argument("--video-frames",  type=int,  default=77,
-                   help="Frame count for WanAnimate videos (default 77).")
-    p.add_argument("--short-frames",  type=int,  default=17,
-                   help="Frame count for WanVACE short videos (default 17).")
-    p.add_argument("--fps",           type=int,  default=16)
+    p.add_argument("--output-dir",   type=Path, default=Path("test_inputs"))
+    p.add_argument("--img-size",     type=int,  default=512)
+    p.add_argument("--video-size",   type=str,  default="480x272",
+                   help="WxH, both divisible by 16 (default 480x272).")
+    p.add_argument("--video-frames", type=int,  default=77,
+                   help="Frames for WanAnimate files (default 77).")
+    p.add_argument("--short-frames", type=int,  default=17,
+                   help="Frames for WanVACE files (default 17).")
+    p.add_argument("--fps",          type=int,  default=16)
     return p
 
 
@@ -439,7 +531,7 @@ def main() -> None:
 
     out = args.output_dir
     out.mkdir(parents=True, exist_ok=True)
-    print(f"Writing test inputs to {out.resolve()}/")
+    print(f"Writing test inputs to {out.resolve()}/\n")
 
     make_portrait(out, size=args.img_size)
     make_character(out, size=args.img_size)
@@ -448,11 +540,9 @@ def main() -> None:
     make_pose_video(out, args.video_frames, vh, vw, args.fps)
     make_face_video(out, args.video_frames, vh, vw, args.fps)
 
-    readme = out / "README.txt"
-    readme.write_text(README_TEMPLATE)
-    print(f"  README.txt")
-    print()
-    print("Done. See test_inputs/README.txt for example inference commands.")
+    (out / "README.txt").write_text(README_TEMPLATE)
+    print(f"\n  README.txt")
+    print("\nDone. See test_inputs/README.txt for exact file purposes and example commands.")
 
 
 if __name__ == "__main__":

@@ -5,6 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 import torch
+import torch.nn.functional as F
 
 from sparsevideo.methods.spargeattn import SpargeAttnMethod
 from sparsevideo.methods.spargeattn.method import (
@@ -13,6 +14,7 @@ from sparsevideo.methods.spargeattn.method import (
     _is_training_free_runtime,
     _load_spas_sage_attn_functions,
     _resolve_torch_dtype,
+    _sparge_dense_attention,
     _sparge_kernel_head_dim,
     _sparge_sparse_rejection_reason,
 )
@@ -265,6 +267,26 @@ def test_spargeattn_hunyuan_full_mode_uses_upstream_sdpa_layout(monkeypatch):
     assert calls["kwargs"]["dropout_p"] == 0.0
     assert calls["kwargs"]["is_causal"] is False
     torch.testing.assert_close(out, query + 3)
+
+
+def test_spargeattn_allegro_dense_attention_matches_diffusers_sdpa():
+    torch.manual_seed(23)
+    query = torch.randn(2, 7, 4, 8)
+    key = torch.randn(2, 7, 4, 8)
+    value = torch.randn(2, 7, 4, 8)
+
+    expected = F.scaled_dot_product_attention(
+        query.permute(0, 2, 1, 3).contiguous(),
+        key.permute(0, 2, 1, 3).contiguous(),
+        value.permute(0, 2, 1, 3).contiguous(),
+        dropout_p=0.0,
+        is_causal=False,
+    ).permute(0, 2, 1, 3).contiguous()
+    actual = _sparge_dense_attention(
+        query, key, value, None, model_type="allegro"
+    )
+
+    torch.testing.assert_close(actual, expected, atol=1e-6, rtol=1e-6)
 
 
 def test_spargeattn_hunyuan_processor_default_fused_norm_rope():

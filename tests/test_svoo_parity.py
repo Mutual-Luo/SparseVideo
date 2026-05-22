@@ -417,52 +417,6 @@ def test_svoo_global_constraint_dynamic_map_is_owned_and_configurable():
     assert _svoo_frame_layout(33 * 45 * 80, "hunyuan_video") == (33, 45 * 80)
 
 
-def test_svoo_routing_config_is_supported_by_method():
-    from types import SimpleNamespace
-
-    from sparsevideo.methods.svoo import SVOOMethod
-
-    method = SVOOMethod(
-        config={
-            "use_routing_transformer_strategy": True,
-            "mq1": 2,
-            "mk1": 2,
-            "mq2": 4,
-            "mk2": 8,
-        },
-        model_info=SimpleNamespace(model_type="wan", model_key="wan21-t2v-1.3b", transformers=[object()]),
-    )
-
-    assert method.config["use_routing_transformer_strategy"] is True
-    assert method.config["mq1"] == 2
-    assert method.config["mk1"] == 2
-    assert method.config["mq2"] == 4
-    assert method.config["mk2"] == 8
-
-
-def test_svoo_routing_config_validation_rejects_invalid_shape():
-    from sparsevideo.methods.svoo.ops import _validate_routing_config
-
-    with pytest.raises(ValueError, match="requires mq1, mk1, mq2, and mk2"):
-        _validate_routing_config({"mq1": 2}, 8)
-
-    with pytest.raises(ValueError, match="positive integer"):
-        _validate_routing_config({"mq1": 2, "mk1": 2, "mq2": 0, "mk2": 4}, 8)
-
-    with pytest.raises(ValueError, match="divisible by mq1"):
-        _validate_routing_config({"mq1": 3, "mk1": 2, "mq2": 2, "mk2": 2}, 8)
-
-
-def test_svoo_uniform_bucketing_matches_upstream_order_policy():
-    from sparsevideo.methods.svoo.ops import _uniform_bucketing
-
-    norms = torch.tensor([[0.3, 0.1, 0.4, 0.2, 0.9, 0.8, 0.7, 0.6]])
-
-    labels = _uniform_bucketing(norms, 4)
-
-    assert labels.tolist() == [[1, 0, 1, 0, 3, 3, 2, 2]]
-
-
 def test_svoo_flashinfer_env_names_follow_upstream(monkeypatch):
     from sparsevideo.kernels import flashinfer_block_sparse
 
@@ -480,7 +434,7 @@ def test_svoo_flashinfer_env_names_follow_upstream(monkeypatch):
     )
 
 
-def test_svoo_first_times_fp_threshold_uses_scheduler_timestep_for_dense(monkeypatch):
+def test_svoo_dense_warmup_step_ratio_routes_to_dense(monkeypatch):
     from types import SimpleNamespace
 
     from sparsevideo.methods.svoo import method as svoo_method
@@ -493,7 +447,7 @@ def test_svoo_first_times_fp_threshold_uses_scheduler_timestep_for_dense(monkeyp
 
     def fake_svoo_attention(*args, **kwargs):
         calls["sparse"] += 1
-        raise AssertionError("sparse path should not run above first_times_fp threshold")
+        raise AssertionError("sparse path should not run during dense warmup")
 
     monkeypatch.setattr(
         svoo_method,
@@ -504,8 +458,9 @@ def test_svoo_first_times_fp_threshold_uses_scheduler_timestep_for_dense(monkeyp
 
     method = svoo_method.SVOOMethod(
         config={
-            "first_times_fp": 925,
-            "first_layers_fp": 0,
+            "dense_warmup_step_ratio": 0.5,
+            "dense_warmup_layer_ratio": 0.0,
+            "num_inference_steps": 50,
             "use_dynamic_min_kc_ratio": False,
         },
         model_info=SimpleNamespace(model_type="wan", model_key="wan21-t2v-1.3b", transformers=[object()]),
@@ -544,7 +499,7 @@ def test_svoo_wan_processor_matches_upstream_qk_norm_rope_split():
     assert processor.use_fused_rope is True
 
 
-def test_svoo_first_times_fp_threshold_allows_sparse_at_boundary(monkeypatch):
+def test_svoo_dense_warmup_step_ratio_allows_sparse_after_boundary(monkeypatch):
     from types import SimpleNamespace
 
     from sparsevideo.methods.svoo import method as svoo_method
@@ -570,8 +525,9 @@ def test_svoo_first_times_fp_threshold_allows_sparse_at_boundary(monkeypatch):
 
     method = svoo_method.SVOOMethod(
         config={
-            "first_times_fp": 925,
-            "first_layers_fp": 0,
+            "dense_warmup_step_ratio": 0.5,
+            "dense_warmup_layer_ratio": 0.0,
+            "num_inference_steps": 50,
             "use_dynamic_min_kc_ratio": False,
         },
         model_info=SimpleNamespace(model_type="wan", model_key="wan21-t2v-1.3b", transformers=[object()]),
@@ -580,7 +536,7 @@ def test_svoo_first_times_fp_threshold_allows_sparse_at_boundary(monkeypatch):
         layer_idx=3,
         total_layers=8,
         original_processor=None,
-        step_tracker=SimpleNamespace(step=20, timestep=925),
+        step_tracker=SimpleNamespace(step=26, timestep=925),
     )
     query = torch.randn(1, 4, 2, 4)
 
@@ -589,7 +545,7 @@ def test_svoo_first_times_fp_threshold_allows_sparse_at_boundary(monkeypatch):
     assert calls == {"dense": 0, "sparse": 1}
 
 
-def test_svoo_first_times_fp_ratio_still_uses_first_step_count(monkeypatch):
+def test_svoo_dense_warmup_ratio_uses_first_step_count(monkeypatch):
     from types import SimpleNamespace
 
     from sparsevideo.methods.svoo import method as svoo_method
@@ -605,9 +561,9 @@ def test_svoo_first_times_fp_ratio_still_uses_first_step_count(monkeypatch):
 
     method = svoo_method.SVOOMethod(
         config={
-            "first_times_fp": 0.2,
-            "first_layers_fp": 0,
             "num_inference_steps": 50,
+            "dense_warmup_step_ratio": 0.2,
+            "dense_warmup_layer_ratio": 0.0,
             "use_dynamic_min_kc_ratio": False,
         },
         model_info=SimpleNamespace(model_type="wan", model_key="wan21-t2v-1.3b", transformers=[object()]),
@@ -737,7 +693,7 @@ def test_svoo_hunyuan_sparse_path_accepts_attention_mask_and_prompt_length(monke
     monkeypatch.setattr(svoo_method, "svoo_attention", fake_svoo_attention)
 
     method = svoo_method.SVOOMethod(
-        config={"first_times_fp": 0, "first_layers_fp": 0},
+        config={"dense_warmup_step_ratio": 0.0, "dense_warmup_layer_ratio": 0.0},
         model_info=SimpleNamespace(model_type="hunyuan_video"),
     )
     processor = method.create_processor(
@@ -1019,7 +975,6 @@ def test_svoo_sparse_path_uses_owned_triton_permutation(monkeypatch):
         "kmeans_iter_init": 1,
         "kmeans_iter_step": 1,
         "use_svoo": True,
-        "use_routing_transformer_strategy": False,
         "use_global_constraints": False,
     }
     state = {"centroids_init": False, "cached_clustering": None}
@@ -1284,32 +1239,3 @@ def test_svoo_flashinfer_attention_matches_upstream_manual_wan_cuda():
 
     torch.cuda.synchronize()
     torch.testing.assert_close(actual, expected, rtol=1e-3, atol=1e-3)
-
-
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA/Triton")
-def test_svoo_routing_cluster_tokens_smoke_shapes_on_cuda():
-    from sparsevideo.methods.svoo.ops import _routing_cluster_tokens
-
-    torch.manual_seed(0)
-    q = torch.randn(2, 8, 16, device="cuda", dtype=torch.float16)
-    k = torch.randn(2, 8, 16, device="cuda", dtype=torch.float16)
-    cfg = {
-        "mq1": 2,
-        "mk1": 2,
-        "mq2": 2,
-        "mk2": 4,
-    }
-    state = {"centroids_init": False}
-
-    q_labels, q_centroids, q_sizes, k_labels, k_centroids, k_sizes = _routing_cluster_tokens(
-        q, k, cfg, state, kmeans_iters=1,
-    )
-
-    assert q_labels.shape == (2, 8)
-    assert k_labels.shape == (2, 8)
-    assert q_centroids.shape == (2, 4, 16)
-    assert k_centroids.shape == (2, 8, 16)
-    assert q_sizes.shape == (2, 4)
-    assert k_sizes.shape == (2, 8)
-    assert q_sizes.sum(dim=1).tolist() == [8, 8]
-    assert k_sizes.sum(dim=1).tolist() == [8, 8]

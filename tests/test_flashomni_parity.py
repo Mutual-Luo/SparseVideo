@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import math
 from pathlib import Path
 import sys
 from types import SimpleNamespace
@@ -761,6 +762,70 @@ def test_flashomni_paper_mmdit_dispatch_reuses_cached_q_blocks(monkeypatch):
     assert dispatch.dispatch == "sparse"
     assert torch.equal(dispatch.output[:, :2], torch.full_like(dispatch.output[:, :2], 7.0))
     assert torch.equal(dispatch.output[:, 2:], torch.zeros_like(dispatch.output[:, 2:]))
+
+
+def test_flashomni_paper_mmdit_isolates_mochi_cache_suffixes(monkeypatch):
+    calls = []
+
+    def fake_policy(query, key, **kwargs):
+        q_block_size = int(kwargs["sparse_block_size_for_q"])
+        kv_block_size = int(kwargs["sparse_block_size_for_kv"])
+        q_blocks = math.ceil(query.shape[1] / q_block_size)
+        kv_blocks = math.ceil(key.shape[1] / kv_block_size)
+        sparse_q = torch.zeros(query.shape[0], query.shape[2], q_blocks, dtype=torch.uint8, device=query.device)
+        sparse_kv = torch.ones(
+            query.shape[0],
+            query.shape[2],
+            q_blocks,
+            kv_blocks,
+            dtype=torch.uint8,
+            device=query.device,
+        )
+        return sparse_q, sparse_kv
+
+    def fake_upstream(q, k, v, block_mask_pattern, **kwargs):
+        calls.append((q.shape[1], bool(kwargs.get("is_full"))))
+        if kwargs.get("is_full"):
+            return torch.full_like(q, 7.0)
+        return torch.zeros_like(q)
+
+    monkeypatch.setattr(
+        "sparsevideo.methods.flashomni.method.flashomni_paper_sparse_blocks",
+        fake_policy,
+    )
+    monkeypatch.setattr(
+        "sparsevideo.methods.flashomni.method._flashomni_upstream_attention",
+        fake_upstream,
+    )
+    monkeypatch.setattr(torch.Tensor, "is_cuda", property(lambda self: True))
+
+    method = FlashOmniMethod(
+        config={
+            "sparse_pattern": "paper_mmdit",
+            "sparse_block_size_for_q": 2,
+            "sparse_block_size_for_kv": 2,
+            "tau_q": 0.0,
+            "tau_kv": 0.3,
+            "N": 3,
+            "first_enhance": 0,
+            "dense_warmup_layer_ratio": 0.0,
+            "dense_warmup_step_ratio": 0.0,
+        },
+        model_info=SimpleNamespace(model_type="mochi"),
+    )
+    step_tracker = SimpleNamespace(step=1)
+    processor = method.create_processor(layer_idx=0, total_layers=1, original_processor=None, step_tracker=step_tracker)
+    q4 = torch.randn(1, 4, 1, 4)
+    q6 = torch.randn(1, 6, 1, 4)
+
+    processor.attn_fn(q4, q4, q4, None, text_len=0, cache_key_suffix=0)
+    processor.attn_fn(q6, q6, q6, None, text_len=0, cache_key_suffix=1)
+    step_tracker.step = 2
+    processor.attn_fn(q4, q4, q4, None, text_len=0, cache_key_suffix=0)
+    processor.attn_fn(q6, q6, q6, None, text_len=0, cache_key_suffix=1)
+
+    assert calls == [(4, True), (6, True), (4, False), (6, False)]
+    assert method.runtime_summary()["dispatch_counts"] == {"dense": 2, "sparse": 2}
 
 
 def test_flashomni_paper_mmdit_attention_saves_hunyuan_sparse_ratios_for_taylor(monkeypatch):

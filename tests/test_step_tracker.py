@@ -50,3 +50,19 @@ def test_step_tracker_extracts_large_positional_timestep_tensor_for_wan():
 
     assert tracker.step == 1
     assert tracker.timestep == 1000.0
+
+
+def test_step_tracker_uses_ltx_video_max_for_mixed_conditioning_timestep_tensor():
+    tracker = StepTracker("ltx_video")
+
+    tracker._hook(None, (object(), object(), torch.tensor([0.0, 999.0, 999.0])), {})
+
+    assert tracker.step == 1
+    assert tracker.timestep == 999.0
+
+    tracker._hook(None, (object(), object(), torch.tensor([0.0, 999.0, 999.0])), {})
+    assert tracker.step == 1
+
+    tracker._hook(None, (object(), object(), torch.tensor([0.0, 925.0, 925.0])), {})
+    assert tracker.step == 2
+    assert tracker.timestep == 925.0

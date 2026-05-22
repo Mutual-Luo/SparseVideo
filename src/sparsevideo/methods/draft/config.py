@@ -1,36 +1,14 @@
-CONFIG_DEFAULTS = {
-    "pool_h": 8,
-    "pool_w": 16,
-    "latent_h": None,
-    "latent_w": None,
-    "visual_len": None,
-    "text_len": None,
-    "sparsity_ratio": 0.9,
-    "batch_size": None,
-    "block_sparse_attention": True,
-    "allow_triton_fallback": False,
-}
+from .._config import apply_model_defaults, copy_config_defaults, load_method_config_yaml
 
-CONFIG_ALIASES = {}
 
-T2V_DEFAULTS = {
-    "wan": {
-        "sparsity_ratio": 0.75,
-        "text_len": 0,
-    },
-    "hunyuan_video": {
-        "latent_h": 48,
-        "latent_w": 80,
-        "visual_len": 126_720,
-        "text_len": 256,
-        "sparsity_ratio": 0.9,
-    },
-}
+_YAML_CONFIG = load_method_config_yaml(__file__)
+
+CONFIG_DEFAULTS = _YAML_CONFIG["defaults"]
+CONFIG_ALIASES = _YAML_CONFIG["aliases"]
+T2V_DEFAULTS = _YAML_CONFIG["model_defaults"]
 
 
 def default_config(**context):
-    config = dict(CONFIG_DEFAULTS)
-    model_family = context.get("model_family")
-    if model_family in T2V_DEFAULTS:
-        config.update(T2V_DEFAULTS[model_family])
+    config = copy_config_defaults(CONFIG_DEFAULTS)
+    apply_model_defaults(config, T2V_DEFAULTS, context)
     return config

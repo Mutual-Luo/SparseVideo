@@ -7,7 +7,7 @@ import torch.nn.functional as F
 
 from .._base import SparseMethod
 from .._layout import infer_video_frame_count, infer_video_token_layout
-from .._schedule import first_times_fp_requires_dense, resolve_first_layers, scheduler_timestep_from_tracker
+from .._schedule import configured_dense_warmup_layer_count, configured_dense_warmup_requires_dense, runtime_num_inference_steps, scheduler_timestep_from_tracker
 from ...processors.allegro import SparseAllegroAttnProcessor
 from ...processors.cogvideox import SparseCogVideoXAttnProcessor
 from ...processors.easyanimate import SparseEasyAnimateAttnProcessor
@@ -41,7 +41,7 @@ class SVG1Method(SparseMethod):
             raise NotImplementedError(f"svg1 not yet supported for {self.model_info.model_type}")
 
         cfg = self.config
-        first_layer_count = resolve_first_layers(cfg["first_layers_fp"], total_layers)
+        first_layer_count = configured_dense_warmup_layer_count(cfg, total_layers)
 
         state = {"block_mask": None, "profiled_step": -1}
         model_type = self.model_info.model_type
@@ -53,9 +53,9 @@ class SVG1Method(SparseMethod):
                 prompt_length = cfg.get("prompt_length")
             full_attention = (
                 layer_idx < first_layer_count
-                or first_times_fp_requires_dense(
-                    cfg["first_times_fp"],
-                    cfg["num_inference_steps"],
+                or configured_dense_warmup_requires_dense(
+                    cfg,
+                    runtime_num_inference_steps(step_tracker),
                     step_tracker.step,
                     scheduler_timestep,
                 )

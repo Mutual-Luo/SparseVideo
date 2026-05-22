@@ -15,6 +15,7 @@ from sparsevideo.methods.adacluster.method import (
     AdaClusterMethod,
     _adacluster_attention,
     _adacluster_dense_attention,
+    _adacluster_flashinfer_cluster_sparse_attn,
     _adacluster_hunyuan_kv_length,
     _adacluster_kernel_head_dim,
     _adacluster_reuse_policy,
@@ -250,10 +251,10 @@ def test_wan_adacluster_processor_default_uses_runwan_fixed_cluster_path(monkeyp
         model_info=SimpleNamespace(model_type="wan", transformers=[]),
     )
     processor = method.create_processor(
-        layer_idx=0,
+        layer_idx=2,
         total_layers=30,
         original_processor=None,
-        step_tracker=SimpleNamespace(step=1),
+        step_tracker=SimpleNamespace(step=10),
     )
     query = torch.randn(1, 32, 2, 4)
 
@@ -343,6 +344,7 @@ def test_adacluster_owned_kernel_set_matches_upstream_runtime_call_sites():
     assert owned_sources == {
         "fast_kmeans_single.py",
         "triton_cluster_sparse_attn.py",
+        "triton_cluster_sparse_attn_topk.py",
     }
 
 
@@ -409,7 +411,7 @@ def test_wan_adacluster_uses_thresholded_kernel_selection_on_first_call(monkeypa
         sizes.scatter_add_(2, labels.long().unsqueeze(-1), torch.ones_like(labels, dtype=torch.int32).unsqueeze(-1))
         return centroids, sizes, labels
 
-    def fake_cluster_sparse_attn(query, key, value, compressed_attn_mask, q_counts, kv_counts, sm_scale):
+    def fake_cluster_sparse_attn(query, key, value, compressed_attn_mask, q_counts, kv_counts, sm_scale, selected_kv_indices=None):
         return query
 
     monkeypatch.setattr(adacluster_method, "_adacluster_thresholded_kmeans_count", fake_threshold)
@@ -503,6 +505,88 @@ def test_adacluster_owned_upstream_triton_path_executes_cuda():
     assert state["prev_q_centroids"].shape == (1, 1, 4, 64)
 
 
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="AdaCluster Triton kernel comparison requires CUDA")
+def test_adacluster_topk_kernel_matches_upstream_mask_kernel_cuda():
+    from sparsevideo.kernels.native.adacluster.triton_cluster_sparse_attn import triton_cluster_sparse_attn
+    from sparsevideo.kernels.native.adacluster.triton_cluster_sparse_attn_topk import triton_cluster_sparse_attn_topk
+
+    torch.manual_seed(7)
+    query = torch.randn(1, 1, 8, 16, device="cuda", dtype=torch.float16)
+    key = torch.randn(1, 1, 8, 16, device="cuda", dtype=torch.float16)
+    value = torch.randn(1, 1, 8, 16, device="cuda", dtype=torch.float16)
+    q_counts = torch.tensor([[[4, 8]]], device="cuda", dtype=torch.int32)
+    kv_counts = torch.tensor([[[3, 6, 8]]], device="cuda", dtype=torch.int32)
+    selected = torch.tensor([[[[0, 2], [1, 2]]]], device="cuda", dtype=torch.int64)
+    compressed = torch.zeros(1, 1, 2, 3, device="cuda", dtype=torch.bool)
+    compressed.scatter_(dim=-1, index=selected, value=True)
+
+    upstream = triton_cluster_sparse_attn(
+        query=query,
+        key=key,
+        value=value,
+        compressed_attn_mask=compressed,
+        q_counts=q_counts,
+        kv_counts=kv_counts,
+        sm_scale=16 ** -0.5,
+    )
+    optimized = triton_cluster_sparse_attn_topk(
+        query=query,
+        key=key,
+        value=value,
+        selected_kv_indices=selected,
+        q_counts=q_counts,
+        kv_counts=kv_counts,
+        sm_scale=16 ** -0.5,
+    )
+
+    assert torch.allclose(optimized, upstream, atol=1e-2, rtol=1e-2)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="AdaCluster FlashInfer comparison requires CUDA")
+def test_adacluster_flashinfer_kernel_matches_topk_kernel_cuda():
+    from sparsevideo.kernels.flashinfer_block_sparse import HAS_FLASHINFER
+    from sparsevideo.kernels.native.adacluster.triton_cluster_sparse_attn_topk import triton_cluster_sparse_attn_topk
+
+    if not HAS_FLASHINFER:
+        pytest.skip("flashinfer is not installed")
+
+    torch.manual_seed(11)
+    query = torch.randn(1, 1, 64, 64, device="cuda", dtype=torch.float16)
+    key = torch.randn(1, 1, 64, 64, device="cuda", dtype=torch.float16)
+    value = torch.randn(1, 1, 64, 64, device="cuda", dtype=torch.float16)
+    q_sizes = torch.tensor([[[[32], [32]]]], device="cuda", dtype=torch.int32)
+    kv_sizes = torch.tensor([[[[20], [20], [24]]]], device="cuda", dtype=torch.int32)
+    q_counts = q_sizes.squeeze(-1).cumsum(dim=-1).contiguous()
+    kv_counts = kv_sizes.squeeze(-1).cumsum(dim=-1).contiguous()
+    selected = torch.tensor([[[[0, 2], [1, 2]]]], device="cuda", dtype=torch.int64)
+    compressed = torch.zeros(1, 1, 2, 3, device="cuda", dtype=torch.bool)
+    compressed.scatter_(dim=-1, index=selected, value=True)
+    sm_scale = 0.1234
+
+    expected = triton_cluster_sparse_attn_topk(
+        query=query,
+        key=key,
+        value=value,
+        selected_kv_indices=selected,
+        q_counts=q_counts,
+        kv_counts=kv_counts,
+        sm_scale=sm_scale,
+    )
+    actual = _adacluster_flashinfer_cluster_sparse_attn(
+        query=query,
+        key=key,
+        value=value,
+        compressed_attn_mask=compressed,
+        q_sizes=q_sizes,
+        kv_sizes=kv_sizes,
+        sm_scale=sm_scale,
+    )
+
+    assert actual is not None
+    torch.cuda.synchronize()
+    assert torch.allclose(actual, expected, atol=1e-2, rtol=1e-2)
+
+
 def test_adacluster_sparse_path_pads_non_kernel_head_dim(monkeypatch):
     import sparsevideo.methods.adacluster.method as adacluster_method
 
@@ -519,9 +603,10 @@ def test_adacluster_sparse_path_pads_non_kernel_head_dim(monkeypatch):
         sizes.scatter_add_(2, labels.long().unsqueeze(-1), torch.ones_like(labels, dtype=torch.int32).unsqueeze(-1))
         return centroids, sizes, labels
 
-    def fake_cluster_sparse_attn(query, key, value, compressed_attn_mask, q_counts, kv_counts, sm_scale):
+    def fake_cluster_sparse_attn(query, key, value, compressed_attn_mask, q_counts, kv_counts, sm_scale, selected_kv_indices=None):
         attn_calls["query_shape"] = tuple(query.shape)
         attn_calls["scale"] = sm_scale
+        attn_calls["selected_shape"] = tuple(selected_kv_indices.shape)
         return query
 
     monkeypatch.setattr(adacluster_method, "_adacluster_flash_kmeans_single", fake_flash_kmeans_single)
@@ -554,6 +639,7 @@ def test_adacluster_sparse_path_pads_non_kernel_head_dim(monkeypatch):
     assert attn_calls == {
         "query_shape": (1, 2, 8, 128),
         "scale": 96 ** -0.5,
+        "selected_shape": (1, 2, 4, 2),
     }
     assert out.shape == query.shape
 
@@ -680,7 +766,7 @@ def test_adacluster_reuses_centroids_for_wan_and_reinitializes_for_hunyuan(monke
         sizes.scatter_add_(2, labels.long().unsqueeze(-1), torch.ones_like(labels, dtype=torch.int32).unsqueeze(-1))
         return kernel + 1000, sizes, labels
 
-    def fake_cluster_sparse_attn(query, key, value, compressed_attn_mask, q_counts, kv_counts, sm_scale):
+    def fake_cluster_sparse_attn(query, key, value, compressed_attn_mask, q_counts, kv_counts, sm_scale, selected_kv_indices=None):
         return query
 
     monkeypatch.setattr(adacluster_method, "_adacluster_flash_kmeans_single", fake_flash_kmeans_single)
@@ -718,10 +804,11 @@ def test_adacluster_sparse_attention_allows_hunyuan_q_kv_length_mismatch(monkeyp
         sizes.scatter_add_(2, labels.long().unsqueeze(-1), torch.ones_like(labels, dtype=torch.int32).unsqueeze(-1))
         return kernel, sizes, labels
 
-    def fake_cluster_sparse_attn(query, key, value, compressed_attn_mask, q_counts, kv_counts, sm_scale):
+    def fake_cluster_sparse_attn(query, key, value, compressed_attn_mask, q_counts, kv_counts, sm_scale, selected_kv_indices=None):
         assert query.shape[2] == 5
         assert key.shape[2] == 3
         assert value.shape[2] == 3
+        assert selected_kv_indices.shape == (1, 1, 2, 1)
         return query
 
     monkeypatch.setattr(adacluster_method, "_adacluster_flash_kmeans_single", fake_flash_kmeans_single)

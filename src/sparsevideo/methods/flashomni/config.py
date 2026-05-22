@@ -1,54 +1,10 @@
-CONFIG_DEFAULTS = {
-    "implementation": "upstream",
-    "backend": "auto",
-    "workspace_bytes": 268435456,
-    "sparse_block_size_for_q": 128,
-    "sparse_block_size_for_kv": 128,
-    "causal": False,
-    "pos_encoding_mode": "NONE",
-    "use_fp16_qk_reduction": False,
-    "logits_soft_cap": 0.0,
-    "sm_scale": None,
-    "rope_scale": None,
-    "rope_theta": None,
-    "sparse_pattern": "explicit",
-    "sparse_size": 128,
-    "spq_Q": 0.0,
-    "spq_KV": 0.8,
-    "text_token": 512,
-    "threshold_q": 0.50,
-    "threshold_kv": 0.05,
-    "fresh_threshold": 6,
-    "max_order": 1,
-    "first_enhance": 8,
-    "saving_threshold_q_for_taylor": 0.3,
-    "max_sequence_length": -1,
-    "num_inference_steps": 50,
-    "simthreshd1": 0.1,
-    "tau_q": 0.50,
-    "tau_kv": 0.05,
-    "N": 6,
-    "D": 1,
-    "S_q": 0.3,
-    "use_sparse_gemm": True,
-    "is_full": False,
-    "taylor_cache_device": "cuda",
-    "debug_memory": False,
-    "debug_memory_max_events": 4000,
-    "sparse_info": None,
-    "sparse_kv_info": None,
-    "sparse_info_indptr": None,
-    "sparse_kv_info_indptr": None,
-    "sparse_kv_budget": 0.5,
-}
+from .._config import copy_config_defaults, load_method_config_yaml
 
-CONFIG_ALIASES = {
-    "cdfthreshd": "tau_kv",
-    "tau_c": "tau_q",
-    "cache_interval": "N",
-    "cache_order": "D",
-    "cache_threshold": "S_q",
-}
+
+_YAML_CONFIG = load_method_config_yaml(__file__)
+
+CONFIG_DEFAULTS = _YAML_CONFIG["defaults"]
+CONFIG_ALIASES = _YAML_CONFIG["aliases"]
 
 SPARSE_INFO_KEYS = (
     "sparse_info",
@@ -56,3 +12,7 @@ SPARSE_INFO_KEYS = (
     "sparse_info_indptr",
     "sparse_kv_info_indptr",
 )
+
+
+def default_config(**context):
+    return copy_config_defaults(CONFIG_DEFAULTS)

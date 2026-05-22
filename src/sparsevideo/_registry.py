@@ -74,7 +74,8 @@ def normalize_method_config(name: str, config: Dict[str, Any]) -> Dict[str, Any]
         module = importlib.import_module(entry.config_module)
         defaults = getattr(module, "CONFIG_DEFAULTS")
         aliases = getattr(module, "CONFIG_ALIASES", {})
-        return _normalize_config(config, defaults, aliases, entry.class_name)
+        compat_keys = getattr(module, "CONFIG_COMPAT_KEYS", ())
+        return _normalize_config(config, defaults, aliases, compat_keys, entry.class_name)
     method_cls = get_method_class(name)
     return method_cls.normalize_config(config)
 
@@ -90,6 +91,7 @@ def _normalize_config(
     config: Dict[str, Any],
     defaults: Dict[str, Any],
     aliases: Dict[str, str],
+    compat_keys,
     class_name: str,
 ) -> Dict[str, Any]:
     normalized: Dict[str, Any] = {}
@@ -102,10 +104,11 @@ def _normalize_config(
             )
         normalized[canonical_key] = value
 
-    unknown = set(normalized) - set(defaults)
+    unknown = set(normalized) - set(defaults) - set(compat_keys)
     if unknown:
+        valid_keys = [*defaults, *sorted(compat_keys)]
         raise ValueError(
             f"Unknown config keys for {class_name}: {unknown}. "
-            f"Valid keys: {list(defaults)}"
+            f"Valid keys: {valid_keys}"
         )
     return normalized

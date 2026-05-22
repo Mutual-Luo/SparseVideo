@@ -65,8 +65,9 @@ def infer_video_frame_shape(
     known_shapes = {
         "wan": ((21, 45, 80), (18, 48, 80), (33, 45, 80)),
         "hunyuan_video": ((33, 45, 80), (30, 48, 80), (21, 45, 80)),
-        "cogvideox": ((13, 30, 45), (13, 45, 80), (25, 45, 80)),
+        "cogvideox": ((13, 30, 45), (13, 45, 80), (13, 60, 90), (25, 45, 80)),
         "ltx_video": ((21, 16, 22), (21, 22, 40)),
+        "allegro": ((22, 45, 80),),
         "easyanimate": ((13, 16, 16), (13, 30, 45), (25, 45, 80)),
     }
     for shape in known_shapes.get(model_type, ()):
@@ -78,6 +79,7 @@ def infer_video_frame_shape(
         "hunyuan_video": (33, 30, 21, 17, 13, 9, 5, 25, 18, 2, 1),
         "cogvideox": (13, 25, 17, 9, 5, 21, 33, 2, 1),
         "ltx_video": (21, 17, 13, 9, 5, 25, 33, 2, 1),
+        "allegro": (22, 17, 13, 9, 5, 25, 33, 2, 1),
         "easyanimate": (13, 17, 9, 5, 25, 21, 33, 2, 1),
     }.get(model_type, (33, 30, 21, 18, 17, 13, 9, 5, 25))
     for frames in frame_order:

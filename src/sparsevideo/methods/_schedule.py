@@ -3,32 +3,37 @@ from __future__ import annotations
 from math import floor
 
 
-def resolve_first_layers(first_layers_fp, total_layers):
-    value = float(first_layers_fp or 0)
-    if value <= 0:
-        return 0
-    if value < 1:
-        return int(floor(value * total_layers))
-    return min(total_layers, int(value))
+DENSE_WARMUP_CONFIG_DEFAULTS = {
+    "dense_warmup_step_ratio": 0.1,
+    "dense_warmup_layer_ratio": 0.03,
+}
 
 
-def resolve_first_steps(first_times_fp, num_inference_steps):
-    value = float(first_times_fp or 0)
-    if value <= 0:
-        return 0
-    if value < 1:
-        return int(floor(value * int(num_inference_steps)))
-    return int(value)
+def configured_dense_warmup_layer_count(config, total_layers):
+    if config.get("dense_warmup_layer_ratio") is not None:
+        ratio = _validate_ratio("dense_warmup_layer_ratio", config["dense_warmup_layer_ratio"])
+        if ratio <= 0:
+            return 0
+        return max(1, int(floor(ratio * int(total_layers))))
+    return 0
 
 
-def first_times_fp_requires_dense(first_times_fp, num_inference_steps, step, timestep=None):
-    value = float(first_times_fp or 0)
-    if value <= 0:
-        return False
-    if value < 1:
-        return int(step) <= resolve_first_steps(value, num_inference_steps)
-    timestep_value = _scalar_timestep(timestep)
-    return timestep_value is not None and timestep_value > value
+def configured_dense_warmup_requires_dense(config, num_inference_steps, step, timestep=None):
+    if config.get("dense_warmup_step_ratio") is not None:
+        ratio = _validate_ratio("dense_warmup_step_ratio", config["dense_warmup_step_ratio"])
+        if ratio >= 1.0:
+            return True
+        if step is None or num_inference_steps is None:
+            return False
+        return int(step) <= int(floor(ratio * int(num_inference_steps)))
+    return False
+
+
+def runtime_num_inference_steps(step_tracker):
+    getter = getattr(step_tracker, "num_inference_steps", None)
+    if callable(getter):
+        return getter()
+    return None
 
 
 def scheduler_timestep_from_tracker(step_tracker, kwargs):
@@ -53,3 +58,10 @@ def _scalar_timestep(timestep):
     if hasattr(timestep, "numel") and timestep.numel() > 0:
         return float(timestep.detach().flatten()[0].item())
     return None
+
+
+def _validate_ratio(name, value):
+    ratio = float(value)
+    if ratio < 0.0 or ratio > 1.0:
+        raise ValueError(f"{name} must be in [0, 1]")
+    return ratio

@@ -4,7 +4,7 @@ import torch
 import torch.nn.functional as F
 
 from .._base import SparseMethod
-from .._schedule import first_times_fp_requires_dense, resolve_first_layers, scheduler_timestep_from_tracker
+from .._schedule import configured_dense_warmup_layer_count, configured_dense_warmup_requires_dense, runtime_num_inference_steps, scheduler_timestep_from_tracker
 from ...processors.allegro import SparseAllegroAttnProcessor
 from ...processors.cogvideox import SparseCogVideoXAttnProcessor
 from ...processors.easyanimate import SparseEasyAnimateAttnProcessor
@@ -54,19 +54,6 @@ class SVOOMethod(SparseMethod):
                 "svoo Hunyuan upstream path uses FlashInfer for varlen dense gates and sparse attention; "
                 "sparse_backend='triton' is only available for the Wan fallback path."
             )
-        if self.config.get("use_routing_transformer_strategy"):
-            missing = [
-                name for name in ("mq1", "mk1", "mq2", "mk2")
-                if self.config.get(name) is None
-            ]
-            if missing:
-                raise ValueError(
-                    "svoo use_routing_transformer_strategy requires mq1, mk1, mq2, and mk2; "
-                    f"missing {missing}"
-                )
-            for name in ("mq1", "mk1", "mq2", "mk2"):
-                if int(self.config[name]) <= 0:
-                    raise ValueError(f"svoo routing parameter {name} must be a positive integer")
         if self.config.get("use_dynamic_min_kc_ratio"):
             sparsity_csv_path = self.config.get("sparsity_csv_path")
             if not sparsity_csv_path:
@@ -89,7 +76,7 @@ class SVOOMethod(SparseMethod):
             raise NotImplementedError(f"svoo not yet supported for {self.model_info.model_type}")
 
         cfg = self.config
-        first_layer_count = resolve_first_layers(cfg["first_layers_fp"], total_layers)
+        first_layer_count = configured_dense_warmup_layer_count(cfg, total_layers)
 
         state = _new_runtime_state()
 
@@ -102,9 +89,9 @@ class SVOOMethod(SparseMethod):
             text_len = kwargs.get("text_len", 0)
             full_attention = (
                 layer_idx < first_layer_count
-                or first_times_fp_requires_dense(
-                    cfg["first_times_fp"],
-                    cfg["num_inference_steps"],
+                or configured_dense_warmup_requires_dense(
+                    cfg,
+                    runtime_num_inference_steps(step_tracker),
                     step_tracker.step,
                     scheduler_timestep,
                 )

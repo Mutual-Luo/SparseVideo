@@ -42,7 +42,8 @@
 #   sta         FastVideo Sliding Tile Attention. SparseVideo dispatches only
 #               the owned FastVideo STA path: H100/TK C++ on Hopper when the
 #               local extension is built, otherwise FastVideo's own Triton
-#               fallback. Non-upstream generalized STA fallback is rejected.
+#               fallback. Wan/Hunyuan parity runs require native FastVideo
+#               shapes; non-native shapes run as generalized local support.
 #   draft       draft-attention method. Upstream parity requires an owned copy
 #               of MIT Han Lab Block-Sparse-Attention; the current generic
 #               Triton block-sparse path is debug fallback only.
@@ -76,7 +77,8 @@
 #
 # Common options:
 #
-#   --dry-run                 Show resolved settings without loading model.
+#   --dry-run                 Validate settings without loading model.
+#   --print-json              Print full metrics/config/runtime payload.
 #                             Also reports optional kernel availability.
 #   --profile upstream        Use the upstream method benchmark profile for
 #                             shape/frame/config; fails if none is defined.
@@ -112,10 +114,16 @@
 #   SPARSEVIDEO_FUSED_KERNEL_BACKEND=auto|native|triton|pytorch
 #                            auto uses SparseVideo-owned _kernels when found.
 #
-# Method config names follow the upstream repositories where possible:
-#   svg1:        first_layers_fp, first_times_fp, num_sampled_rows,
+# Default method hyperparameters live in
+# src/sparsevideo/methods/<method>/config.yaml. Method config names follow the
+# upstream repositories where possible:
+#   Common:      dense_warmup_step_ratio, dense_warmup_layer_ratio.
+#                These are ratio-only clearer names for keeping the first
+#                fraction of denoising steps/layers dense. Defaults are 0.1
+#                and 0.03; set either value to 0 to disable that common gate.
+#   svg1:        num_sampled_rows,
 #                sample_mse_max_row, sparsity, context_length, prompt_length.
-#   svg2:        first_layers_fp, first_times_fp, num_q_centroids,
+#   svg2:        num_q_centroids,
 #                num_k_centroids, top_p_kmeans, min_kc_ratio,
 #                kmeans_iter_init, kmeans_iter_step, zero_step_kmeans_init,
 #                context_length, prompt_length, allow_triton_fallback. The local
@@ -149,21 +157,20 @@
 #                (`timestep < dense_timesteps`), not a count of first denoising
 #                steps.
 #                Upstream Radial FlashInfer benchmarks use 1280x768 shapes
-#                whose video token counts divide block_size; other shapes are
-#                preflight errors unless --allow-debug-fallbacks is set, which
-#                enables local allow_flex_fallback for smoke/debug only. Use
-#                --profile upstream to select benchmark shapes automatically.
+#                whose video token counts divide block_size. SparseVideo keeps
+#                that fixed-BSR path for those shapes and uses the owned
+#                FlashInfer variable-block wrapper for partial final blocks.
+#                use_sage_attention uses the owned Sparge/Sage kernel partial
+#                final-block support for non-divisible shapes.
 #   sta:         STA_mode, mask_strategy_file_path, tile_size, window_size,
 #                seq_shape, has_text.
 #                FastVideo STA uses tile_size=6,8,8 and supports
 #                seq_shape=18x48x80, 30x48x80, or 36x48x48. Other 720p shapes
-#                are not FastVideo STA parity runs and are rejected.
-#                STA_mode currently supports upstream STA_inference. Wan2.1
-#                T2V 14B uses the owned copy of archive-branch
-#                assets/mask_strategy_wan.json for 1280x768/69-frame STA
-#                inference; Hunyuan uses mask_strategy_hunyuan.json. Wan 1.3B
-#                has no upstream STA inference mask strategy and is rejected
-#                for parity runs instead of borrowing the 14B strategy.
+#                are local generalized STA runs, not FastVideo parity profiles.
+#                STA_mode supports STA_inference and STA_searching. Known
+#                backbones use owned mask_strategies/mask_strategy_<model_key>.json
+#                files when available; generate them with
+#                python -m sparsevideo.methods.sta.search tune.
 #                The SparseVideo-owned sta_h100 C++ path is selected only on
 #                Hopper devices when its local extension is built; A100 uses
 #                the SparseVideo-owned copy of FastVideo's Triton STA fallback.
@@ -239,7 +246,7 @@
 #                the owned FlashOmni GEMM-Q/GEMM-O dispatch hooks; those hooks
 #                follow the upstream sparse_size=128 GEMM layout. It is
 #                runnable development code, not upstream code parity.
-#   svoo:        first_times_fp, first_layers_fp, num_q_centroids,
+#   svoo:        num_q_centroids,
 #                num_k_centroids, top_p_kmeans, min_kc_ratio,
 #                kmeans_iter_init, kmeans_iter_step, zero_step_kmeans_init,
 #                start_reuse_step, reuse_interval, use_dynamic_min_kc_ratio,
@@ -249,7 +256,6 @@
 #                sparsity_batch_size, sparsity_query_samples,
 #                sparsity_threshold, sparsity_start_step,
 #                use_global_constraints, lambda_schedule, diverse_top_p_k,
-#                use_routing_transformer_strategy, mq1, mk1, mq2, mk2,
 #                enable_mem_save, implementation=native,
 #                sparse_backend=flashinfer|triton. Hunyuan SVOO upstream uses
 #                FlashInfer for both varlen dense gates and sparse attention;
@@ -264,8 +270,8 @@
 #   Wan uses 81 frames at 16 fps.
 #   The normal default shape is 720x1280 for convenience comparisons, but
 #   Wan2.1 T2V 1.3B is a 480P model in the Wan README. Its 720P output is
-#   explicitly less stable, so use 832x480 for 1.3B visual-quality checks or
-#   use Wan 14B/A14B for 720P quality baselines.
+#   explicitly less stable, so 720P checks should be treated as target-shape
+#   stress evidence rather than a standalone model-quality baseline.
 #   Hunyuan uses 129 frames at 24 fps.
 #   Method configs use the reference repositories' public names where possible.
 #   For SVG1, SVG2, Draft, and SVOO, this script uses the inference-shell
@@ -288,7 +294,7 @@ import copy
 import hashlib
 import io
 import json
-import math
+import logging
 import os
 import random
 import sys
@@ -321,25 +327,34 @@ METHODS = (
 )
 
 STA_NATIVE_SEQ_SHAPES = {"18x48x80", "30x48x80", "36x48x48"}
-STA_UPSTREAM_STRATEGY_SHAPES = {
+STA_STRATEGY_SHAPES = {
+    "wan21-t2v-1.3b": (50, 30, 12),
+    "wan21-vace-1.3b": (50, 30, 12),
     "wan21-t2v-14b": (50, 40, 40),
+    "wan21-i2v-14b": (50, 40, 40),
+    "wan21-vace-14b": (50, 40, 40),
+    "skyreels-v2-t2v-14b": (50, 40, 40),
+    "skyreels-v2-i2v-14b": (50, 40, 40),
+    "wan22-t2v-a14b": (40, 40, 40),
+    "wan22-i2v-a14b": (40, 40, 40),
+    "wan22-animate-14b": (20, 40, 40),
     "hunyuan-t2v": (50, 60, 24),
+    "hunyuan-i2v": (50, 60, 24),
+    "cogvideox-t2v": (50, 42, 48),
+    "cogvideox-i2v": (50, 42, 48),
+    "ltx-video": (50, 28, 32),
+    "ltx-video-i2v": (50, 28, 32),
+    "allegro": (100, 32, 24),
+    "mochi-1": (64, 48, 24),
+    "easyanimate-v5-t2v-12b": (50, 48, 48),
 }
-STA_UNSUPPORTED_STRATEGY_MODELS = {
-    "wan21-t2v-1.3b": (
-        "FastVideo archived STA publishes mask_strategy_wan.json for "
-        "Wan2.1-T2V-14B with 40 layers and 40 heads, not Wan2.1-T2V-1.3B "
-        "with 30 layers and 12 heads."
-    ),
-    "wan22-t2v-a14b": "FastVideo archived STA does not publish a Wan2.2 A14B inference mask strategy.",
-}
+STA_UNSUPPORTED_STRATEGY_MODELS = {}
 FLASHOMNI_SPARSE_INFO_KEYS = (
     "sparse_info",
     "sparse_kv_info",
     "sparse_info_indptr",
     "sparse_kv_info_indptr",
 )
-SCHEDULER_FIRST_TIMES_FP_METHODS = {"svg1", "svg2", "svoo"}
 DEFAULT_HEIGHT = 720
 DEFAULT_WIDTH = 1280
 DEFAULT_SEED = 0
@@ -1086,7 +1101,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--model", choices=sorted(MODEL_ALIASES), required=True)
     parser.add_argument("--method", choices=METHODS, default="dense")
-    parser.add_argument("--model-root", type=Path, default=Path("/home/dataset-assist-0/luojy/models"))
+    parser.add_argument(
+        "--model-root",
+        type=Path,
+        default=Path(os.environ.get("SPARSEVIDEO_MODEL_ROOT", "/home/dataset-assist-0/public-models")),
+    )
     parser.add_argument("--model-path", type=str, default=None)
     parser.add_argument("--local-files-only", action="store_true")
     parser.add_argument("--prompt", type=str, default="A cinematic shot of a red sports car driving along a coastal road at sunset, detailed, realistic")
@@ -1175,6 +1194,16 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--metrics-file", type=Path, default=REPO_ROOT / "result" / "inference" / "metrics.jsonl")
     parser.add_argument("--skip-existing", action="store_true")
     parser.add_argument(
+        "--print-json",
+        action="store_true",
+        help="Print the full metrics/config/runtime JSON to stdout. By default stdout is a concise summary.",
+    )
+    parser.add_argument(
+        "--verbose-compile-logs",
+        action="store_true",
+        help="Show TorchInductor/Triton compile and autotune diagnostics. Default suppresses non-fatal kernel-choice noise.",
+    )
+    parser.add_argument(
         "--skip-decode",
         action="store_true",
         help=(
@@ -1200,7 +1229,11 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="KEY=VALUE",
         help="Extra sparse method config, e.g. top_p_kmeans=0.9 for SVOO. VALUE is parsed as JSON when possible.",
     )
-    parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Validate resolved settings without loading model. Add --print-json to show the full resolved payload.",
+    )
     return parser
 
 
@@ -1458,48 +1491,6 @@ def normalize_spargeattn_model_out_path(config: Dict[str, Any], output_file: Pat
     config["model_out_path"] = str(path)
 
 
-def resolve_scheduler_first_times_fp(pipe, method: str, config: Dict[str, Any], steps: int) -> Optional[Dict[str, Any]]:
-    if method not in SCHEDULER_FIRST_TIMES_FP_METHODS or "first_times_fp" not in config:
-        return None
-    first_times_fp = float(config["first_times_fp"])
-    if first_times_fp <= 0 or first_times_fp >= 1:
-        return None
-
-    scheduler = getattr(pipe, "scheduler", None)
-    if scheduler is None:
-        return None
-
-    ref_scheduler = copy.deepcopy(scheduler)
-    _set_timesteps_for_threshold_resolution(ref_scheduler, int(steps))
-    num_fp_timesteps = math.floor(first_times_fp * int(steps))
-    if num_fp_timesteps > 0:
-        threshold = _scalar_timestep(ref_scheduler.timesteps[num_fp_timesteps - 1]) - 1
-    else:
-        threshold = 1001.0
-
-    config["first_times_fp"] = threshold
-    return {
-        "first_times_fp_original": first_times_fp,
-        "first_times_fp_resolved": threshold,
-        "num_fp_timesteps": num_fp_timesteps,
-    }
-
-
-def _set_timesteps_for_threshold_resolution(scheduler, steps: int) -> None:
-    try:
-        scheduler.set_timesteps(steps)
-    except ValueError as exc:
-        if "`mu` must be passed" not in str(exc):
-            raise
-        scheduler.set_timesteps(steps, mu=1)
-
-
-def _scalar_timestep(timestep) -> float:
-    if hasattr(timestep, "detach"):
-        return float(timestep.detach().flatten()[0].item())
-    return float(timestep)
-
-
 def validate_method_config(method: str, config: Dict[str, Any], model_family: Optional[str] = None) -> None:
     if method == "spargeattn":
         if config.get("mode", "full") not in ("full", "cdfthreshd", "topk", "block_sparse"):
@@ -1569,8 +1560,11 @@ def validate_method_config(method: str, config: Dict[str, Any], model_family: Op
             "draft block_sparse_attention=False disables the upstream sparse path; "
             "use --method dense for the dense baseline."
         )
-    if method == "sta" and config.get("STA_mode", "STA_inference") != "STA_inference":
-        raise NotImplementedError("sta currently supports upstream STA_inference mode only")
+    if method == "sta" and config.get("STA_mode", "STA_inference") not in ("STA_inference", "STA_searching"):
+        raise NotImplementedError(
+            "sta supports STA_inference in pipelines and STA_searching for mask calibration; "
+            "use python -m sparsevideo.methods.sta.search tune for STA_tuning."
+        )
     if method == "svoo":
         if config.get("implementation") != "native":
             raise NotImplementedError(
@@ -1578,20 +1572,6 @@ def validate_method_config(method: str, config: Dict[str, Any], model_family: Op
             )
         if config.get("sparse_backend") not in ("flashinfer", "triton"):
             raise ValueError("svoo sparse_backend must be flashinfer or triton")
-        if config.get("use_routing_transformer_strategy"):
-            missing = [
-                name for name in ("mq1", "mk1", "mq2", "mk2")
-                if config.get(name) is None
-            ]
-            if missing:
-                raise ValueError(
-                    "svoo use_routing_transformer_strategy requires mq1, mk1, mq2, and mk2; "
-                    f"missing {missing}"
-                )
-            for name in ("mq1", "mk1", "mq2", "mk2"):
-                if int(config[name]) <= 0:
-                    raise ValueError(f"svoo routing parameter {name} must be a positive integer")
-
         if config.get("use_dynamic_min_kc_ratio"):
             csv_path = config.get("sparsity_csv_path")
             if not csv_path:
@@ -2038,6 +2018,7 @@ def preflight_runtime(
                     "shrink_mask_strict",
                     "radial_flashinfer_attention",
                     "build_bsr_from_mask",
+                    "variable_block_sparse_attn",
                     "bsr_sparse_attn",
                     "ensure_cuda_home_for_flashinfer_jit",
                     "expand_attention_mask",
@@ -2235,11 +2216,9 @@ def preflight_runtime(
         svoo = kernels.get("svoo_kernels", {})
         if not svoo.get("triton_package"):
             errors.append("svoo requires the triton package for its upstream co-clustering kernels.")
-        if (config.get("use_routing_transformer_strategy") or not config.get("use_svoo", True)) and not (
-            svoo.get("triton_kmeans", {}).get("source_files")
-        ):
+        if not config.get("use_svoo", True) and not svoo.get("triton_kmeans", {}).get("source_files"):
             errors.append(
-                "svoo routing/use_svoo=False requires SparseVideo-owned Triton k-means source at "
+                "svoo use_svoo=False requires SparseVideo-owned Triton k-means source at "
                 "src/sparsevideo/kernels/kmeans.py."
             )
         if not svoo.get("triton_l2norm", {}).get("source_files"):
@@ -2307,7 +2286,7 @@ def preflight_runtime(
             "triton_block_sparse_attn",
             "flashinfer_block_sparse",
         ]
-        if config.get("use_routing_transformer_strategy") or not config.get("use_svoo", True):
+        if not config.get("use_svoo", True):
             required_source_keys.append("triton_kmeans")
         if config.get("measure_attention_sparsity"):
             required_source_keys.extend(["sparsity_counts", "sparsity_profiler"])
@@ -2347,7 +2326,7 @@ def preflight_runtime(
                 ):
                     if not svoo_runtime.get(attr):
                         missing.append(attr)
-                if config.get("use_routing_transformer_strategy") or not config.get("use_svoo", True):
+                if not config.get("use_svoo", True):
                     for attr in ("triton_kmeans", "kmeans_assign_kernel", "kmeans_update_kernel"):
                         if not svoo_runtime.get(attr):
                             missing.append(attr)
@@ -2541,6 +2520,11 @@ def preflight_runtime(
                 "adacluster requires SparseVideo-owned upstream triton_cluster_sparse_attn source at "
                 "src/sparsevideo/kernels/native/adacluster/triton_cluster_sparse_attn.py."
             )
+        if not adacluster["triton_cluster_sparse_attn_topk"].get("source_files"):
+            errors.append(
+                "adacluster requires SparseVideo-owned optimized triton_cluster_sparse_attn_topk source at "
+                "src/sparsevideo/kernels/native/adacluster/triton_cluster_sparse_attn_topk.py."
+            )
         adacluster_runtime = adacluster.get("owned_triton_runtime", {})
         if not (adacluster.get("load_checked") or adacluster_runtime.get("load_checked")):
             errors.append(
@@ -2559,8 +2543,10 @@ def preflight_runtime(
                 "owned_runtime",
                 "flash_kmeans_single",
                 "triton_cluster_sparse_attn",
+                "triton_cluster_sparse_attn_topk",
                 "kmeans_jit_kernels",
                 "cluster_sparse_attn_jit_kernel",
+                "cluster_sparse_attn_topk_jit_kernel",
             ):
                 if not adacluster_runtime.get(attr):
                     missing.append(attr)
@@ -2694,6 +2680,15 @@ def preflight_runtime(
                     "sparse_get_batch_prefill_module",
                 )
             )
+            if method == "radial":
+                required_attrs = required_attrs + (
+                    "sparse_variable_block_sparse_attention_wrapper",
+                    "sparse_canonicalize_torch_dtype",
+                    "sparse_mask_mode",
+                    "sparse_pos_encoding_mode",
+                    "sparse_determine_attention_backend",
+                    "sparse_get_batch_prefill_module",
+                )
             load_error = _flashinfer_load_preflight_error(
                 kernels,
                 required_attrs=required_attrs,
@@ -2708,8 +2703,17 @@ def preflight_runtime(
     if method == "sta":
         sta = kernels["sta_kernels"]
         fastvideo_triton = sta.get("sparsevideo_fastvideo_triton", {})
-        if config.get("STA_mode", "STA_inference") != "STA_inference":
-            errors.append("sta currently supports upstream STA_inference mode only.")
+        sta_mode = config.get("STA_mode", "STA_inference")
+        if sta_mode not in ("STA_inference", "STA_searching"):
+            errors.append(
+                "sta supports STA_inference in pipelines and STA_searching for mask calibration; "
+                "use python -m sparsevideo.methods.sta.search tune for STA_tuning."
+            )
+        if sta_mode == "STA_searching":
+            warnings.append(
+                "sta STA_searching returns dense attention outputs while recording sparse-window losses; "
+                "it is a calibration run, not a speed benchmark."
+            )
         tile_size = _normalize_int_triple(config.get("tile_size", [6, 8, 8]))
         if tile_size != (6, 8, 8):
             errors.append(
@@ -2748,23 +2752,15 @@ def preflight_runtime(
                 "FastVideo STA native shapes are "
                 f"{sorted(STA_NATIVE_SEQ_SHAPES)}."
             )
-            if strict_kernels and model_family in (None, "wan", "hunyuan_video"):
-                errors.append(message)
-            else:
-                warnings.append(message)
+            warnings.append(message)
         elif seq_shape not in STA_NATIVE_SEQ_SHAPES:
             parsed_seq_shape = _parse_normalized_seq_shape(seq_shape)
             if parsed_seq_shape is None:
                 errors.append(f"sta seq_shape={seq_shape} is invalid; expected TxHxW.")
-            elif model_family in ("wan", "hunyuan_video"):
-                errors.append(
-                    f"sta seq_shape={seq_shape} is outside FastVideo STA native shapes "
-                    f"{sorted(STA_NATIVE_SEQ_SHAPES)}; SparseVideo rejects the non-upstream generalized STA fallback."
-                )
             else:
                 warnings.append(
                     f"sta seq_shape={seq_shape} uses SparseVideo's generalized FastVideo Triton STA path "
-                    "for this backbone's inferred tile-padded video layout."
+                    "for this backbone's inferred tile-padded video layout; this is not a FastVideo parity profile."
                 )
         elif seq_shape in STA_NATIVE_SEQ_SHAPES:
             has_hopper = _has_hopper_device(torch_status)
@@ -2825,12 +2821,6 @@ def draft_upstream_layout_error(
 ) -> Optional[str]:
     if not config.get("block_sparse_attention", True):
         return None
-    spatial_divisor = 32 if spec.family == "ltx_video" else 16
-    if height % spatial_divisor != 0 or width % spatial_divisor != 0:
-        return (
-            f"draft upstream sparse path requires height and width divisible by {spatial_divisor} "
-            f"for video patch tokens; got {height}x{width}."
-        )
 
     latent_t, latent_h, latent_w = _draft_estimated_latent_shape(spec, height, width, num_frames)
     pool_h = int(config.get("pool_h", 8))
@@ -2870,39 +2860,9 @@ def draft_upstream_layout_error(
             f"but {spec.family} upstream path expects text_len={expected_text_len}."
         )
 
-    if (
-        spec.family in ("wan", "hunyuan_video")
-        and (latent_h % pool_h != 0 or latent_w % pool_w != 0)
-    ):
-        return (
-            "draft upstream sparse path requires latent_h % pool_h == 0 and "
-            "latent_w % pool_w == 0; got latent shape "
-            f"{latent_t}x{latent_h}x{latent_w}, pool_h={pool_h}, pool_w={pool_w}."
-        )
-
-    if spec.family == "wan":
-        supported = {(21, 32, 48), (21, 48, 80)}
-        if (latent_t, latent_h, latent_w) not in supported:
-            return (
-                "draft upstream Wan sparse path supports latent layouts "
-                "21x32x48 (768x512) or 21x48x80 (1280x768); got "
-                f"{latent_t}x{latent_h}x{latent_w} from {num_frames} frames at {width}x{height}."
-            )
-    elif spec.family == "hunyuan_video":
-        if (latent_t, latent_h, latent_w) != (33, 48, 80):
-            return (
-                "draft upstream Hunyuan sparse path supports latent layout "
-                "33x48x80 (129 frames at 1280x768); got "
-                f"{latent_t}x{latent_h}x{latent_w} from {num_frames} frames at {width}x{height}."
-            )
-    elif spec.family not in ("cogvideox", "ltx_video", "allegro", "mochi", "easyanimate"):
+    if spec.family not in ("wan", "hunyuan_video", "cogvideox", "ltx_video", "allegro", "mochi", "easyanimate"):
         return f"draft is not implemented for {spec.family}."
 
-    if spec.family in ("wan", "hunyuan_video") and video_len % (latent_w * pool_h) != 0:
-        return (
-            "draft upstream sparse path requires visual_len % (latent_w * pool_h) == 0; "
-            f"got visual_len={video_len}, latent_w={latent_w}, pool_h={pool_h}."
-        )
     return None
 
 
@@ -2922,31 +2882,7 @@ def radial_flashinfer_layout_warning(
             f"for video patch tokens; got {height}x{width}."
         )
 
-    block_size = int(config.get("block_size", 128))
-    latent_t, latent_h, latent_w = _radial_estimated_latent_shape(spec, height, width, num_frames)
-    video_len = latent_t * latent_h * latent_w
-    if video_len % block_size == 0:
-        return None
-
-    if spec.key == "wan22-t2v-a14b":
-        upstream_shape = "Wan2.2 uses 77 frames at 1280x768"
-    elif spec.family == "wan":
-        upstream_shape = "Wan2.1 uses 69 frames at 1280x768"
-    else:
-        upstream_shape = "Hunyuan uses 117 frames at 1280x768"
-
-    backend = "Sparge/Sage" if config.get("use_sage_attention") else "FlashInfer"
-    fallback = (
-        "radial use_sage_attention has no SparseVideo FlexAttention fallback for this shape. "
-        if config.get("use_sage_attention")
-        else "SparseVideo requires allow_flex_fallback for the FlexAttention debug path instead of the upstream FlashInfer backend. "
-    )
-    return (
-        f"radial upstream {backend} block-sparse path requires video_len % block_size == 0. "
-        f"Current latent layout is {latent_t}x{latent_h}x{latent_w} "
-        f"(video_len={video_len}, block_size={block_size}), so {fallback}"
-        f"For kernel-parity benchmarking, match the upstream script shape: {upstream_shape}."
-    )
+    return None
 
 
 def _radial_estimated_latent_shape(
@@ -2993,8 +2929,6 @@ def apply_draft_runtime_layout_defaults(
     config: Dict[str, Any],
     user_config: Dict[str, Any],
 ) -> None:
-    if spec.family in ("wan", "hunyuan_video"):
-        return
     latent_t, latent_h, latent_w = _draft_estimated_latent_shape(spec, height, width, num_frames)
     defaults = {
         "latent_h": latent_h,
@@ -3029,24 +2963,22 @@ def sta_layout_preflight_messages(
             "warnings": warnings,
         }
 
+    sta_mode = config.get("STA_mode", "STA_inference")
     mask_strategy_path = config.get("mask_strategy_file_path")
-    if mask_strategy_path is None:
+    if mask_strategy_path is None and sta_mode != "STA_searching":
         message = (
-            "sta STA_inference parity requires an upstream mask_strategy_file_path. "
-            "Running only window_size for every layer/head is a full-window debug path, "
-            "not FastVideo sparse STA inference."
+            "sta STA_inference has no tuned mask_strategy_file_path for this model. "
+            "SparseVideo will use the configured window_size for every layer/head as local STA support; "
+            "this is not a tuned FastVideo sparse strategy."
         )
-        if strict_kernels and spec.family in ("wan", "hunyuan_video"):
-            errors.append(message)
-        else:
-            warnings.append(message)
-    else:
+        warnings.append(message)
+    elif mask_strategy_path is not None:
         try:
             strategy_shape = _sta_mask_strategy_shape(mask_strategy_path)
         except (OSError, RuntimeError, ValueError) as exc:
             errors.append(f"sta could not read mask_strategy_file_path={mask_strategy_path!r}: {exc}")
         else:
-            expected_shape = STA_UPSTREAM_STRATEGY_SHAPES.get(spec.key)
+            expected_shape = STA_STRATEGY_SHAPES.get(spec.key)
             if expected_shape is None and spec.key in STA_UNSUPPORTED_STRATEGY_MODELS:
                 message = (
                     f"sta has no upstream sparse inference mask strategy for {spec.key}. "
@@ -3060,7 +2992,7 @@ def sta_layout_preflight_messages(
             elif expected_shape is not None and strategy_shape != expected_shape:
                 message = (
                     f"sta mask_strategy_file_path shape steps/layers/heads={strategy_shape} does not match "
-                    f"the upstream {spec.key} strategy shape {expected_shape}."
+                    f"the expected {spec.key} strategy shape {expected_shape}."
                 )
                 if strict_kernels:
                     errors.append(message)
@@ -3094,20 +3026,15 @@ def sta_layout_preflight_messages(
                 f"from latent layout {latent_seq_shape}."
             )
             return {"errors": errors, "warnings": warnings}
-        if spec.key == "wan22-t2v-a14b":
-            upstream_shape = "Wan2.2 uses 77 frames at 1280x768"
-        elif spec.family == "wan":
-            upstream_shape = "Wan/FastVideo native STA uses 69 frames at 1280x768"
-        else:
-            upstream_shape = "Hunyuan/FastVideo native STA uses 117 frames at 1280x768"
         message = (
             "sta upstream FastVideo native path only covers latent layouts "
             f"{sorted(STA_NATIVE_SEQ_SHAPES)}. Current latent layout is {latent_seq_shape} "
-            f"and tile-padded canvas is {padded_seq_shape}, so SparseVideo rejects the "
-            "non-upstream generalized STA fallback instead of treating it as a FastVideo STA profile. "
-            f"For kernel-parity benchmarking, match the upstream script shape: {upstream_shape}."
+            f"and tile-padded canvas is {padded_seq_shape}, so SparseVideo will use the "
+            "generalized FastVideo Triton STA path with padded-border dense repair for this target shape. "
+            "Do not treat this as native FastVideo profile parity unless the requested target has matching "
+            "quality and speed evidence."
         )
-        errors.append(message)
+        warnings.append(message)
 
     return {"errors": errors, "warnings": warnings}
 
@@ -3117,10 +3044,20 @@ def model_quality_warnings(spec: ModelSpec, height: int, width: int) -> list[str
     if spec.key == "wan21-t2v-1.3b" and int(height) >= 720:
         warnings.append(
             "Wan2.1 T2V 1.3B is a 480P model in the Wan README; 720P is explicitly less "
-            "stable and is not a reliable visual-quality baseline. Use 832x480 for 1.3B "
-            "quality checks, or use Wan 14B/A14B for 720P quality baselines."
+            "stable and should be treated as target-shape stress evidence rather than a standalone "
+            "model-quality baseline."
         )
     return warnings
+
+
+def model_shape_preflight_errors(spec: ModelSpec, height: int, width: int) -> list[str]:
+    if spec.family == "allegro" and (int(height) % 16 != 0 or int(width) % 16 != 0):
+        return [
+            "allegro requires height and width divisible by 16 for the VAE/transformer "
+            f"patch grid; got {int(height)}x{int(width)}. Use a nearby shape such as "
+            "--height 352 --width 640 or --height 320 --width 576."
+        ]
+    return []
 
 
 def default_num_frames(duration_seconds: float, fps: int) -> int:
@@ -3364,6 +3301,26 @@ def load_pipeline(
     height: int,
     flow_shift: Optional[float],
 ):
+    def pipeline_load_kwargs(**kwargs):
+        import tempfile
+
+        temp_root = REPO_ROOT / ".tmp_offload"
+        temp_root.mkdir(parents=True, exist_ok=True)
+        os.environ.setdefault("TMPDIR", str(temp_root))
+        tempfile.tempdir = str(temp_root)
+        offload_folder = temp_root / "diffusers_state_dict"
+        offload_folder.mkdir(parents=True, exist_ok=True)
+        kwargs.setdefault("low_cpu_mem_usage", True)
+        if os.environ.get("SPARSEVIDEO_OFFLOAD_STATE_DICT") == "1":
+            kwargs.setdefault("offload_state_dict", True)
+            kwargs.setdefault("offload_folder", str(offload_folder))
+        device_map = os.environ.get("SPARSEVIDEO_DEVICE_MAP")
+        if device_map:
+            kwargs.setdefault("device_map", device_map)
+        if local_files_only:
+            kwargs["local_files_only"] = True
+        return kwargs
+
     if spec.pipeline_class == "UnavailablePipeline":
         raise RuntimeError(spec.unsupported_reason or f"{spec.key} has no configured pipeline class")
     if spec.pipeline_class == "WanPipeline":
@@ -3383,8 +3340,7 @@ def load_pipeline(
         pipe = WanPipeline.from_pretrained(
             model_id,
             vae=vae,
-            torch_dtype=torch_dtype,
-            **kwargs,
+            **pipeline_load_kwargs(torch_dtype=torch_dtype),
         )
         pipe.scheduler = UniPCMultistepScheduler.from_config(
             pipe.scheduler.config,
@@ -3408,8 +3364,7 @@ def load_pipeline(
         pipe = WanImageToVideoPipeline.from_pretrained(
             model_id,
             vae=vae,
-            torch_dtype=torch_dtype,
-            **kwargs,
+            **pipeline_load_kwargs(torch_dtype=torch_dtype),
         )
         pipe.scheduler = UniPCMultistepScheduler.from_config(
             pipe.scheduler.config,
@@ -3434,8 +3389,7 @@ def load_pipeline(
         pipe = cls.from_pretrained(
             model_id,
             vae=vae,
-            torch_dtype=torch_dtype,
-            **kwargs,
+            **pipeline_load_kwargs(torch_dtype=torch_dtype),
         )
         pipe.scheduler = UniPCMultistepScheduler.from_config(
             pipe.scheduler.config,
@@ -3468,8 +3422,7 @@ def load_pipeline(
         pipe = cls.from_pretrained(
             model_id,
             vae=vae,
-            torch_dtype=torch_dtype,
-            **kwargs,
+            **pipeline_load_kwargs(torch_dtype=torch_dtype),
         )
         pipe.scheduler = UniPCMultistepScheduler.from_config(
             pipe.scheduler.config,
@@ -3558,7 +3511,7 @@ def load_pipeline(
                 tokenizer=tokenizer,
                 **kwargs,
             )
-    return cls.from_pretrained(model_id, **kwargs)
+    return cls.from_pretrained(model_id, **pipeline_load_kwargs(**kwargs))
 
 
 def prepare_pipeline(
@@ -3592,6 +3545,8 @@ def prepare_pipeline(
                 pipe.enable_model_cpu_offload()
         else:
             raise RuntimeError(f"Unsupported cpu_offload_mode={cpu_offload_mode!r}")
+    elif getattr(pipe, "hf_device_map", None) is not None:
+        return
     else:
         pipe.to(device)
 
@@ -3753,6 +3708,82 @@ def append_metrics(path: Path, payload: Dict[str, Any]) -> None:
         f.write(json.dumps(json_ready(payload), sort_keys=True) + "\n")
 
 
+def print_metrics_json(payload: Dict[str, Any]) -> None:
+    print(json.dumps(json_ready(payload), indent=2, sort_keys=True))
+
+
+def terminal_one_line(value: Any) -> str:
+    if value is None:
+        return ""
+    return " ".join(str(value).split())
+
+
+def append_terminal_message(messages: List[str], value: Any) -> None:
+    text = terminal_one_line(value)
+    if text and text not in messages:
+        messages.append(text)
+
+
+def collect_runtime_messages(payload: Dict[str, Any], key: str) -> List[str]:
+    runtime = payload.get("runtime") or {}
+    messages: List[str] = []
+    for section_name in ("preflight", "generation_checks"):
+        section = runtime.get(section_name) or {}
+        for message in section.get(key) or []:
+            append_terminal_message(messages, message)
+    if key == "errors" and not messages:
+        append_terminal_message(messages, payload.get("error"))
+    return messages
+
+
+def print_run_summary(args: argparse.Namespace, payload: Dict[str, Any]) -> None:
+    timings = payload.get("timings") or {}
+    lines = [
+        f"status={payload.get('status')}",
+        f"model={payload.get('model')}",
+        f"method={payload.get('method')}",
+    ]
+    if payload.get("failed_stage"):
+        lines.append(f"failed_stage={payload['failed_stage']}")
+    if payload.get("error_type"):
+        lines.append(f"error_type={payload['error_type']}")
+    output_file = payload.get("output_file")
+    lines.append(f"output_file={output_file if output_file else '<skip-decode>'}")
+    if getattr(args, "dry_run", False):
+        lines.append("metrics_file=<not written in dry-run>")
+    else:
+        lines.append(f"metrics_file={args.metrics_file}")
+    if "generate_sec" in timings:
+        lines.append(f"generate_sec={timings['generate_sec']:.3f}")
+    if "total_sec" in timings:
+        lines.append(f"total_sec={timings['total_sec']:.3f}")
+    if "seconds_per_frame" in payload:
+        lines.append(f"seconds_per_frame={payload['seconds_per_frame']:.3f}")
+    if "cuda_peak_allocated_gb" in payload:
+        lines.append(f"cuda_peak_allocated_gb={payload['cuda_peak_allocated_gb']:.3f}")
+    if "cuda_peak_reserved_gb" in payload:
+        lines.append(f"cuda_peak_reserved_gb={payload['cuda_peak_reserved_gb']:.3f}")
+    errors = collect_runtime_messages(payload, "errors")
+    warnings = collect_runtime_messages(payload, "warnings")
+    for index, error in enumerate(errors[:4], start=1):
+        lines.append(f"error[{index}]={error}")
+    if len(errors) > 4:
+        lines.append(f"error_more={len(errors) - 4}")
+    for index, warning in enumerate(warnings[:3], start=1):
+        lines.append(f"warning[{index}]={warning}")
+    if len(warnings) > 3:
+        lines.append(f"warning_more={len(warnings) - 3}")
+    lines.append("details=use --print-json for the full metrics/config/runtime payload")
+    print("\n".join(lines))
+
+
+def print_final_run_metrics(args: argparse.Namespace, payload: Dict[str, Any]) -> None:
+    if getattr(args, "print_json", False):
+        print_metrics_json(payload)
+        return
+    print_run_summary(args, payload)
+
+
 def sparsevideo_source_fingerprints(method: str) -> Dict[str, Any]:
     if method != "flashomni":
         return {}
@@ -3816,6 +3847,19 @@ def quiet_runtime_status_call(fn, *args, **kwargs):
         return fn(*args, **kwargs)
 
 
+def configure_torch_compile_logging(*, verbose_compile_logs: bool) -> None:
+    if verbose_compile_logs:
+        return
+
+    import torch._inductor.config as inductor_config
+    import torch._inductor.select_algorithm as select_algorithm
+
+    logging.getLogger("torch._inductor.select_algorithm").setLevel(logging.CRITICAL)
+    logging.getLogger("torch._inductor.runtime.triton_heuristics").setLevel(logging.CRITICAL)
+    inductor_config.autotune_num_choices_displayed = 0
+    select_algorithm.PRINT_AUTOTUNE = False
+
+
 def cuda_memory_gb(torch_module) -> Dict[str, float]:
     if not torch_module.cuda.is_available():
         return {}
@@ -3876,7 +3920,11 @@ def _runtime_count(value: Any) -> int:
 
 def expected_sparse_runtime_backends(method: str) -> set[str]:
     return {
-        "adacluster": {"triton_cluster_sparse_attn"},
+        "adacluster": {
+            "adacluster_flashinfer",
+            "triton_cluster_sparse_attn",
+            "triton_cluster_sparse_attn_topk",
+        },
         "draft": {"mit_block_sparse", "triton_debug_fallback"},
         "flashomni": {
             "flashomni_explicit_upstream",
@@ -3925,6 +3973,18 @@ def validate_sparse_runtime_dispatch(
         )
     else:
         dispatch_counts = method_runtime.get("dispatch_counts") or {}
+        if method == "sta" and method_config.get("STA_mode") == "STA_searching":
+            search_calls = _runtime_count(dispatch_counts.get("search"))
+            if search_calls > 0:
+                return None
+            total_calls = _runtime_count(method_runtime.get("total_calls"))
+            message = (
+                "sta STA_searching did not record search dispatch during calibration; "
+                f"dispatch_counts={dispatch_counts}, total_calls={total_calls}."
+            )
+            if strict_kernels:
+                raise RuntimeError(message)
+            return message
         sparse_calls = _runtime_count(dispatch_counts.get("sparse"))
         if sparse_calls > 0:
             backend_counts = method_runtime.get("backend_counts") or {}
@@ -4087,7 +4147,7 @@ def run(args: argparse.Namespace) -> int:
         }
         if not args.dry_run:
             append_metrics(args.metrics_file, failed_metrics)
-        print(json.dumps(json_ready(failed_metrics), indent=2, sort_keys=True))
+        print_final_run_metrics(args, failed_metrics)
         return 1
     height, width, fps, num_frames, steps = apply_profile_runtime_defaults(
         args, profile, fps, num_frames, steps,
@@ -4184,7 +4244,7 @@ def run(args: argparse.Namespace) -> int:
         }
         if not args.dry_run:
             append_metrics(args.metrics_file, failed_metrics)
-        print(json.dumps(json_ready(failed_metrics), indent=2, sort_keys=True))
+        print_final_run_metrics(args, failed_metrics)
         return 1
     from sparsevideo._runtime import (
         adacluster_load_status,
@@ -4239,7 +4299,7 @@ def run(args: argparse.Namespace) -> int:
     needs_flashinfer_load = (
         not unsupported
         and (
-            args.method in ("radial", "svg2")
+            args.method in ("adacluster", "radial", "svg2")
             or (args.method == "svoo" and method_config.get("sparse_backend") == "flashinfer")
         )
     )
@@ -4346,6 +4406,9 @@ def run(args: argparse.Namespace) -> int:
         )
         runtime_status["preflight"]["errors"].extend(sta_messages["errors"])
         runtime_status["preflight"]["warnings"].extend(sta_messages["warnings"])
+    runtime_status["preflight"]["errors"].extend(
+        model_shape_preflight_errors(spec, height, width)
+    )
     runtime_status["preflight"]["warnings"].extend(
         model_quality_warnings(spec, height, width)
     )
@@ -4392,7 +4455,7 @@ def run(args: argparse.Namespace) -> int:
         if unsupported:
             base_metrics.update(status="unsupported_dry_run")
             base_metrics["error"] = unsupported_sparse_method_message(spec, args.method)
-            print(json.dumps(json_ready(base_metrics), indent=2, sort_keys=True))
+            print_final_run_metrics(args, base_metrics)
             return 0
         if runtime_status["preflight"]["errors"]:
             base_metrics.update(
@@ -4402,10 +4465,10 @@ def run(args: argparse.Namespace) -> int:
                 error_type="RuntimeError",
                 error="; ".join(runtime_status["preflight"]["errors"]),
             )
-            print(json.dumps(json_ready(base_metrics), indent=2, sort_keys=True))
+            print_final_run_metrics(args, base_metrics)
             return 1
         base_metrics.update(status="dry_run")
-        print(json.dumps(json_ready(base_metrics), indent=2, sort_keys=True))
+        print_final_run_metrics(args, base_metrics)
         return 0
 
     if unsupported:
@@ -4414,7 +4477,7 @@ def run(args: argparse.Namespace) -> int:
             error=unsupported_sparse_method_message(spec, args.method),
         )
         append_metrics(args.metrics_file, base_metrics)
-        print(json.dumps(json_ready(base_metrics), indent=2, sort_keys=True))
+        print_final_run_metrics(args, base_metrics)
         return 2
 
     if runtime_status["preflight"]["errors"]:
@@ -4426,7 +4489,7 @@ def run(args: argparse.Namespace) -> int:
             error="; ".join(runtime_status["preflight"]["errors"]),
         )
         append_metrics(args.metrics_file, base_metrics)
-        print(json.dumps(json_ready(base_metrics), indent=2, sort_keys=True))
+        print_final_run_metrics(args, base_metrics)
         return 1
 
     stage = "start"
@@ -4439,6 +4502,7 @@ def run(args: argparse.Namespace) -> int:
         with redirect_stdout(sys.stderr):
             import torch
             from diffusers.utils import export_to_video
+        configure_torch_compile_logging(verbose_compile_logs=args.verbose_compile_logs)
         if args.device.startswith("cuda") and not torch.cuda.is_available():
             raise RuntimeError(
                 "CUDA was requested but torch.cuda.is_available() is False. "
@@ -4512,9 +4576,6 @@ def run(args: argparse.Namespace) -> int:
                     method_config["prompt_length"] = infer_hunyuan_prompt_length(
                         pipe, prompt, int(method_config["context_length"]),
                     )
-            first_times_resolution = resolve_scheduler_first_times_fp(pipe, args.method, method_config, steps)
-            if first_times_resolution is not None:
-                base_metrics["method_config_resolution"] = first_times_resolution
             handle = sparsevideo.apply_sparse_attention(pipe, method=args.method, config=method_config)
             base_metrics["sparse_attention_handle"] = sparse_attention_handle_summary(handle)
             sync_if_cuda(torch, args.device)
@@ -4554,7 +4615,7 @@ def run(args: argparse.Namespace) -> int:
                 handle.restore()
             base_metrics["sparse_attention_handle_after_restore"] = sparse_attention_handle_summary(handle)
             append_metrics(args.metrics_file, base_metrics)
-            print(json.dumps(json_ready(base_metrics), indent=2, sort_keys=True))
+            print_final_run_metrics(args, base_metrics)
             return 0
 
         generator_device = args.device if args.device.startswith("cuda") else "cpu"
@@ -4624,7 +4685,7 @@ def run(args: argparse.Namespace) -> int:
             **cuda_memory_gb(torch),
         )
         append_metrics(args.metrics_file, base_metrics)
-        print(json.dumps(json_ready(base_metrics), indent=2, sort_keys=True))
+        print_final_run_metrics(args, base_metrics)
         return 0
     except Exception as exc:
         restore_error = None
@@ -4647,8 +4708,9 @@ def run(args: argparse.Namespace) -> int:
         if restore_error is not None:
             base_metrics["restore_error"] = restore_error
         append_metrics(args.metrics_file, base_metrics)
-        traceback.print_exc()
-        print(json.dumps(json_ready(base_metrics), indent=2, sort_keys=True))
+        if args.print_json:
+            traceback.print_exc()
+        print_final_run_metrics(args, base_metrics)
         return 1
 
 

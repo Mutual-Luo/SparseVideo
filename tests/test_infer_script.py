@@ -4,6 +4,7 @@ import json
 import importlib.util
 import os
 from pathlib import Path
+import shlex
 import subprocess
 import sys
 import types
@@ -29,7 +30,7 @@ def _run_infer_dry_run(tmp_path: Path, *args: str) -> dict:
     env = os.environ.copy()
     env["SVOO_CACHE_ROOT"] = str(tmp_path / "svoo-cache")
     result = subprocess.run(
-        [sys.executable, str(SCRIPT), *args, "--dry-run"],
+        [sys.executable, str(SCRIPT), *args, "--dry-run", "--print-json"],
         cwd=REPO_ROOT,
         env=env,
         check=True,
@@ -43,7 +44,7 @@ def _run_infer_dry_run_unchecked(tmp_path: Path, *args: str) -> tuple[int, dict]
     env = os.environ.copy()
     env["SVOO_CACHE_ROOT"] = str(tmp_path / "svoo-cache")
     result = subprocess.run(
-        [sys.executable, str(SCRIPT), *args, "--dry-run"],
+        [sys.executable, str(SCRIPT), *args, "--dry-run", "--print-json"],
         cwd=REPO_ROOT,
         env=env,
         check=False,
@@ -70,6 +71,7 @@ def _run_infer(tmp_path: Path, *args: str) -> subprocess.CompletedProcess[str]:
             sys.executable,
             str(SCRIPT),
             *args,
+            "--print-json",
             "--metrics-file",
             str(tmp_path / "metrics.jsonl"),
         ],
@@ -79,6 +81,66 @@ def _run_infer(tmp_path: Path, *args: str) -> subprocess.CompletedProcess[str]:
         capture_output=True,
         text=True,
     )
+
+
+def test_print_run_summary_omits_full_config(capsys, tmp_path):
+    infer = _load_infer_module()
+    args = types.SimpleNamespace(metrics_file=tmp_path / "metrics.jsonl")
+    infer.print_run_summary(
+        args,
+        {
+            "status": "ok",
+            "model": "wan21-t2v-1.3b",
+            "method": "svg1",
+            "method_config": {"num_sampled_rows": 64},
+            "output_file": str(tmp_path / "sample.mp4"),
+            "timings": {"generate_sec": 12.3456, "total_sec": 14.5678},
+            "seconds_per_frame": 0.1524,
+            "cuda_peak_allocated_gb": 1.25,
+            "cuda_peak_reserved_gb": 2.5,
+        },
+    )
+
+    stdout = capsys.readouterr().out
+    assert "status=ok" in stdout
+    assert f"output_file={tmp_path / 'sample.mp4'}" in stdout
+    assert f"metrics_file={tmp_path / 'metrics.jsonl'}" in stdout
+    assert "generate_sec=12.346" in stdout
+    assert "method_config" not in stdout
+
+
+def test_default_preflight_failure_stdout_is_concise(tmp_path):
+    env = os.environ.copy()
+    env["SVOO_CACHE_ROOT"] = str(tmp_path / "svoo-cache")
+    metrics_file = tmp_path / "metrics.jsonl"
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(SCRIPT),
+            "--model",
+            "wan1.3b",
+            "--method",
+            "svoo",
+            "--device",
+            "cpu",
+            "--metrics-file",
+            str(metrics_file),
+        ],
+        cwd=REPO_ROOT,
+        env=env,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 1
+    assert "status=failed" in result.stdout
+    assert "failed_stage=preflight" in result.stdout
+    assert "Sparse methods require --device cuda" in result.stdout
+    assert "method_config" not in result.stdout
+    assert metrics_file.exists()
+    with pytest.raises(json.JSONDecodeError):
+        json.loads(result.stdout)
 
 
 def _draft_mit_backend_ready(payload: dict) -> bool:
@@ -112,6 +174,7 @@ def _radial_runtime_ready() -> dict:
             "radial_is_dense_layer_or_timestep": True,
             "radial_window_width": True,
             "build_bsr_from_mask": True,
+            "variable_block_sparse_attn": True,
             "bsr_sparse_attn": True,
             "ensure_cuda_home_for_flashinfer_jit": True,
         },
@@ -323,6 +386,9 @@ def test_infer_dry_run_allows_new_backbone_spargeattn_sparse_processors(tmp_path
     assert payload["status"] == "dry_run"
     assert payload["model"] == resolved
     assert payload["method"] == "spargeattn"
+    if model == "allegro":
+        assert payload["method_config"]["topk"] == 0.5
+        assert payload["method_config"]["dense_warmup_step_ratio"] == 0.1
     assert payload["runtime"]["preflight"]["errors"] == []
 
 
@@ -394,6 +460,172 @@ def test_infer_dry_run_allows_new_backbone_sta_sparse_processors(tmp_path, model
     assert payload["model"] == resolved
     assert payload["method"] == "sta"
     assert payload["runtime"]["preflight"]["errors"] == []
+
+
+def test_sta_strategy_shapes_cover_sparsevideo_backbones():
+    infer = _load_infer_module()
+    from sparsevideo.methods.sta.search import MODEL_STRATEGY_SHAPES
+
+    sta_families = (
+        "wan",
+        "hunyuan_video",
+        "cogvideox",
+        "ltx_video",
+        "allegro",
+        "mochi",
+        "easyanimate",
+    )
+    expected = {
+        key
+        for key, spec in infer.MODEL_SPECS.items()
+        if spec.family in sta_families
+    }
+
+    assert expected <= set(infer.STA_STRATEGY_SHAPES)
+    assert infer.STA_STRATEGY_SHAPES == MODEL_STRATEGY_SHAPES
+    assert infer.STA_UNSUPPORTED_STRATEGY_MODELS == {}
+
+    strategy_root = REPO_ROOT / "src" / "sparsevideo" / "methods" / "sta" / "mask_strategies"
+    missing = []
+    for model_key in MODEL_STRATEGY_SHAPES:
+        safe_key = "".join(ch if ch.isalnum() else "_" for ch in model_key.lower()).strip("_")
+        path = strategy_root / f"mask_strategy_{safe_key}.json"
+        if not path.exists():
+            missing.append(path.name)
+    assert missing == []
+
+
+def test_inference_sh_has_runnable_sta_line_for_every_backbone():
+    infer = _load_infer_module()
+    script = REPO_ROOT / "scripts" / "inference.sh"
+    sta_families = (
+        "wan",
+        "hunyuan_video",
+        "cogvideox",
+        "ltx_video",
+        "allegro",
+        "mochi",
+        "easyanimate",
+    )
+    expected = {
+        spec.key
+        for spec in infer.MODEL_SPECS.values()
+        if spec.family in sta_families
+    }
+    seen = set()
+    missing_inputs = []
+
+    for lineno, line in enumerate(script.read_text(encoding="utf-8").splitlines(), 1):
+        if "--method sta" not in line or line.lstrip().startswith("#"):
+            continue
+        tokens = shlex.split(line, comments=True, posix=True)
+        while tokens and "=" in tokens[0] and not tokens[0].startswith("--"):
+            tokens.pop(0)
+        model = tokens[tokens.index("--model") + 1]
+        seen.add(infer.MODEL_ALIASES[model])
+        assert "/path/to/" not in line
+        for flag in ("--image", "--pose-video", "--face-video", "--reference-video", "--mask-video"):
+            if flag in tokens:
+                value = tokens[tokens.index(flag) + 1]
+                if not (REPO_ROOT / value).exists():
+                    missing_inputs.append((lineno, flag, value))
+
+    assert seen == expected
+    assert missing_inputs == []
+
+
+def test_inference_sh_has_runnable_inputs_for_every_command():
+    infer = _load_infer_module()
+    script = REPO_ROOT / "scripts" / "inference.sh"
+    model_families = (
+        "wan",
+        "hunyuan_video",
+        "cogvideox",
+        "ltx_video",
+        "allegro",
+        "mochi",
+        "easyanimate",
+    )
+    expected_models = {
+        spec.key
+        for spec in infer.MODEL_SPECS.values()
+        if spec.family in model_families
+    }
+    expected_grid = {
+        (model, method)
+        for model in expected_models
+        for method in infer.METHODS
+    }
+    seen_grid = set()
+    missing_inputs = []
+
+    for lineno, line in enumerate(script.read_text(encoding="utf-8").splitlines(), 1):
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        assert "/path/to/" not in line
+        tokens = shlex.split(line, comments=True, posix=True)
+        while tokens and "=" in tokens[0] and not tokens[0].startswith("--"):
+            tokens.pop(0)
+        assert tokens[:2] == ["python", "scripts/infer.py"]
+        model_arg = tokens[tokens.index("--model") + 1]
+        method = tokens[tokens.index("--method") + 1]
+        model = infer.MODEL_ALIASES[model_arg]
+        spec = infer.MODEL_SPECS[model]
+        seen_grid.add((model, method))
+
+        for flag in ("--image", "--pose-video", "--face-video", "--reference-video", "--mask-video"):
+            if flag in tokens:
+                value = tokens[tokens.index(flag) + 1]
+                if not (REPO_ROOT / value).exists():
+                    missing_inputs.append((lineno, flag, value))
+
+        if spec.pipeline_class in (
+            "WanImageToVideoPipeline",
+            "SkyReelsV2ImageToVideoPipeline",
+            "HunyuanVideoImageToVideoPipeline",
+            "CogVideoXImageToVideoPipeline",
+            "LTXImageToVideoPipeline",
+        ):
+            assert "--image" in tokens
+        if spec.pipeline_class == "WanAnimatePipeline":
+            assert "--image" in tokens
+            assert "--pose-video" in tokens
+            assert "--face-video" in tokens
+        if spec.pipeline_class == "WanVACEPipeline":
+            assert "--reference-video" in tokens
+            assert "--mask-video" in tokens
+
+    assert seen_grid == expected_grid
+    assert missing_inputs == []
+
+
+def test_sta_new_backbone_rejects_wrong_strategy_shape(tmp_path):
+    payload = _run_infer_dry_run_preflight_failure(
+        tmp_path,
+        "--model", "cogvideox",
+        "--method", "sta",
+        "--method-config", "mask_strategy_file_path=src/sparsevideo/methods/sta/mask_strategies/mask_strategy_wan.json",
+    )
+
+    assert any(
+        "expected cogvideox-t2v strategy shape (50, 42, 48)" in item
+        for item in payload["runtime"]["preflight"]["errors"]
+    )
+
+
+def test_sta_wan_variant_uses_owned_tuned_mask(tmp_path):
+    payload = _run_infer_dry_run(tmp_path, "--model", "wan22", "--method", "sta")
+
+    assert payload["status"] == "dry_run"
+    assert payload["runtime"]["preflight"]["errors"] == []
+    assert payload["method_config"]["mask_strategy_file_path"].endswith(
+        "mask_strategy_wan22_t2v_a14b.json"
+    )
+    assert not any(
+        "no tuned mask_strategy_file_path" in item
+        for item in payload["runtime"]["preflight"]["warnings"]
+    )
 
 
 @pytest.mark.parametrize(
@@ -772,8 +1004,10 @@ def test_infer_dry_run_resolves_hunyuan_svg2_upstream_defaults(tmp_path):
 
     assert payload["status"] == "dry_run"
     assert payload["num_frames"] == 129
-    assert cfg["first_times_fp"] == 0.1
-    assert cfg["first_layers_fp"] == 0.03
+    assert cfg["dense_warmup_step_ratio"] == 0.1
+    assert cfg["dense_warmup_layer_ratio"] == 0.03
+    assert "first_times_fp" not in cfg
+    assert "first_layers_fp" not in cfg
     assert cfg["num_q_centroids"] == 400
     assert cfg["num_k_centroids"] == 1000
     assert cfg["zero_step_kmeans_init"] is True
@@ -821,8 +1055,10 @@ def test_infer_dry_run_resolves_wan_svg1_upstream_defaults(tmp_path):
 
     assert payload["status"] == "dry_run"
     assert payload["wan_flow_shift"] == 5.0
-    assert cfg["first_times_fp"] == 0.2
-    assert cfg["first_layers_fp"] == 0.03
+    assert cfg["dense_warmup_step_ratio"] == 0.1
+    assert cfg["dense_warmup_layer_ratio"] == 0.03
+    assert "first_times_fp" not in cfg
+    assert "first_layers_fp" not in cfg
     assert cfg["num_sampled_rows"] == 64
     assert cfg["sparsity"] == 0.3
     svg1_runtime = payload["runtime"]["optional_kernels"]["svg1_kernels"]["owned_triton_runtime"]
@@ -910,6 +1146,7 @@ def test_infer_dry_run_resolves_wan_adacluster_fixed_cluster_defaults(tmp_path):
     assert adacluster_runtime["owned_runtime"] is True
     assert adacluster_runtime["flash_kmeans_single"] is True
     assert adacluster_runtime["triton_cluster_sparse_attn"] is True
+    assert adacluster_runtime["triton_cluster_sparse_attn_topk"] is True
 
 
 def test_adacluster_upstream_profile_uses_wan_runwan_reference(tmp_path):
@@ -961,14 +1198,27 @@ def test_adacluster_upstream_profile_uses_hunyuan_reference(tmp_path):
     assert payload["profile_overrides"]["source"].endswith("Adacluster/runhunyuan/run_hunyuan.py")
 
 
-def test_infer_dry_run_resolves_draft_defaults_and_layout_gap(tmp_path):
-    payload = _run_infer_dry_run_preflight_failure(tmp_path, "--model", "wan1.3b", "--method", "draft")
+def test_infer_dry_run_resolves_draft_defaults_for_default_target_shape(tmp_path):
+    returncode, payload = _run_infer_dry_run_unchecked(tmp_path, "--model", "wan1.3b", "--method", "draft")
     cfg = payload["method_config"]
 
+    assert payload["height"] == 720
+    assert payload["width"] == 1280
+    assert payload["num_frames"] == 81
     assert cfg["pool_h"] == 8
     assert cfg["pool_w"] == 16
     assert cfg["sparsity_ratio"] == 0.75
-    assert any("draft upstream sparse path requires latent_h" in item for item in payload["runtime"]["preflight"]["errors"])
+    assert cfg["latent_h"] == 45
+    assert cfg["latent_w"] == 80
+    assert cfg["visual_len"] == 75_600
+    errors = payload["runtime"]["preflight"]["errors"]
+    assert not any("draft upstream sparse path requires latent_h" in item for item in errors)
+    if _draft_mit_backend_ready(payload):
+        assert returncode == 0
+        assert errors == []
+    else:
+        assert returncode == 1
+        assert any("MIT Han Lab Block-Sparse-Attention" in item for item in errors)
 
 
 def test_infer_dry_run_resolves_radial_upstream_defaults(tmp_path):
@@ -1499,14 +1749,27 @@ def test_draft_debug_fallback_sets_local_triton_switch(tmp_path):
         assert any("debug fallback only" in item for item in payload["runtime"]["preflight"]["warnings"])
 
 
-def test_infer_dry_run_resolves_hunyuan_draft_defaults_and_layout_gap(tmp_path):
-    payload = _run_infer_dry_run_preflight_failure(tmp_path, "--model", "hunyuan", "--method", "draft")
+def test_infer_dry_run_resolves_hunyuan_draft_defaults_for_default_target_shape(tmp_path):
+    returncode, payload = _run_infer_dry_run_unchecked(tmp_path, "--model", "hunyuan", "--method", "draft")
     cfg = payload["method_config"]
 
+    assert payload["height"] == 720
+    assert payload["width"] == 1280
+    assert payload["num_frames"] == 129
     assert cfg["pool_h"] == 8
     assert cfg["pool_w"] == 16
     assert cfg["sparsity_ratio"] == 0.9
-    assert any("draft upstream latent_h config expects 48" in item for item in payload["runtime"]["preflight"]["errors"])
+    assert cfg["latent_h"] == 45
+    assert cfg["latent_w"] == 80
+    assert cfg["visual_len"] == 118_800
+    errors = payload["runtime"]["preflight"]["errors"]
+    assert not any("draft upstream latent_h config expects 48" in item for item in errors)
+    if _draft_mit_backend_ready(payload):
+        assert returncode == 0
+        assert errors == []
+    else:
+        assert returncode == 1
+        assert any("MIT Han Lab Block-Sparse-Attention" in item for item in errors)
 
 
 def test_draft_layout_preflight_accepts_upstream_hunyuan_diffusers_shape():
@@ -2859,6 +3122,17 @@ def test_preflight_requires_radial_loaded_runtime_apis():
     assert any("radial_bsr_mask" in error for error in preflight["errors"])
 
 
+def test_infer_dry_run_allows_default_wan_radial_partial_block_shape(tmp_path):
+    payload = _run_infer_dry_run(tmp_path, "--model", "wan1.3b", "--method", "radial")
+
+    assert payload["status"] == "dry_run"
+    assert payload["height"] == 720
+    assert payload["width"] == 1280
+    assert payload["num_frames"] == 81
+    assert payload["method_config"]["allow_flex_fallback"] is False
+    assert payload["runtime"]["preflight"]["errors"] == []
+
+
 def test_preflight_reports_radial_runtime_import_failure():
     infer = _load_infer_module()
     runtime = {
@@ -3038,7 +3312,7 @@ def test_preflight_rejects_radial_sageattention_invalid_env_root_even_when_owned
     assert any("SPARSEVIDEO_SAGEATTENTION_ROOT inside training_free" in error for error in preflight["errors"])
 
 
-def test_radial_use_sage_shape_gap_is_a_preflight_error():
+def test_radial_use_sage_partial_block_shape_is_allowed_by_preflight():
     infer = _load_infer_module()
     message = infer.radial_flashinfer_layout_warning(
         infer.MODEL_SPECS["wan21-t2v-1.3b"],
@@ -3048,23 +3322,23 @@ def test_radial_use_sage_shape_gap_is_a_preflight_error():
         config={"block_size": 128, "use_sage_attention": True},
     )
 
-    assert "Sparge/Sage" in message
-    assert "no SparseVideo FlexAttention fallback" in message
+    assert message is None
 
 
-def test_infer_dry_run_reports_sta_native_shape_boundary(tmp_path):
-    payload = _run_infer_dry_run_preflight_failure(tmp_path, "--model", "wan1.3b", "--method", "sta")
+def test_infer_dry_run_warns_for_sta_generalized_wan_shape(tmp_path):
+    payload = _run_infer_dry_run(tmp_path, "--model", "wan1.3b", "--method", "sta")
     cfg = payload["method_config"]
+    warnings = payload["runtime"]["preflight"]["warnings"]
 
     assert cfg["tile_size"] == [6, 8, 8]
     assert cfg["window_size"] == [3, 6, 10]
     assert cfg["has_text"] is False
     assert cfg["STA_mode"] == "STA_inference"
-    assert cfg["mask_strategy_file_path"] is None
-    assert any("STA_inference parity requires an upstream mask_strategy_file_path" in item for item in payload["runtime"]["preflight"]["errors"])
-    assert any("FastVideo STA native shapes" in item for item in payload["runtime"]["preflight"]["errors"])
-    assert any("Current latent layout is 21x45x80" in item for item in payload["runtime"]["preflight"]["errors"])
-    assert any("tile-padded canvas is 24x48x80" in item for item in payload["runtime"]["preflight"]["errors"])
+    assert cfg["mask_strategy_file_path"].endswith("mask_strategy_wan21_t2v_1_3b.json")
+    assert payload["runtime"]["preflight"]["errors"] == []
+    assert any("FastVideo STA native shapes" in item for item in warnings)
+    assert any("Current latent layout is 21x45x80" in item for item in warnings)
+    assert any("tile-padded canvas is 24x48x80" in item for item in warnings)
 
 
 def test_sta_upstream_profile_sets_native_wan_shape(tmp_path):
@@ -3080,7 +3354,7 @@ def test_sta_upstream_profile_sets_native_wan_shape(tmp_path):
     assert payload["width"] == 1280
     assert payload["num_frames"] == 69
     assert cfg["seq_shape"] == "18x48x80"
-    assert cfg["mask_strategy_file_path"].endswith("mask_strategy_wan.json")
+    assert cfg["mask_strategy_file_path"].endswith("mask_strategy_wan21_t2v_14b.json")
     assert payload["profile_overrides"]["source"].endswith("FastVideo/docs/attention/sta/index.md")
     assert not any("Current latent layout is 21x45x80" in item for item in payload["runtime"]["preflight"]["errors"])
     assert not any("seq_shape is not set" in item for item in payload["runtime"]["preflight"]["errors"])
@@ -3100,7 +3374,7 @@ def test_sta_hunyuan_upstream_profile_sets_archive_strategy(tmp_path):
     assert payload["width"] == 1280
     assert payload["num_frames"] == 117
     assert cfg["seq_shape"] == "30x48x80"
-    assert cfg["mask_strategy_file_path"].endswith("mask_strategy_hunyuan.json")
+    assert cfg["mask_strategy_file_path"].endswith("mask_strategy_hunyuan_t2v.json")
     assert payload["profile_overrides"]["source"].endswith("FastVideo/docs/attention/sta/index.md")
     assert not payload["runtime"]["preflight"]["errors"]
 
@@ -3114,11 +3388,11 @@ def test_sta_wan13b_is_not_allowed_to_borrow_wan14b_strategy(tmp_path):
         "--width", "1280",
         "--num-frames", "69",
         "--method-config", "seq_shape=18x48x80",
-        "--method-config", "mask_strategy_file_path=src/sparsevideo/methods/sta/mask_strategy_wan.json",
+        "--method-config", "mask_strategy_file_path=src/sparsevideo/methods/sta/mask_strategies/mask_strategy_wan.json",
     )
 
-    assert any("no upstream sparse inference mask strategy for wan21-t2v-1.3b" in item for item in payload["runtime"]["preflight"]["errors"])
-    assert any("40 layers and 40 heads" in item for item in payload["runtime"]["preflight"]["errors"])
+    assert any("expected wan21-t2v-1.3b strategy shape (50, 30, 12)" in item for item in payload["runtime"]["preflight"]["errors"])
+    assert any("steps/layers/heads=(50, 40, 40)" in item for item in payload["runtime"]["preflight"]["errors"])
 
 
 def test_sta_preflight_rejects_training_free_mask_strategy_path(tmp_path):
@@ -3264,14 +3538,17 @@ def test_preflight_adacluster_uses_owned_triton_not_flashinfer():
                 "load_checked": True,
                 "fast_kmeans_single": {"source_files": True},
                 "triton_cluster_sparse_attn": {"source_files": True},
+                "triton_cluster_sparse_attn_topk": {"source_files": True},
                 "owned_triton_runtime": {
                     "load_checked": True,
                     "imported": True,
                     "owned_runtime": True,
                     "flash_kmeans_single": True,
                     "triton_cluster_sparse_attn": True,
+                    "triton_cluster_sparse_attn_topk": True,
                     "kmeans_jit_kernels": True,
                     "cluster_sparse_attn_jit_kernel": True,
+                    "cluster_sparse_attn_topk_jit_kernel": True,
                 },
             },
             "sta_kernels": {
@@ -3299,14 +3576,17 @@ def test_preflight_requires_flash_attn_for_hunyuan_adacluster_dense_gates():
                 "load_checked": True,
                 "fast_kmeans_single": {"source_files": True},
                 "triton_cluster_sparse_attn": {"source_files": True},
+                "triton_cluster_sparse_attn_topk": {"source_files": True},
                 "owned_triton_runtime": {
                     "load_checked": True,
                     "imported": True,
                     "owned_runtime": True,
                     "flash_kmeans_single": True,
                     "triton_cluster_sparse_attn": True,
+                    "triton_cluster_sparse_attn_topk": True,
                     "kmeans_jit_kernels": True,
                     "cluster_sparse_attn_jit_kernel": True,
+                    "cluster_sparse_attn_topk_jit_kernel": True,
                 },
             },
             "flash_attn": {"package": True, "flash_attn_func": False},
@@ -3331,6 +3611,7 @@ def test_preflight_requires_adacluster_load_checked_runtime():
                 "triton_package": True,
                 "fast_kmeans_single": {"source_files": True},
                 "triton_cluster_sparse_attn": {"source_files": True},
+                "triton_cluster_sparse_attn_topk": {"source_files": True},
             },
             "svg_svoo_fused_kernels": {"backend_env": "auto", "native_extension": True, "candidate_dirs": []},
         },
@@ -3351,6 +3632,7 @@ def test_preflight_reports_adacluster_load_failure():
                 "load_checked": True,
                 "fast_kmeans_single": {"source_files": True},
                 "triton_cluster_sparse_attn": {"source_files": True},
+                "triton_cluster_sparse_attn_topk": {"source_files": True},
                 "owned_triton_runtime": {
                     "load_checked": True,
                     "import_error_type": "ImportError",
@@ -3377,14 +3659,17 @@ def test_preflight_requires_adacluster_loaded_apis():
                 "load_checked": True,
                 "fast_kmeans_single": {"source_files": True},
                 "triton_cluster_sparse_attn": {"source_files": True},
+                "triton_cluster_sparse_attn_topk": {"source_files": True},
                 "owned_triton_runtime": {
                     "load_checked": True,
                     "imported": True,
                     "owned_runtime": True,
                     "flash_kmeans_single": True,
                     "triton_cluster_sparse_attn": False,
+                    "triton_cluster_sparse_attn_topk": True,
                     "kmeans_jit_kernels": True,
                     "cluster_sparse_attn_jit_kernel": True,
+                    "cluster_sparse_attn_topk_jit_kernel": True,
                 },
             },
             "svg_svoo_fused_kernels": {"backend_env": "auto", "native_extension": True, "candidate_dirs": []},
@@ -3922,96 +4207,10 @@ def test_spargeattn_tune_defaults_model_out_path_to_output_file(tmp_path):
     assert cfg["model_out_path"] == str(tmp_path / "video.spargeattn_state.pt")
 
 
-def test_resolve_scheduler_first_times_fp_matches_upstream_threshold_conversion():
+def test_infer_module_does_not_expose_legacy_scheduler_threshold_resolution():
     infer = _load_infer_module()
 
-    class _Scheduler:
-        def set_timesteps(self, steps):
-            self.timesteps = torch.arange(1000, 1000 - 10 * steps, -10)
-
-    class _Pipe:
-        scheduler = _Scheduler()
-
-    cfg = {"first_times_fp": 0.2}
-
-    resolution = infer.resolve_scheduler_first_times_fp(_Pipe(), "svoo", cfg, 50)
-
-    assert cfg["first_times_fp"] == 909.0
-    assert resolution == {
-        "first_times_fp_original": 0.2,
-        "first_times_fp_resolved": 909.0,
-        "num_fp_timesteps": 10,
-    }
-
-
-def test_resolve_scheduler_first_times_fp_passes_mu_for_dynamic_shift_scheduler():
-    infer = _load_infer_module()
-
-    class _Scheduler:
-        def __init__(self):
-            self.calls = []
-
-        def set_timesteps(self, steps, **kwargs):
-            self.calls.append((steps, kwargs))
-            if "mu" not in kwargs:
-                raise ValueError("`mu` must be passed when `use_dynamic_shifting` is set to be `True`")
-            self.timesteps = torch.arange(1000, 1000 - 10 * steps, -10)
-
-    class _Pipe:
-        def __init__(self):
-            self.scheduler = _Scheduler()
-
-    pipe = _Pipe()
-    cfg = {"first_times_fp": 0.2}
-
-    resolution = infer.resolve_scheduler_first_times_fp(pipe, "svg2", cfg, 50)
-
-    assert pipe.scheduler.calls == []
-    assert cfg["first_times_fp"] == 909.0
-    assert resolution["first_times_fp_resolved"] == 909.0
-
-
-def test_resolve_scheduler_first_times_fp_leaves_threshold_values_unchanged():
-    infer = _load_infer_module()
-
-    class _Pipe:
-        scheduler = object()
-
-    cfg = {"first_times_fp": 925}
-
-    assert infer.resolve_scheduler_first_times_fp(_Pipe(), "svg2", cfg, 50) is None
-    assert cfg["first_times_fp"] == 925
-
-
-def test_validate_rejects_svoo_missing_routing_params_before_model_load():
-    infer = _load_infer_module()
-
-    with pytest.raises(ValueError, match="requires mq1, mk1, mq2, and mk2"):
-        infer.validate_method_config(
-            "svoo",
-            {
-                "implementation": "native",
-                "sparse_backend": "flashinfer",
-                "use_routing_transformer_strategy": True,
-            },
-        )
-
-
-def test_validate_accepts_svoo_routing_options():
-    infer = _load_infer_module()
-
-    infer.validate_method_config(
-        "svoo",
-        {
-            "implementation": "native",
-            "sparse_backend": "flashinfer",
-            "use_routing_transformer_strategy": True,
-            "mq1": 2,
-            "mk1": 2,
-            "mq2": 4,
-            "mk2": 8,
-        },
-    )
+    assert not hasattr(infer, "resolve_scheduler_first_times_fp")
 
 
 def test_validate_accepts_svoo_sparsity_measurement_options(tmp_path):
@@ -4047,38 +4246,6 @@ def test_validate_accepts_svoo_global_constraint_options():
     )
 
 
-def test_infer_dry_run_reports_validation_failure_as_json(tmp_path):
-    env = os.environ.copy()
-    env["SVOO_CACHE_ROOT"] = str(tmp_path / "svoo-cache")
-    result = subprocess.run(
-        [
-            sys.executable,
-            str(SCRIPT),
-            "--model",
-            "wan1.3b",
-            "--method",
-            "svoo",
-            "--method-config",
-            "use_routing_transformer_strategy=true",
-            "--dry-run",
-        ],
-        cwd=REPO_ROOT,
-        env=env,
-        check=False,
-        capture_output=True,
-        text=True,
-    )
-    payload = json.loads(result.stdout)
-
-    assert result.returncode == 1
-    assert result.stderr == ""
-    assert payload["status"] == "failed"
-    assert payload["failed_stage"] == "validate_method_config"
-    assert payload["error_type"] == "ValueError"
-    assert "requires mq1, mk1, mq2, and mk2" in payload["error"]
-    assert payload["runtime"]["preflight"]["errors"] == [payload["error"]]
-
-
 def test_infer_dry_run_reports_preflight_failure_as_json(tmp_path):
     env = os.environ.copy()
     env["SVOO_CACHE_ROOT"] = str(tmp_path / "svoo-cache")
@@ -4096,6 +4263,7 @@ def test_infer_dry_run_reports_preflight_failure_as_json(tmp_path):
             "--method-config",
             "value=0.5",
             "--dry-run",
+            "--print-json",
         ],
         cwd=REPO_ROOT,
         env=env,
@@ -4282,6 +4450,19 @@ def test_sparse_runtime_dispatch_fails_strict_when_no_sparse_calls():
             {"method_runtime": {"total_calls": 4, "dispatch_counts": {"dense": 4}}},
             strict_kernels=True,
         )
+
+
+def test_sparse_runtime_dispatch_accepts_sta_searching_calls():
+    infer = _load_infer_module()
+
+    message = infer.validate_sparse_runtime_dispatch(
+        "sta",
+        {"STA_mode": "STA_searching"},
+        {"method_runtime": {"total_calls": 4, "dispatch_counts": {"search": 4}}},
+        strict_kernels=True,
+    )
+
+    assert message is None
 
 
 def test_sparse_runtime_dispatch_warns_when_debug_fallbacks_allowed():
@@ -4659,7 +4840,7 @@ def test_preflight_rejects_hunyuan_svoo_triton_backend_as_non_upstream():
     assert any("not Hunyuan SVOO parity" in error for error in preflight["errors"])
 
 
-def test_preflight_requires_svoo_triton_kmeans_for_routing():
+def test_preflight_requires_svoo_triton_kmeans_when_svoo_disabled():
     infer = _load_infer_module()
     runtime = {
         "torch": {"cuda_available": True},
@@ -4689,7 +4870,7 @@ def test_preflight_requires_svoo_triton_kmeans_for_routing():
         {
             "implementation": "native",
             "sparse_backend": "triton",
-            "use_routing_transformer_strategy": True,
+            "use_svoo": False,
         },
         "cuda",
         runtime,
@@ -5010,7 +5191,7 @@ def test_strict_preflight_reports_svoo_training_free_native_root():
     assert preflight["warnings"] == []
 
 
-def test_strict_preflight_fails_sta_slow_fallback_boundary():
+def test_strict_preflight_warns_sta_inferred_shape_boundary():
     infer = _load_infer_module()
     runtime = {
         "torch": {"cuda_available": True},
@@ -5030,8 +5211,8 @@ def test_strict_preflight_fails_sta_slow_fallback_boundary():
         "sta", {"seq_shape": None}, "cuda", runtime, strict_kernels=True,
     )
 
-    assert any("seq_shape is not set" in error for error in preflight["errors"])
-    assert preflight["warnings"] == []
+    assert preflight["errors"] == []
+    assert any("seq_shape is not set" in warning for warning in preflight["warnings"])
 
 
 def test_strict_preflight_fails_sta_h100_missing_owned_extension():
@@ -5287,7 +5468,11 @@ def test_real_pipeline_inference_smoke(tmp_path):
         capture_output=True,
         text=True,
     )
-    payload = json.loads(result.stdout)
+    assert f"output_file={output_file}" in result.stdout
+    assert f"metrics_file={metrics_file}" in result.stdout
+    assert "method_config" not in result.stdout
+    assert metrics_file.exists()
+    payload = json.loads(metrics_file.read_text(encoding="utf-8").strip().splitlines()[-1])
     assert payload["status"] == "ok"
     assert output_file.exists()
     assert output_file.stat().st_size > 0
@@ -5295,7 +5480,4 @@ def test_real_pipeline_inference_smoke(tmp_path):
     assert "apply_sparse_attention_sec" in payload["timings"]
     assert "generate_sec" in payload["timings"]
     assert payload["seconds_per_frame"] > 0
-    assert metrics_file.exists()
-    metrics_payload = json.loads(metrics_file.read_text(encoding="utf-8").strip().splitlines()[-1])
-    assert metrics_payload["status"] == "ok"
-    assert metrics_payload["output_file"] == str(output_file)
+    assert payload["output_file"] == str(output_file)

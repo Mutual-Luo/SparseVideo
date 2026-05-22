@@ -12,6 +12,7 @@ if TYPE_CHECKING:
 class SparseMethod(ABC):
     CONFIG_DEFAULTS: Dict[str, Any] = {}
     CONFIG_ALIASES: Dict[str, str] = {}
+    CONFIG_COMPAT_KEYS: set[str] = set()
 
     @classmethod
     def normalize_config(cls, config: Dict[str, Any]) -> Dict[str, Any]:
@@ -25,11 +26,16 @@ class SparseMethod(ABC):
                 )
             normalized_config[canonical_key] = value
 
-        unknown = set(normalized_config) - set(cls.CONFIG_DEFAULTS)
+        unknown = (
+            set(normalized_config)
+            - set(cls.CONFIG_DEFAULTS)
+            - set(cls.CONFIG_COMPAT_KEYS)
+        )
         if unknown:
+            valid_keys = [*cls.CONFIG_DEFAULTS, *sorted(cls.CONFIG_COMPAT_KEYS)]
             raise ValueError(
                 f"Unknown config keys for {cls.__name__}: {unknown}. "
-                f"Valid keys: {list(cls.CONFIG_DEFAULTS)}"
+                f"Valid keys: {valid_keys}"
             )
         return normalized_config
 
@@ -89,6 +95,8 @@ class SparseMethod(ABC):
         for Wan models, Hunyuan fast-block patch for Hunyuan models.
         Subclasses may override to add additional patches.
         """
+        if getattr(model_info, "pipeline_backend", "diffusers") != "diffusers":
+            return []
         if model_info.model_type == "wan":
             from ..processors.wan_fast_block import install_wan_fast_block_patch
 

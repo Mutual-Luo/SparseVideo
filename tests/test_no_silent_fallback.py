@@ -59,14 +59,14 @@ def test_sta_sparse_stage_rejects_non_fastvideo_tile_size(monkeypatch):
         )
 
 
-def test_sta_sparse_stage_rejects_non_fastvideo_seq_shape(monkeypatch):
+def test_sta_sparse_stage_rejects_invalid_seq_shape(monkeypatch):
     query = torch.randn(1, 80, 2, 8)
     key = torch.randn_like(query)
     value = torch.randn_like(query)
 
     monkeypatch.setattr(torch.Tensor, "is_cuda", property(lambda self: True))
 
-    with pytest.raises(RuntimeError, match="only supports FastVideo STA native"):
+    with pytest.raises(RuntimeError, match="could not infer video shape"):
         _sta_attention(
             query,
             key,
@@ -75,7 +75,7 @@ def test_sta_sparse_stage_rejects_non_fastvideo_seq_shape(monkeypatch):
             kernel_size=(1, 1, 1),
             model_type="wan",
             text_len=0,
-            seq_shape="1x8x10",
+            seq_shape="not-a-shape",
         )
 
 
@@ -100,7 +100,11 @@ def test_flashomni_upstream_does_not_silently_use_flex_on_cpu():
 
 def test_flashomni_global_random_stage_requires_cuda_before_native_dispatch():
     method = FlashOmniMethod(
-        config={"sparse_pattern": "global_random"},
+        config={
+            "sparse_pattern": "global_random",
+            "dense_warmup_step_ratio": 0.0,
+            "dense_warmup_layer_ratio": 0.0,
+        },
         model_info=SimpleNamespace(model_type="wan", transformers=[]),
     )
     processor = method.create_processor(
@@ -142,7 +146,7 @@ def test_draft_sparse_stage_does_not_silently_run_dense_on_cpu():
 
 def test_adacluster_sparse_stage_does_not_silently_run_dense_on_cpu():
     method = AdaClusterMethod(
-        config={},
+        config={"dense_warmup_step_ratio": 0.0, "dense_warmup_layer_ratio": 0.0},
         model_info=SimpleNamespace(model_type="wan", transformers=[]),
     )
     processor = method.create_processor(
@@ -160,8 +164,8 @@ def test_adacluster_sparse_stage_does_not_silently_run_dense_on_cpu():
 def test_svoo_sparse_stage_does_not_silently_run_dense_on_cpu():
     method = SVOOMethod(
         config={
-            "first_layers_fp": 0,
-            "first_times_fp": 0,
+            "dense_warmup_layer_ratio": 0.0,
+            "dense_warmup_step_ratio": 0.0,
             "use_dynamic_min_kc_ratio": False,
         },
         model_info=SimpleNamespace(model_type="wan", transformers=[]),
@@ -187,7 +191,7 @@ def test_spargeattn_sparse_mode_does_not_silently_run_dense(monkeypatch):
         ),
     )
     method = SpargeAttnMethod(
-        config={"mode": "topk"},
+        config={"mode": "topk", "dense_warmup_step_ratio": 0.0, "dense_warmup_layer_ratio": 0.0},
         model_info=SimpleNamespace(model_type="wan", transformers=[]),
     )
     processor = method.create_processor(

@@ -4,7 +4,7 @@ import torch
 
 from .._base import SparseMethod
 from .._layout import infer_video_frame_shape, infer_video_token_layout
-from .._schedule import _scalar_timestep
+from .._schedule import _scalar_timestep, configured_dense_warmup_layer_count, configured_dense_warmup_requires_dense, runtime_num_inference_steps
 from ...processors.allegro import SparseAllegroAttnProcessor
 from ...processors.cogvideox import SparseCogVideoXAttnProcessor
 from ...processors.easyanimate import SparseEasyAnimateAttnProcessor
@@ -60,6 +60,7 @@ class RadialMethod(SparseMethod):
         block_size = self.config["block_size"]
         use_sage_attention = self.config["use_sage_attention"]
         allow_flex_fallback = self.config["allow_flex_fallback"]
+        dense_warmup_layer_count = configured_dense_warmup_layer_count(self.config, total_layers)
         block_sparse_sage2_attn_fn = self._block_sparse_sage2_attn_fn
         sageattn_fn = self._sageattn_fn
 
@@ -73,6 +74,10 @@ class RadialMethod(SparseMethod):
                 dense_layers,
                 dense_timesteps,
                 getattr(step_tracker, "timestep", None),
+            ) or layer_idx < dense_warmup_layer_count or configured_dense_warmup_requires_dense(
+                self.config,
+                runtime_num_inference_steps(step_tracker),
+                getattr(step_tracker, "step", None),
             )
             if full_attention:
                 text_len = kwargs.get("text_len", 0)
@@ -183,7 +188,7 @@ def _radial_backend_name(
     from ...kernels.flashinfer_block_sparse import HAS_FLASHINFER
 
     layout = infer_video_token_layout(query.shape[1], model_type=model_type, text_len=text_len)
-    if HAS_FLASHINFER and query.is_cuda and layout.context_len == 0 and layout.video_len % block_size == 0:
+    if HAS_FLASHINFER and query.is_cuda and layout.context_len == 0:
         return "flashinfer"
     if allow_flex_fallback:
         return "flex_attention_debug_fallback"
@@ -206,9 +211,9 @@ def _radial_attention(query, key, value, decay_factor, block_mask_cache, block_s
                       force_dense=False):
     """Radial attention with logarithmic band decay per frame-pair distance.
 
-    For HunyuanVideo (no context prefix, vid_len divisible by block_size):
-        flashinfer variable-block-sparse with fixed block_size ≤ 128.
-        Matches original radial-attention FlashInferBackend block granularity.
+    For HunyuanVideo (no context prefix):
+        flashinfer block-sparse with fixed block_size ≤ 128, or variable final
+        block size when the video token count is not exactly divisible.
         Text tokens are appended and always fully attended via dense SDPA.
 
     For WAN:
@@ -240,16 +245,12 @@ def _radial_attention(query, key, value, decay_factor, block_mask_cache, block_s
     if force_dense:
         if context_len != 0:
             raise RuntimeError("radial dense path only supports layouts without a context prefix")
-        if vid_len % block_size != 0:
-            raise RuntimeError(
-                "radial dense path follows upstream block-mask generation and requires "
-                f"video_len % block_size == 0; got video_len={vid_len}, block_size={block_size}"
-            )
         if use_sage_attention:
             dense_mask_key = (vid_len, block_size, model_type, "sage-dense")
             if dense_mask_key not in block_mask_cache:
+                dense_blocks = _ceil_div(vid_len, block_size)
                 block_mask_cache[dense_mask_key] = torch.ones(
-                    (vid_len // block_size, vid_len // block_size),
+                    (dense_blocks, dense_blocks),
                     dtype=torch.bool,
                     device=query.device,
                 )
@@ -267,8 +268,9 @@ def _radial_attention(query, key, value, decay_factor, block_mask_cache, block_s
             )
         dense_mask_key = (vid_len, block_size, model_type, "flashinfer-dense")
         if dense_mask_key not in block_mask_cache:
+            dense_blocks = _ceil_div(vid_len, block_size)
             block_mask_cache[dense_mask_key] = torch.ones(
-                (vid_len // block_size, vid_len // block_size),
+                (dense_blocks, dense_blocks),
                 dtype=torch.bool,
                 device=query.device,
             )
@@ -279,15 +281,12 @@ def _radial_attention(query, key, value, decay_factor, block_mask_cache, block_s
     # --- Sparge/Sage block-sparse path ---
     # Mirrors upstream radial_attn.attn_mask.SpargeSageAttnBackend. This path
     # uses the owned spas_sage_attn block_sparse_sage2_attn_cuda runtime instead
-    # of importing training_free/ or an untracked checkout.
+    # of importing training_free/ or an untracked checkout. The owned kernel
+    # accepts partial final Q/K blocks, so non-upstream resolutions do not need
+    # to be rejected at Python preflight time.
     if use_sage_attention:
         if context_len != 0:
             raise RuntimeError("radial use_sage_attention only supports layouts without a context prefix")
-        if vid_len % block_size != 0:
-            raise RuntimeError(
-                "radial use_sage_attention follows upstream block-mask generation and requires "
-                f"video_len % block_size == 0; got video_len={vid_len}, block_size={block_size}"
-            )
         bsr_cache_key = (vid_len, block_size, frame_size, num_frames, decay_factor, model_type, "sage")
         if bsr_cache_key not in block_mask_cache:
             block_mask_cache[bsr_cache_key] = _radial_bsr_mask(
@@ -307,11 +306,10 @@ def _radial_attention(query, key, value, decay_factor, block_mask_cache, block_s
         )
 
     # --- flashinfer block-sparse path ---
-    # Upstream radial-attention benchmarks use block_size 64/128 with video
-    # token counts divisible by the block size.
-    if HAS_FLASHINFER and query.is_cuda and context_len == 0 and vid_len % block_size == 0:
-        num_blocks = vid_len // block_size
-
+    # Upstream radial-attention benchmarks use fixed BSR blocks; SparseVideo
+    # keeps that path for divisible shapes and uses the same FlashInfer
+    # variable-block wrapper as SVG2/SVOO for a partial final block.
+    if HAS_FLASHINFER and query.is_cuda and context_len == 0:
         bsr_cache_key = (vid_len, block_size, frame_size, num_frames, decay_factor, model_type)
         if bsr_cache_key not in block_mask_cache:
             block_mask_cache[bsr_cache_key] = _radial_bsr_mask(
@@ -329,8 +327,6 @@ def _radial_attention(query, key, value, decay_factor, block_mask_cache, block_s
             reasons.append("FlashInfer is not available")
         if context_len != 0:
             reasons.append(f"context_len={context_len}")
-        if vid_len % block_size != 0:
-            reasons.append(f"video_len={vid_len} is not divisible by block_size={block_size}")
         reason_text = "; ".join(reasons) if reasons else "unsupported FlashInfer layout"
         raise RuntimeError(
             "radial sparse path requires the upstream FlashInfer block-sparse backend. "
@@ -416,15 +412,113 @@ def _radial_flashinfer_attention(
     block_size,
     pre_defined_mask=None,
 ):
-    from ...kernels.flashinfer_block_sparse import _ensure_cuda_home_for_flashinfer_jit, build_bsr_from_mask
+    from ...kernels.flashinfer_block_sparse import _ensure_cuda_home_for_flashinfer_jit
 
     _ensure_cuda_home_for_flashinfer_jit()
     import flashinfer
 
-    B, N, H, D = query.shape
+    B, _N, _H, _D = query.shape
     if tail_len and pre_defined_mask is not None and B != 1:
         raise RuntimeError("radial Hunyuan attention_mask path currently supports batch size 1")
 
+    video_result = _radial_flashinfer_video_attention(
+        query,
+        key,
+        value,
+        video_mask,
+        video_len,
+        block_size,
+        return_lse=bool(tail_len),
+    )
+    if not tail_len:
+        return video_result
+
+    video_video_o_all, video_video_o_lse_all = video_result
+
+    outputs = []
+    for batch_idx in range(B):
+        q_b = query[batch_idx]
+        k_b = key[batch_idx]
+        v_b = value[batch_idx]
+        custom_video_text = None
+        custom_text = None
+        if pre_defined_mask is not None:
+            custom_video_text = pre_defined_mask[:video_len, video_len:]
+            custom_text = pre_defined_mask[video_len:, :]
+
+        video_text_o, video_text_o_lse = flashinfer.single_prefill_with_kv_cache(
+            q=q_b[:video_len],
+            k=k_b[video_len:],
+            v=v_b[video_len:],
+            causal=False,
+            return_lse=True,
+            custom_mask=custom_video_text,
+        )
+        out_video, _ = flashinfer.merge_state(
+            v_a=video_video_o_all[batch_idx],
+            s_a=video_video_o_lse_all[batch_idx],
+            v_b=video_text_o,
+            s_b=video_text_o_lse,
+        )
+        out_text = flashinfer.single_prefill_with_kv_cache(
+            q=q_b[video_len:],
+            k=k_b,
+            v=v_b,
+            causal=False,
+            return_lse=False,
+            custom_mask=custom_text,
+        )
+        outputs.append(torch.cat([out_video, out_text], dim=0))
+
+    return torch.stack(outputs, dim=0)
+
+
+def _radial_flashinfer_video_attention(
+    query,
+    key,
+    value,
+    video_mask,
+    video_len,
+    block_size,
+    *,
+    return_lse=False,
+):
+    if video_len % block_size == 0:
+        return _radial_flashinfer_fixed_bsr_video_attention(
+            query,
+            key,
+            value,
+            video_mask,
+            video_len,
+            block_size,
+            return_lse=return_lse,
+        )
+    return _radial_flashinfer_variable_video_attention(
+        query,
+        key,
+        value,
+        video_mask,
+        video_len,
+        block_size,
+        return_lse=return_lse,
+    )
+
+
+def _radial_flashinfer_fixed_bsr_video_attention(
+    query,
+    key,
+    value,
+    video_mask,
+    video_len,
+    block_size,
+    *,
+    return_lse=False,
+):
+    from ...kernels.flashinfer_block_sparse import build_bsr_from_mask
+
+    import flashinfer
+
+    B, _N, H, D = query.shape
     indptr, indices = build_bsr_from_mask(video_mask, query.device)
     workspace_buffer = torch.empty(128 * 1024 * 1024, device=query.device, dtype=torch.uint8)
     bsr_wrapper = flashinfer.BlockSparseAttentionWrapper(workspace_buffer, backend="fa2")
@@ -444,56 +538,82 @@ def _radial_flashinfer_attention(
     )
 
     outputs = []
+    lses = []
     for batch_idx in range(B):
-        q_b = query[batch_idx]
-        k_b = key[batch_idx]
-        v_b = value[batch_idx]
-        if tail_len:
-            video_video_o, video_video_o_lse = bsr_wrapper.run(
-                q_b[:video_len].contiguous(),
-                k_b[:video_len].contiguous(),
-                v_b[:video_len].contiguous(),
-                return_lse=True,
-            )
-            custom_video_text = None
-            custom_text = None
-            if pre_defined_mask is not None:
-                custom_video_text = pre_defined_mask[:video_len, video_len:]
-                custom_text = pre_defined_mask[video_len:, :]
-
-            video_text_o, video_text_o_lse = flashinfer.single_prefill_with_kv_cache(
-                q=q_b[:video_len],
-                k=k_b[video_len:],
-                v=v_b[video_len:],
-                causal=False,
-                return_lse=True,
-                custom_mask=custom_video_text,
-            )
-            out_video, _ = flashinfer.merge_state(
-                v_a=video_video_o,
-                s_a=video_video_o_lse,
-                v_b=video_text_o,
-                s_b=video_text_o_lse,
-            )
-            out_text = flashinfer.single_prefill_with_kv_cache(
-                q=q_b[video_len:],
-                k=k_b,
-                v=v_b,
-                causal=False,
-                return_lse=False,
-                custom_mask=custom_text,
-            )
-            outputs.append(torch.cat([out_video, out_text], dim=0))
+        result = bsr_wrapper.run(
+            query[batch_idx, :video_len].contiguous(),
+            key[batch_idx, :video_len].contiguous(),
+            value[batch_idx, :video_len].contiguous(),
+            return_lse=return_lse,
+        )
+        if return_lse:
+            out, lse = result
+            outputs.append(out)
+            lses.append(lse)
         else:
-            outputs.append(
-                bsr_wrapper.run(
-                    q_b[:video_len].contiguous(),
-                    k_b[:video_len].contiguous(),
-                    v_b[:video_len].contiguous(),
-                )
-            )
-
+            outputs.append(result)
+    del bsr_wrapper, workspace_buffer
+    if return_lse:
+        return torch.stack(outputs, dim=0), torch.stack(lses, dim=0)
     return torch.stack(outputs, dim=0)
+
+
+def _radial_flashinfer_variable_video_attention(
+    query,
+    key,
+    value,
+    video_mask,
+    video_len,
+    block_size,
+    *,
+    return_lse=False,
+):
+    from ...kernels.flashinfer_block_sparse import variable_block_sparse_attn
+
+    B, _N, H, D = query.shape
+    block_sizes = _radial_block_sizes(video_len, block_size, query.device)
+    num_blocks = int(block_sizes.shape[0])
+    if tuple(video_mask.shape) != (num_blocks, num_blocks):
+        raise RuntimeError(
+            "radial FlashInfer variable-block path expected video_mask shape "
+            f"{num_blocks}x{num_blocks}; got {tuple(video_mask.shape)}"
+        )
+
+    batch_heads = B * H
+    q = query[:, :video_len].permute(0, 2, 1, 3).reshape(batch_heads, video_len, D).contiguous()
+    k = key[:, :video_len].permute(0, 2, 1, 3).reshape(batch_heads, video_len, D).contiguous()
+    v = value[:, :video_len].permute(0, 2, 1, 3).reshape(batch_heads, video_len, D).contiguous()
+    sizes = block_sizes.unsqueeze(0).expand(batch_heads, -1).contiguous()
+    dynamic_map = (
+        video_mask.to(device=query.device, dtype=torch.bool)
+        .unsqueeze(0)
+        .expand(batch_heads, -1, -1)
+        .contiguous()
+    )
+    result = variable_block_sparse_attn(
+        q,
+        k,
+        v,
+        dynamic_map,
+        sizes,
+        sizes,
+        return_lse=return_lse,
+    )
+    if return_lse:
+        out, lse = result
+        out = out.reshape(B, H, video_len, D).permute(0, 2, 1, 3).contiguous()
+        lse = lse.reshape(B, H, video_len).permute(0, 2, 1).contiguous()
+        return out, lse
+    return result.reshape(B, H, video_len, D).permute(0, 2, 1, 3).contiguous()
+
+
+def _radial_block_sizes(length: int, block_size: int, device: torch.device) -> torch.Tensor:
+    num_blocks = _ceil_div(int(length), int(block_size))
+    sizes = torch.full((num_blocks,), int(block_size), dtype=torch.int32, device=device)
+    remainder = int(length) % int(block_size)
+    if remainder:
+        sizes[-1] = remainder
+    return sizes
 
 
 def _radial_sage_attention(
@@ -570,7 +690,7 @@ def _radial_sage_attention(
         query_bhsd[:, :, :video_len, :],
         key_bhsd,
         value_bhsd,
-        mask_id=converted_mask[:, :, :query_video_blocks, :].contiguous(),
+        mask_id=converted_mask[:, :, :query_video_blocks, :kv_border].contiguous(),
         tensor_layout="HND",
     )
     output_video = output_video.permute(0, 2, 1, 3).contiguous()
@@ -635,8 +755,8 @@ def _radial_sage_dense_attention(
 def _radial_append_tail_blocks(video_mask, video_len, tail_len, block_size):
     if tail_len <= 0:
         return video_mask
-    video_blocks = video_len // block_size
-    total_blocks = (video_len + tail_len) // block_size
+    video_blocks = _ceil_div(video_len, block_size)
+    total_blocks = _ceil_div(video_len + tail_len, block_size)
     if total_blocks <= video_blocks:
         return video_mask
 
@@ -695,9 +815,21 @@ def _sparge_mask_convert(mask: torch.Tensor, block_size: int = 128, arch="sm") -
 
     if arch == "sm90":
         num_row, num_col = mask.shape
+        if num_col % 2:
+            mask = torch.cat(
+                [mask, torch.zeros((num_row, 1), dtype=mask.dtype, device=mask.device)],
+                dim=1,
+            )
+            num_row, num_col = mask.shape
         return torch.max(mask.view(num_row, num_col // 2, 2), dim=2).values
 
     num_row, num_col = mask.shape
+    if num_row % 2:
+        mask = torch.cat(
+            [mask, torch.zeros((1, num_col), dtype=mask.dtype, device=mask.device)],
+            dim=0,
+        )
+        num_row, num_col = mask.shape
     return torch.max(mask.view(num_row // 2, 2, num_col), dim=1).values
 
 
@@ -715,7 +847,7 @@ def _radial_bsr_mask(
         raise ValueError("Radial Attention only supports block size of 128 or 64")
     if device is None:
         device = torch.device("cpu")
-    num_blocks = vid_len // block_size
+    num_blocks = _ceil_div(vid_len, block_size)
     mask = torch.zeros(num_blocks, num_blocks, dtype=torch.bool, device=device)
     radial_model_type = _radial_model_type(model_type)
 
@@ -746,6 +878,16 @@ def _radial_bsr_mask(
             ] = local_mask
 
             block_mask = _shrink_mask_strict(padded_local_mask, block_size)
+            if vid_len % block_size:
+                block_mask = torch.logical_or(
+                    block_mask,
+                    _shrink_mask_variable_rows(
+                        padded_local_mask,
+                        block_size,
+                        valid_row_start=remainder_row,
+                        valid_row_length=frame_size,
+                    ),
+                )
             block_row_start = (i * frame_size) // block_size
             block_col_start = (j * frame_size) // block_size
             block_row_end = block_row_start + block_mask.shape[0]
@@ -806,6 +948,26 @@ def _shrink_mask_strict(mask, block_size=128):
         block_num, block_size, block_num, block_size,
     )
     col_densities = mask.sum(dim=1) / block_size
+    non_zero_densities = col_densities > 0
+    high_density_cols = col_densities > 1 / 3
+    frac_high_density_cols = high_density_cols.sum(dim=-1) / (
+        non_zero_densities.sum(dim=-1) + 1e-9
+    )
+    return frac_high_density_cols > 0.6
+
+
+def _shrink_mask_variable_rows(mask, block_size=128, *, valid_row_start: int, valid_row_length: int):
+    seqlen = mask.shape[0]
+    block_num = seqlen // block_size
+    mask = mask[:block_num * block_size, :block_num * block_size].view(
+        block_num, block_size, block_num, block_size,
+    )
+    row_offsets = torch.arange(block_num * block_size, device=mask.device).view(block_num, block_size)
+    valid_rows = (row_offsets >= int(valid_row_start)) & (
+        row_offsets < int(valid_row_start) + int(valid_row_length)
+    )
+    row_counts = valid_rows.sum(dim=1).clamp_min(1).view(block_num, 1, 1)
+    col_densities = mask.sum(dim=1) / row_counts
     non_zero_densities = col_densities > 0
     high_density_cols = col_densities > 1 / 3
     frac_high_density_cols = high_density_cols.sum(dim=-1) / (

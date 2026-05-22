@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any, Dict, Optional
+from typing import Any, Callable, Dict, Optional
 
 import torch
 
@@ -14,14 +14,26 @@ class StepTracker:
     decide whether to use sparse or dense attention at each denoising step.
     """
 
-    def __init__(self, model_type: str):
+    def __init__(
+        self,
+        model_type: str,
+        num_inference_steps_fn: Optional[Callable[[], Optional[int]]] = None,
+    ):
         self.step: int = 0
         self.timestep: float = 0.0
         self._model_type = model_type
         self._prev_timestep: Optional[float] = None
+        self._num_inference_steps_fn = num_inference_steps_fn
 
     def _hook(self, module, args, kwargs=None):
+        self.observe(args, kwargs or {})
+
+    def observe(self, args=(), kwargs=None) -> None:
         t_val = self._extract_timestep(args, kwargs or {})
+        self.observe_timestep(t_val)
+
+    def observe_timestep(self, timestep) -> None:
+        t_val = self._to_float(timestep)
         if t_val is None:
             return
 
@@ -56,7 +68,10 @@ class StepTracker:
         if isinstance(candidate, torch.Tensor) and candidate.numel() > 0:
             # Some Diffusers models can expand one scheduler timestep over many
             # tokens. The denoising step still follows the first scalar value.
-            return float(candidate.detach().flatten()[0].item())
+            values = candidate.detach().flatten()
+            if self._model_type == "ltx_video" and values.numel() > 1:
+                return float(values.max().item())
+            return float(values[0].item())
         return None
 
     def reset(self):
@@ -64,9 +79,24 @@ class StepTracker:
         self.timestep = 0.0
         self._prev_timestep = None
 
+    def num_inference_steps(self) -> Optional[int]:
+        if self._num_inference_steps_fn is None:
+            return None
+        try:
+            value = self._num_inference_steps_fn()
+        except Exception:
+            return None
+        if value is None:
+            return None
+        value = int(value)
+        return value if value > 0 else None
 
-def install_step_tracker(model_info: ModelInfo):
-    tracker = StepTracker(model_type=model_info.model_type)
+
+def install_step_tracker(model_info: ModelInfo, num_inference_steps_fn=None):
+    tracker = StepTracker(
+        model_type=model_info.model_type,
+        num_inference_steps_fn=num_inference_steps_fn,
+    )
     hooks = []
     for transformer in model_info.transformers:
         h = transformer.register_forward_pre_hook(tracker._hook, with_kwargs=True)

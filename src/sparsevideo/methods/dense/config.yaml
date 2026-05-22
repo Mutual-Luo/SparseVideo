@@ -1,0 +1,23 @@
+# Dense is the original attention baseline and has no sparse hyperparameters.
+defaults: {}
+aliases: {}
+model_defaults:
+  wan21-t2v-1.3b: {}
+  wan21-t2v-14b: {}
+  wan22-t2v-a14b: {}
+  hunyuan-t2v: {}
+  wan21-i2v-14b: {}
+  wan22-i2v-a14b: {}
+  hunyuan-i2v: {}
+  skyreels-v2-t2v-14b: {}
+  skyreels-v2-i2v-14b: {}
+  wan22-animate-14b: {}
+  wan21-vace-1.3b: {}
+  wan21-vace-14b: {}
+  cogvideox-t2v: {}
+  cogvideox-i2v: {}
+  ltx-video: {}
+  ltx-video-i2v: {}
+  allegro: {}
+  mochi-1: {}
+  easyanimate-v5-t2v-12b: {}

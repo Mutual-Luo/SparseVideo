@@ -1,0 +1,266 @@
+# Editable defaults for draft-attention.
+# Model-specific blocks override only the listed keys; unspecified keys inherit
+# from defaults. Dense warmup uses the same names and values for every backbone.
+defaults:
+  dense_warmup_step_ratio: 0.1 # Fraction of denoising steps that run dense before sparse attention starts.
+  dense_warmup_layer_ratio: 0.03 # Fraction of earliest transformer layers that always run dense.
+  pool_h: 8 # Height pooling factor used by Draft's token reduction stage.
+  pool_w: 16 # Width pooling factor used by Draft's token reduction stage.
+  latent_h: null # Latent height override for model/layout validation.
+  latent_w: null # Latent width override for model/layout validation.
+  visual_len: null # Number of video tokens in the attention sequence.
+  text_len: null # Number of text tokens in the attention sequence.
+  sparsity_ratio: 0.9 # Fraction of attention kept by Draft's sparse mask policy.
+  batch_size: null # Batch size hint used by layout validation.
+  block_sparse_attention: true # Must stay true for sparse Draft; false is the dense baseline.
+  allow_triton_fallback: false # Allow local Triton debug fallback when the MIT backend is unavailable.
+
+model_defaults:
+  wan21-t2v-1.3b:
+    dense_warmup_step_ratio: 0.1
+    dense_warmup_layer_ratio: 0.03
+    pool_h: 8
+    pool_w: 16
+    latent_h: null
+    latent_w: null
+    visual_len: null
+    text_len: 0
+    sparsity_ratio: 0.75
+    batch_size: null
+    block_sparse_attention: true
+    allow_triton_fallback: false
+  wan21-t2v-14b:
+    dense_warmup_step_ratio: 0.1
+    dense_warmup_layer_ratio: 0.03
+    pool_h: 8
+    pool_w: 16
+    latent_h: null
+    latent_w: null
+    visual_len: null
+    text_len: 0
+    sparsity_ratio: 0.75
+    batch_size: null
+    block_sparse_attention: true
+    allow_triton_fallback: false
+  wan22-t2v-a14b:
+    dense_warmup_step_ratio: 0.1
+    dense_warmup_layer_ratio: 0.03
+    pool_h: 8
+    pool_w: 16
+    latent_h: null
+    latent_w: null
+    visual_len: null
+    text_len: 0
+    sparsity_ratio: 0.75
+    batch_size: null
+    block_sparse_attention: true
+    allow_triton_fallback: false
+  hunyuan-t2v:
+    dense_warmup_step_ratio: 0.1
+    dense_warmup_layer_ratio: 0.03
+    pool_h: 8
+    pool_w: 16
+    latent_h: null
+    latent_w: null
+    visual_len: null
+    text_len: 256
+    sparsity_ratio: 0.9
+    batch_size: null
+    block_sparse_attention: true
+    allow_triton_fallback: false
+  wan21-i2v-14b:
+    dense_warmup_step_ratio: 0.1
+    dense_warmup_layer_ratio: 0.03
+    pool_h: 8
+    pool_w: 16
+    latent_h: null
+    latent_w: null
+    visual_len: null
+    text_len: 0
+    sparsity_ratio: 0.75
+    batch_size: null
+    block_sparse_attention: true
+    allow_triton_fallback: false
+  wan22-i2v-a14b:
+    dense_warmup_step_ratio: 0.1
+    dense_warmup_layer_ratio: 0.03
+    pool_h: 8
+    pool_w: 16
+    latent_h: null
+    latent_w: null
+    visual_len: null
+    text_len: 0
+    sparsity_ratio: 0.75
+    batch_size: null
+    block_sparse_attention: true
+    allow_triton_fallback: false
+  hunyuan-i2v:
+    dense_warmup_step_ratio: 0.1
+    dense_warmup_layer_ratio: 0.03
+    pool_h: 8
+    pool_w: 16
+    latent_h: null
+    latent_w: null
+    visual_len: null
+    text_len: 256
+    sparsity_ratio: 0.9
+    batch_size: null
+    block_sparse_attention: true
+    allow_triton_fallback: false
+  skyreels-v2-t2v-14b:
+    dense_warmup_step_ratio: 0.1
+    dense_warmup_layer_ratio: 0.03
+    pool_h: 8
+    pool_w: 16
+    latent_h: null
+    latent_w: null
+    visual_len: null
+    text_len: 0
+    sparsity_ratio: 0.75
+    batch_size: null
+    block_sparse_attention: true
+    allow_triton_fallback: false
+  skyreels-v2-i2v-14b:
+    dense_warmup_step_ratio: 0.1
+    dense_warmup_layer_ratio: 0.03
+    pool_h: 8
+    pool_w: 16
+    latent_h: null
+    latent_w: null
+    visual_len: null
+    text_len: 0
+    sparsity_ratio: 0.75
+    batch_size: null
+    block_sparse_attention: true
+    allow_triton_fallback: false
+  wan22-animate-14b:
+    dense_warmup_step_ratio: 0.1
+    dense_warmup_layer_ratio: 0.03
+    pool_h: 8
+    pool_w: 16
+    latent_h: null
+    latent_w: null
+    visual_len: null
+    text_len: 0
+    sparsity_ratio: 0.75
+    batch_size: null
+    block_sparse_attention: true
+    allow_triton_fallback: false
+  wan21-vace-1.3b:
+    dense_warmup_step_ratio: 0.1
+    dense_warmup_layer_ratio: 0.03
+    pool_h: 8
+    pool_w: 16
+    latent_h: null
+    latent_w: null
+    visual_len: null
+    text_len: 0
+    sparsity_ratio: 0.75
+    batch_size: null
+    block_sparse_attention: true
+    allow_triton_fallback: false
+  wan21-vace-14b:
+    dense_warmup_step_ratio: 0.1
+    dense_warmup_layer_ratio: 0.03
+    pool_h: 8
+    pool_w: 16
+    latent_h: null
+    latent_w: null
+    visual_len: null
+    text_len: 0
+    sparsity_ratio: 0.75
+    batch_size: null
+    block_sparse_attention: true
+    allow_triton_fallback: false
+  cogvideox-t2v:
+    dense_warmup_step_ratio: 0.1
+    dense_warmup_layer_ratio: 0.03
+    pool_h: 8
+    pool_w: 16
+    latent_h: null
+    latent_w: null
+    visual_len: null
+    text_len: null
+    sparsity_ratio: 0.9
+    batch_size: null
+    block_sparse_attention: true
+    allow_triton_fallback: false
+  cogvideox-i2v:
+    dense_warmup_step_ratio: 0.1
+    dense_warmup_layer_ratio: 0.03
+    pool_h: 8
+    pool_w: 16
+    latent_h: null
+    latent_w: null
+    visual_len: null
+    text_len: null
+    sparsity_ratio: 0.9
+    batch_size: null
+    block_sparse_attention: true
+    allow_triton_fallback: false
+  ltx-video:
+    dense_warmup_step_ratio: 0.1
+    dense_warmup_layer_ratio: 0.03
+    pool_h: 8
+    pool_w: 16
+    latent_h: null
+    latent_w: null
+    visual_len: null
+    text_len: null
+    sparsity_ratio: 0.9
+    batch_size: null
+    block_sparse_attention: true
+    allow_triton_fallback: false
+  ltx-video-i2v:
+    dense_warmup_step_ratio: 0.1
+    dense_warmup_layer_ratio: 0.03
+    pool_h: 8
+    pool_w: 16
+    latent_h: null
+    latent_w: null
+    visual_len: null
+    text_len: null
+    sparsity_ratio: 0.9
+    batch_size: null
+    block_sparse_attention: true
+    allow_triton_fallback: false
+  allegro:
+    dense_warmup_step_ratio: 0.1
+    dense_warmup_layer_ratio: 0.03
+    pool_h: 8
+    pool_w: 16
+    latent_h: null
+    latent_w: null
+    visual_len: null
+    text_len: null
+    sparsity_ratio: 0.9
+    batch_size: null
+    block_sparse_attention: true
+    allow_triton_fallback: false
+  mochi-1:
+    dense_warmup_step_ratio: 0.1
+    dense_warmup_layer_ratio: 0.03
+    pool_h: 8
+    pool_w: 16
+    latent_h: null
+    latent_w: null
+    visual_len: null
+    text_len: null
+    sparsity_ratio: 0.9
+    batch_size: null
+    block_sparse_attention: true
+    allow_triton_fallback: false
+  easyanimate-v5-t2v-12b:
+    dense_warmup_step_ratio: 0.1
+    dense_warmup_layer_ratio: 0.03
+    pool_h: 8
+    pool_w: 16
+    latent_h: null
+    latent_w: null
+    visual_len: null
+    text_len: null
+    sparsity_ratio: 0.9
+    batch_size: null
+    block_sparse_attention: true
+    allow_triton_fallback: false
+aliases: {}

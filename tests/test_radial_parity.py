@@ -13,6 +13,8 @@ from sparsevideo.methods.radial import RadialMethod
 from sparsevideo.methods.radial.method import (
     _estimate_frame_size,
     _expand_attention_mask,
+    _radial_attention,
+    _radial_block_sizes,
     _radial_flashinfer_attention,
     _radial_is_dense_layer_or_timestep,
     _radial_sage_attention,
@@ -197,6 +199,27 @@ def test_radial_bsr_mask_matches_upstream_shrinked_reference():
     assert torch.equal(mask, reference)
 
 
+def test_radial_bsr_mask_keeps_partial_final_block():
+    mask = _radial_bsr_mask(
+        vid_len=3 * 130,
+        block_size=128,
+        frame_size=130,
+        num_frames=3,
+        decay_factor=0.95,
+        model_type="hunyuan_video",
+    )
+
+    assert mask.shape == (4, 4)
+    assert mask[-1].any()
+    assert mask[:, -1].any()
+
+
+def test_radial_block_sizes_use_partial_final_block():
+    sizes = _radial_block_sizes(3 * 128 + 6, 128, torch.device("cpu"))
+
+    assert sizes.tolist() == [128, 128, 128, 6]
+
+
 def test_radial_bsr_conversion_keeps_indptr_and_indices_on_requested_device():
     mask = torch.tensor(
         [
@@ -291,6 +314,87 @@ def test_radial_flashinfer_attention_matches_upstream_backend_cuda(monkeypatch):
     torch.testing.assert_close(actual, expected, rtol=1e-3, atol=1e-3)
 
 
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA/FlashInfer")
+def test_radial_flashinfer_attention_supports_partial_final_block_cuda():
+    from sparsevideo._runtime import _cuda_toolkit_status
+    from sparsevideo.kernels.flashinfer_block_sparse import HAS_FLASHINFER, _ensure_cuda_home_for_flashinfer_jit
+
+    if not HAS_FLASHINFER:
+        pytest.skip("flashinfer.sparse is not available")
+    if not _cuda_toolkit_status()["available"]:
+        pytest.skip("FlashInfer sparse JIT requires nvcc")
+
+    _ensure_cuda_home_for_flashinfer_jit()
+    torch.manual_seed(2)
+    batch, video_len, heads, head_dim = 1, 130, 2, 64
+    block_size = 64
+    query = torch.randn(batch, video_len, heads, head_dim, device="cuda", dtype=torch.float16)
+    key = torch.randn_like(query)
+    value = torch.randn_like(query)
+    num_blocks = _radial_block_sizes(video_len, block_size, query.device).numel()
+    video_mask = torch.ones(num_blocks, num_blocks, device="cuda", dtype=torch.bool)
+    expected = torch.nn.functional.scaled_dot_product_attention(
+        query.permute(0, 2, 1, 3),
+        key.permute(0, 2, 1, 3),
+        value.permute(0, 2, 1, 3),
+    ).permute(0, 2, 1, 3)
+
+    actual = _radial_flashinfer_attention(
+        query,
+        key,
+        value,
+        video_mask,
+        video_len,
+        0,
+        block_size,
+        pre_defined_mask=None,
+    )
+
+    torch.cuda.synchronize()
+    torch.testing.assert_close(actual, expected, rtol=2e-2, atol=2e-2)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA/FlashInfer")
+def test_radial_flashinfer_attention_supports_partial_final_block_with_tail_cuda():
+    from sparsevideo._runtime import _cuda_toolkit_status
+    from sparsevideo.kernels.flashinfer_block_sparse import HAS_FLASHINFER, _ensure_cuda_home_for_flashinfer_jit
+
+    if not HAS_FLASHINFER:
+        pytest.skip("flashinfer.sparse is not available")
+    if not _cuda_toolkit_status()["available"]:
+        pytest.skip("FlashInfer sparse JIT requires nvcc")
+
+    _ensure_cuda_home_for_flashinfer_jit()
+    torch.manual_seed(3)
+    batch, video_len, tail_len, heads, head_dim = 1, 130, 5, 2, 64
+    seq_len = video_len + tail_len
+    block_size = 64
+    query = torch.randn(batch, seq_len, heads, head_dim, device="cuda", dtype=torch.float16)
+    key = torch.randn_like(query)
+    value = torch.randn_like(query)
+    num_blocks = _radial_block_sizes(video_len, block_size, query.device).numel()
+    video_mask = torch.ones(num_blocks, num_blocks, device="cuda", dtype=torch.bool)
+    expected = torch.nn.functional.scaled_dot_product_attention(
+        query.permute(0, 2, 1, 3),
+        key.permute(0, 2, 1, 3),
+        value.permute(0, 2, 1, 3),
+    ).permute(0, 2, 1, 3)
+
+    actual = _radial_flashinfer_attention(
+        query,
+        key,
+        value,
+        video_mask,
+        video_len,
+        tail_len,
+        block_size,
+        pre_defined_mask=None,
+    )
+
+    torch.cuda.synchronize()
+    torch.testing.assert_close(actual, expected, rtol=2e-2, atol=2e-2)
+
+
 def test_radial_hunyuan_attention_mask_expands_like_upstream_predefined_mask():
     attention_mask = torch.tensor([[[[True, True, False, True]]]])
     mask = _expand_attention_mask(attention_mask, sequence_length=4, device=torch.device("cpu"))
@@ -332,6 +436,18 @@ def test_radial_sparge_mask_convert_matches_upstream_arch_layouts():
     )
 
 
+def test_radial_sparge_mask_convert_pads_odd_64_token_blocks():
+    mask = torch.eye(3, dtype=torch.bool)
+
+    sm80 = _sparge_mask_convert(mask, block_size=64, arch="sm80")
+    sm90 = _sparge_mask_convert(mask, block_size=64, arch="sm90")
+
+    assert sm80.shape == (2, 3)
+    assert sm80[1, 2]
+    assert sm90.shape == (3, 2)
+    assert sm90[2, 1]
+
+
 def test_radial_sage_kernel_block_shape_matches_owned_spas_runtime():
     assert _sparge_sage_qk_block_sizes("sm80") == (128, 64)
     assert _sparge_sage_qk_block_sizes("sm89") == (128, 64)
@@ -357,6 +473,39 @@ def test_radial_use_sage_attention_loads_owned_block_sparse_runtime(monkeypatch)
 
     assert method._block_sparse_sage2_attn_fn is sparse_sentinel
     assert method._sageattn_fn is dense_sentinel
+
+
+def test_radial_use_sage_attention_accepts_partial_final_block(monkeypatch):
+    captured = {}
+
+    def fake_block_sparse_sage2_attn_cuda(query, key, value, mask_id, tensor_layout):
+        captured["mask_id_shape"] = tuple(mask_id.shape)
+        captured["tensor_layout"] = tensor_layout
+        return torch.zeros_like(query)
+
+    monkeypatch.setattr(torch.Tensor, "is_cuda", property(lambda self: True))
+    monkeypatch.setattr("sparsevideo.methods.radial.method._cuda_arch", lambda device: "sm80")
+
+    video_len = 21 * 45 * 80
+    query = torch.randn(1, video_len, 2, 4)
+    output = _radial_attention(
+        query,
+        query,
+        query,
+        decay_factor=0.2,
+        block_mask_cache={},
+        block_size=128,
+        model_type="wan",
+        use_sage_attention=True,
+        block_sparse_sage2_attn_fn=fake_block_sparse_sage2_attn_cuda,
+        sageattn_fn=object(),
+    )
+
+    assert output.shape == query.shape
+    assert captured == {
+        "mask_id_shape": (1, 2, 591, 1182),
+        "tensor_layout": "HND",
+    }
 
 
 def test_radial_dense_timestep_gate_matches_upstream_numeral_timestep_boundary(monkeypatch):
@@ -527,3 +676,46 @@ def test_radial_sage_hunyuan_mask_keeps_text_kv_columns_like_upstream(monkeypatc
     # 384 valid tokens => 6 KV blocks, including the final two text blocks.
     assert captured["mask_id"].shape == (batch_size, heads, 2, 6)
     assert captured["mask_id"][:, :, :, -2:].all()
+
+
+def test_radial_sage_hunyuan_partial_video_tail_crops_kv_blocks(monkeypatch):
+    import sys
+
+    captured = {}
+
+    def fake_block_sparse_sage2_attn_cuda(query, key, value, mask_id, tensor_layout):
+        captured["mask_id_shape"] = tuple(mask_id.shape)
+        return torch.zeros_like(query)
+
+    def fake_single_prefill_with_kv_cache(q, k, v, causal=False, return_lse=False, custom_mask=None):
+        return torch.zeros_like(q)
+
+    monkeypatch.setattr("sparsevideo.methods.radial.method._cuda_arch", lambda device: "sm80")
+    monkeypatch.setitem(
+        sys.modules,
+        "flashinfer",
+        types.SimpleNamespace(single_prefill_with_kv_cache=fake_single_prefill_with_kv_cache),
+    )
+
+    batch_size, video_len, tail_len, heads, dim = 1, 130, 5, 2, 4
+    seq_len = video_len + tail_len
+    query = torch.randn(batch_size, seq_len, heads, dim)
+    key = torch.randn(batch_size, seq_len, heads, dim)
+    value = torch.randn(batch_size, seq_len, heads, dim)
+    video_mask = torch.tensor([[True, False], [True, True]], dtype=torch.bool)
+    pre_defined_mask = torch.ones(seq_len, seq_len, dtype=torch.bool)
+
+    output = _radial_sage_attention(
+        query,
+        key,
+        value,
+        video_mask,
+        video_len,
+        tail_len,
+        128,
+        pre_defined_mask,
+        fake_block_sparse_sage2_attn_cuda,
+    )
+
+    assert output.shape == query.shape
+    assert captured["mask_id_shape"] == (batch_size, heads, 2, 3)

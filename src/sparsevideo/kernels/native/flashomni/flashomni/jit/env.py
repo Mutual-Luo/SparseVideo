@@ -19,11 +19,11 @@ import pathlib
 import re
 import warnings
 
-from torch.utils.cpp_extension import _get_cuda_arch_flags
-
 
 def _get_workspace_dir_name() -> pathlib.Path:
     try:
+        from torch.utils.cpp_extension import _get_cuda_arch_flags
+
         with warnings.catch_warnings():
             # Ignore the warning for TORCH_CUDA_ARCH_LIST not set
             warnings.filterwarnings(

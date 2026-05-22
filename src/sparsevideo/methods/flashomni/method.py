@@ -14,6 +14,7 @@ import torch
 import torch.nn.functional as F
 
 from .._base import SparseMethod
+from .._schedule import configured_dense_warmup_layer_count, configured_dense_warmup_requires_dense
 from ...processors.allegro import SparseAllegroAttnProcessor
 from ...processors.cogvideox import SparseCogVideoXAttnProcessor
 from ...processors.easyanimate import SparseEasyAnimateAttnProcessor
@@ -69,6 +70,7 @@ class _FlashOmniPaperMMDiTState:
         self.output_history: list[_FlashOmniCachedQBlocks] = []
         self.gemm_o_bias_history: list[torch.Tensor] = []
         self.last_dispatch: str | None = None
+        self.cache_suffix_states: dict[object, _FlashOmniPaperMMDiTState] = {}
 
     def has_symbols(self) -> bool:
         return self.sparse_q is not None and self.sparse_kv is not None
@@ -127,6 +129,12 @@ class _FlashOmniPaperMMDiTState:
                 + self.gemm_o_bias_history[-3]
             )
         )
+
+
+def _flashomni_paper_state_for_cache_suffix(state: _FlashOmniPaperMMDiTState, cache_key_suffix):
+    if cache_key_suffix is None:
+        return state
+    return state.cache_suffix_states.setdefault(cache_key_suffix, _FlashOmniPaperMMDiTState())
 
 
 class FlashOmniMethod(SparseMethod):
@@ -226,6 +234,7 @@ class FlashOmniMethod(SparseMethod):
 
         cfg = self.config
         paper_state = _FlashOmniPaperMMDiTState()
+        dense_warmup_layer_count = configured_dense_warmup_layer_count(cfg, total_layers)
         plan_kwargs = {
             "causal": cfg["causal"],
             "pos_encoding_mode": cfg["pos_encoding_mode"],
@@ -305,6 +314,28 @@ class FlashOmniMethod(SparseMethod):
             return linear(hidden_states)
 
         def attn_fn(query, key, value, attention_mask, **kwargs):
+            if (
+                layer_idx < dense_warmup_layer_count
+                or configured_dense_warmup_requires_dense(
+                    cfg,
+                    cfg["num_inference_steps"],
+                    getattr(step_tracker, "step", None),
+                )
+            ):
+                out = _flashomni_dense_warmup_attention(
+                    query, key, value,
+                    cfg=cfg,
+                    attention_mask=attention_mask,
+                    text_len=kwargs.get("text_len", 0),
+                    plan_kwargs=plan_kwargs,
+                )
+                self.record_runtime_dispatch(
+                    "dense",
+                    backend=_flashomni_dense_warmup_backend_name(cfg),
+                    layer_idx=layer_idx,
+                    step=getattr(step_tracker, "step", None),
+                )
+                return out
             if cfg["is_full"]:
                 out = _flashomni_explicit_attention(
                     query, key, value,
@@ -380,6 +411,10 @@ class FlashOmniMethod(SparseMethod):
                 paper_text_len = kwargs.get("text_len", 0)
                 if not paper_text_len and self.model_info.model_type == "hunyuan_video":
                     paper_text_len = int(cfg["text_token"])
+                runtime_paper_state = _flashomni_paper_state_for_cache_suffix(
+                    paper_state,
+                    kwargs.get("cache_key_suffix"),
+                )
                 result = _flashomni_paper_mmdit_attention(
                     query, key, value,
                     tau_q=cfg["threshold_q"],
@@ -394,7 +429,7 @@ class FlashOmniMethod(SparseMethod):
                     backend=cfg["backend"],
                     workspace_bytes=cfg["workspace_bytes"],
                     attention_mask=attention_mask,
-                    state=paper_state,
+                    state=runtime_paper_state,
                     step=getattr(step_tracker, "step", None),
                     cache_dic=kwargs.get("cache_dic"),
                     current=kwargs.get("current"),
@@ -485,6 +520,47 @@ def _flashomni_local_backend_name(implementation):
     if implementation == "upstream":
         return "flashomni_local_qk_topk_upstream"
     return "flex_debug_fallback"
+
+
+def _flashomni_dense_warmup_backend_name(config):
+    if config["implementation"] == "upstream":
+        return "flashomni_full_upstream"
+    return "torch_sdpa"
+
+
+def _flashomni_dense_warmup_attention(query, key, value, *, cfg, attention_mask, text_len, plan_kwargs):
+    if cfg["implementation"] == "upstream":
+        return _flashomni_explicit_attention(
+            query, key, value,
+            sparse_info=cfg["sparse_info"],
+            sparse_kv_info=cfg["sparse_kv_info"],
+            sparse_info_indptr=cfg["sparse_info_indptr"],
+            sparse_kv_info_indptr=cfg["sparse_kv_info_indptr"],
+            sparse_block_size_for_q=cfg["sparse_block_size_for_q"],
+            sparse_block_size_for_kv=cfg["sparse_block_size_for_kv"],
+            implementation=cfg["implementation"],
+            backend=cfg["backend"],
+            workspace_bytes=cfg["workspace_bytes"],
+            is_full=True,
+            attention_mask=attention_mask,
+            text_len=text_len,
+            **plan_kwargs,
+        )
+    if attention_mask is not None:
+        from diffusers.models.attention_dispatch import dispatch_attention_fn
+
+        return dispatch_attention_fn(
+            query, key, value,
+            attn_mask=attention_mask, dropout_p=0.0, is_causal=False,
+        )
+    q_bhsd = query.permute(0, 2, 1, 3).contiguous()
+    k_bhsd = key.permute(0, 2, 1, 3).contiguous()
+    v_bhsd = value.permute(0, 2, 1, 3).contiguous()
+    out = F.scaled_dot_product_attention(
+        q_bhsd, k_bhsd, v_bhsd,
+        dropout_p=0.0, is_causal=False,
+    )
+    return out.permute(0, 2, 1, 3).contiguous()
 
 
 def _flashomni_should_use_sparse_gemm(config, state, step_tracker) -> bool:

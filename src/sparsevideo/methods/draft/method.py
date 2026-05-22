@@ -5,6 +5,7 @@ import torch.nn.functional as F
 
 from .._base import SparseMethod
 from .._layout import infer_video_frame_shape, infer_video_token_layout
+from .._schedule import configured_dense_warmup_layer_count, configured_dense_warmup_requires_dense, runtime_num_inference_steps
 from ...processors.allegro import SparseAllegroAttnProcessor
 from ...processors.cogvideox import SparseCogVideoXAttnProcessor
 from ...processors.easyanimate import SparseEasyAnimateAttnProcessor
@@ -55,10 +56,17 @@ class DraftMethod(SparseMethod):
         cfg = self.config
 
         model_type = self.model_info.model_type
+        dense_warmup_layer_count = configured_dense_warmup_layer_count(cfg, total_layers)
 
         def attn_fn(query, key, value, attention_mask, **kwargs):
             full_attention = (
                 query.shape[1] != key.shape[1]
+                or layer_idx < dense_warmup_layer_count
+                or configured_dense_warmup_requires_dense(
+                    cfg,
+                    runtime_num_inference_steps(step_tracker),
+                    getattr(step_tracker, "step", None),
+                )
                 or _draft_is_dense_layer_or_timestep(
                     model_type=model_type,
                     layer_idx=layer_idx,
@@ -223,15 +231,18 @@ def _draft_attention(query, key, value, sparsity_ratio, pool_h, pool_w,
         )
         _validate_configured_int("latent_h", latent_h, frame_h)
         _validate_configured_int("latent_w", latent_w, frame_w)
-        canvas_h = frame_h
-        canvas_w = frame_w
-        canvas_video_len = video_len
-        if model_type not in ("wan", "hunyuan_video"):
-            canvas_h = _ceil_to_multiple(frame_h, pool_h)
-            canvas_w = _ceil_to_multiple(frame_w, pool_w)
-            canvas_video_len = T * canvas_h * canvas_w
+        canvas_h = _ceil_to_multiple(frame_h, pool_h)
+        canvas_w = _ceil_to_multiple(frame_w, pool_w)
+        canvas_video_len = T * canvas_h * canvas_w
         _validate_upstream_draft_layout(
-            canvas_video_len, canvas_h, canvas_w, pool_h, pool_w, model_type, text_len=tail_len
+            canvas_video_len,
+            canvas_h,
+            canvas_w,
+            pool_h,
+            pool_w,
+            model_type,
+            text_len=tail_len,
+            strict_upstream_shape=False,
         )
     except (AssertionError, ValueError, RuntimeError) as exc:
         raise RuntimeError(
@@ -599,7 +610,17 @@ def _infer_draft_frame_shape(video_len, model_type="wan", latent_h=None, latent_
     return infer_video_frame_shape(video_len, model_type=model_type)
 
 
-def _validate_upstream_draft_layout(video_len, frame_h, frame_w, pool_h, pool_w, model_type, text_len=None):
+def _validate_upstream_draft_layout(
+    video_len,
+    frame_h,
+    frame_w,
+    pool_h,
+    pool_w,
+    model_type,
+    text_len=None,
+    *,
+    strict_upstream_shape=True,
+):
     part_size = frame_w * pool_h
     block_size = frame_w
     if frame_h % pool_h != 0:
@@ -608,9 +629,9 @@ def _validate_upstream_draft_layout(video_len, frame_h, frame_w, pool_h, pool_w,
         raise ValueError("visual_len must be multiple of latent_w * pool_h")
     if block_size % pool_w != 0:
         raise ValueError("latent_w must be multiple of pool_w")
-    if model_type == "wan" and video_len not in (21 * 32 * 48, 21 * 48 * 80):
+    if strict_upstream_shape and model_type == "wan" and video_len not in (21 * 32 * 48, 21 * 48 * 80):
         raise ValueError("upstream Wan draft path supports 768x512 or 1280x768 latent layouts")
-    if model_type == "hunyuan_video":
+    if strict_upstream_shape and model_type == "hunyuan_video":
         if video_len != 33 * 48 * 80:
             raise ValueError("upstream Hunyuan draft path supports 129-frame 1280x768 latent layout")
         if text_len is not None and text_len != 256:

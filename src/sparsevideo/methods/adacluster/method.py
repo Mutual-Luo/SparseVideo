@@ -4,6 +4,7 @@ import torch
 import torch.nn.functional as F
 
 from .._base import SparseMethod
+from .._schedule import configured_dense_warmup_layer_count, configured_dense_warmup_requires_dense, runtime_num_inference_steps
 from ...processors.allegro import SparseAllegroAttnProcessor
 from ...processors.cogvideox import SparseCogVideoXAttnProcessor
 from ...processors.easyanimate import SparseEasyAnimateAttnProcessor
@@ -15,10 +16,11 @@ from . import config as method_config
 
 
 class AdaClusterMethod(SparseMethod):
-    """AdaCluster: Triton k-means clustering + block-sparse attention.
+    """AdaCluster: Triton k-means clustering + cluster block-sparse attention.
 
     Uses upstream topk_num/q_kernel_num/kv_kernel_num naming. Hunyuan applies
     the hardcoded upstream dense gates before entering the sparse path.
+    Sparse attention dispatches the owned Triton top-k cluster kernel.
 
     Port of:
     - training_free/Adacluster/triton_kernel/fast_kmeans_single.py
@@ -48,11 +50,20 @@ class AdaClusterMethod(SparseMethod):
             "use_full_attention": False,
         }
         model_type = self.model_info.model_type
+        dense_warmup_layer_count = configured_dense_warmup_layer_count(cfg, total_layers)
 
         def attn_fn(query, key, value, attention_mask, **kwargs):
             if (
-                model_type == "hunyuan_video"
-                and _adacluster_hunyuan_uses_dense(layer_idx, step_tracker.step)
+                layer_idx < dense_warmup_layer_count
+                or configured_dense_warmup_requires_dense(
+                    cfg,
+                    runtime_num_inference_steps(step_tracker),
+                    getattr(step_tracker, "step", None),
+                )
+                or (
+                    model_type == "hunyuan_video"
+                    and _adacluster_hunyuan_uses_dense(layer_idx, step_tracker.step)
+                )
             ):
                 if attention_mask is not None:
                     key, value = _adacluster_trim_hunyuan_kv(key, value, attention_mask)
@@ -186,10 +197,24 @@ def _adacluster_cluster_sparse_attn(
     key: torch.Tensor,
     value: torch.Tensor,
     compressed_attn_mask: torch.Tensor,
+    selected_kv_indices: torch.Tensor | None = None,
     q_counts: torch.Tensor,
     kv_counts: torch.Tensor,
     sm_scale: float,
 ) -> torch.Tensor:
+    if selected_kv_indices is not None:
+        from ...kernels.native.adacluster.triton_cluster_sparse_attn_topk import triton_cluster_sparse_attn_topk
+
+        return triton_cluster_sparse_attn_topk(
+            query=query,
+            key=key,
+            value=value,
+            selected_kv_indices=selected_kv_indices,
+            q_counts=q_counts,
+            kv_counts=kv_counts,
+            sm_scale=sm_scale,
+        )
+
     from ...kernels.native.adacluster.triton_cluster_sparse_attn import triton_cluster_sparse_attn
 
     return triton_cluster_sparse_attn(
@@ -201,6 +226,42 @@ def _adacluster_cluster_sparse_attn(
         kv_counts=kv_counts,
         sm_scale=sm_scale,
     )
+
+
+def _adacluster_flashinfer_cluster_sparse_attn(
+    *,
+    query: torch.Tensor,
+    key: torch.Tensor,
+    value: torch.Tensor,
+    compressed_attn_mask: torch.Tensor,
+    q_sizes: torch.Tensor,
+    kv_sizes: torch.Tensor,
+    sm_scale: float,
+) -> torch.Tensor | None:
+    if not query.is_cuda:
+        return None
+
+    from ...kernels.flashinfer_block_sparse import HAS_FLASHINFER, variable_block_sparse_attn
+
+    if not HAS_FLASHINFER:
+        return None
+
+    batch_size, num_heads, q_len, head_dim = query.shape
+    kv_len = key.shape[2]
+    q_kernel_num = q_sizes.shape[2]
+    kv_kernel_num = kv_sizes.shape[2]
+    batch_heads = batch_size * num_heads
+
+    out = variable_block_sparse_attn(
+        query.reshape(batch_heads, q_len, head_dim).contiguous(),
+        key.reshape(batch_heads, kv_len, head_dim).contiguous(),
+        value.reshape(batch_heads, kv_len, head_dim).contiguous(),
+        compressed_attn_mask.reshape(batch_heads, q_kernel_num, kv_kernel_num).contiguous(),
+        q_sizes.squeeze(-1).reshape(batch_heads, q_kernel_num).to(torch.int32).contiguous(),
+        kv_sizes.squeeze(-1).reshape(batch_heads, kv_kernel_num).to(torch.int32).contiguous(),
+        sm_scale=sm_scale,
+    )
+    return out.reshape(batch_size, num_heads, q_len, head_dim)
 
 
 def _adacluster_thresholded_config(cfg):
@@ -362,11 +423,6 @@ def _adacluster_attention(query, key, value, topk_num, q_kernel_num, kv_kernel_n
     compressed_mask = torch.zeros_like(cluster_attn, dtype=torch.bool)
     compressed_mask.scatter_(dim=-1, index=topk_idx, value=True)
 
-    k_counts = k_sizes.squeeze(-1).to(torch.int32)
-    q_counts = q_sizes.squeeze(-1).to(torch.int32)
-    k_counts = torch.cumsum(k_counts, dim=-1).to(torch.int32).contiguous()
-    q_counts = torch.cumsum(q_counts, dim=-1).to(torch.int32).contiguous()
-
     # Sort by cluster and compute block-sparse attention
     q_sorted_idx = q_labels.long().argsort(dim=-1)
     k_sorted_idx = k_labels.long().argsort(dim=-1)
@@ -375,11 +431,17 @@ def _adacluster_attention(query, key, value, topk_num, q_kernel_num, kv_kernel_n
     k_sorted = torch.gather(k_bhsd, 2, k_sorted_idx.unsqueeze(-1).expand(-1, -1, -1, D)).contiguous()
     v_sorted = torch.gather(v_bhsd, 2, k_sorted_idx.unsqueeze(-1).expand(-1, -1, -1, D)).contiguous()
 
+    sparse_backend = "triton_cluster_sparse_attn_topk"
+    k_counts = k_sizes.squeeze(-1).to(torch.int32)
+    q_counts = q_sizes.squeeze(-1).to(torch.int32)
+    k_counts = torch.cumsum(k_counts, dim=-1).to(torch.int32).contiguous()
+    q_counts = torch.cumsum(q_counts, dim=-1).to(torch.int32).contiguous()
     out_sorted = _adacluster_cluster_sparse_attn(
         query=q_sorted,
         key=k_sorted,
         value=v_sorted,
         compressed_attn_mask=compressed_mask.contiguous(),
+        selected_kv_indices=topk_idx.contiguous(),
         q_counts=q_counts,
         kv_counts=k_counts,
         sm_scale=scale,
@@ -390,7 +452,7 @@ def _adacluster_attention(query, key, value, topk_num, q_kernel_num, kv_kernel_n
     out_bhsd = torch.gather(out_sorted, 2, inv_q_idx.unsqueeze(-1).expand(-1, -1, -1, D))
 
     if backend_trace is not None:
-        backend_trace.append("triton_cluster_sparse_attn")
+        backend_trace.append(sparse_backend)
     return out_bhsd[..., :original_head_dim].permute(0, 2, 1, 3).contiguous()
 
 

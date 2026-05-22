@@ -13,11 +13,20 @@ from sparsevideo.methods.sta.config import _HUNYUAN_MASK_STRATEGY, _WAN_MASK_STR
 from sparsevideo.methods.sta.method import (
     _is_supported_fastvideo_shape,
     _load_mask_strategy,
+    _sta_attention,
     _sta_backend_name,
+    _sta_pad_video_canvas,
+    _sta_padded_border_indices,
     _sta_sparsevideo_fastvideo_path,
     _sta_tile_bhsd,
     _sta_untile_bhsd,
     _sta_window_sizes,
+)
+from sparsevideo.methods.sta.search import (
+    model_search_defaults,
+    model_strategy_shape,
+    summarize_strategy,
+    tune_search_results,
 )
 from sparsevideo.methods.sta.ops import (
     STA_SUPPORTED_SEQ_SHAPES,
@@ -150,6 +159,61 @@ def test_sta_backend_name_marks_a100_triton_path(monkeypatch):
     monkeypatch.setattr(sta_ops, "sta_fwd", object())
 
     assert _sta_backend_name(torch.empty(1)) == "fastvideo_sta_a100_triton"
+
+
+def test_sta_wan_generalized_shape_reaches_owned_path(monkeypatch):
+    calls = {}
+
+    def fake_path(
+        query, key, value, batch, tokens, heads, dim,
+        vid_start, video_len, text_len, context_len,
+        frames, spatial_h, spatial_w,
+        frames_pad, height_pad, width_pad,
+        tile_size, kernel_size, model_type, seq_shape, has_text,
+        layer_idx, step_idx, mask_strategy, prompt_length,
+    ):
+        calls["shape"] = (frames, spatial_h, spatial_w)
+        calls["padded_shape"] = (frames_pad, height_pad, width_pad)
+        return query
+
+    monkeypatch.setattr(torch.Tensor, "is_cuda", property(lambda self: True))
+    monkeypatch.setattr("sparsevideo.methods.sta.method._sta_sparsevideo_fastvideo_path", fake_path)
+
+    query = torch.zeros(1, 21 * 45 * 80, 2, 4)
+    out = _sta_attention(
+        query,
+        query,
+        query,
+        tile_size=(6, 8, 8),
+        kernel_size=(3, 6, 10),
+        model_type="wan",
+        has_text=False,
+    )
+
+    assert out is query
+    assert calls == {"shape": (21, 45, 80), "padded_shape": (24, 48, 80)}
+
+
+def test_sta_generalized_canvas_padding_repeats_edges():
+    x = torch.arange(1 * 1 * 2 * 2 * 2 * 1).reshape(1, 1, 8, 1)
+
+    padded = _sta_pad_video_canvas(x, (2, 2, 2), (3, 3, 3)).view(1, 1, 3, 3, 3, 1)
+    source = x.view(1, 1, 2, 2, 2, 1)
+
+    assert torch.equal(padded[:, :, :2, :2, :2], source)
+    assert torch.equal(padded[:, :, 2, :2, :2], source[:, :, 1])
+    assert torch.equal(padded[:, :, :, 2, :2], padded[:, :, :, 1, :2])
+    assert torch.equal(padded[:, :, :, :, 2], padded[:, :, :, :, 1])
+
+
+def test_sta_padded_border_indices_cover_only_incomplete_tiles():
+    indices = _sta_padded_border_indices((3, 5, 4), (4, 6, 4), (2, 3, 4))
+    coords = {tuple(item.tolist()) for item in torch.stack(torch.unravel_index(indices, (3, 5, 4)), dim=1)}
+
+    assert (2, 0, 0) in coords
+    assert (0, 3, 0) in coords
+    assert (0, 0, 0) not in coords
+    assert all(t == 2 or h >= 3 for t, h, _ in coords)
 
 
 def test_sta_a100_autotune_patch_is_wrapper_owned(monkeypatch):
@@ -318,6 +382,176 @@ def test_sta_window_sizes_are_selected_by_step_layer_head():
     ]
 
 
+def test_sta_search_tuning_writes_wan13_sized_strategy(tmp_path):
+    search_dir = tmp_path / "search"
+    search_dir.mkdir()
+    with (search_dir / "mask_search_prompt0.jsonl").open("w", encoding="utf-8") as handle:
+        for step in range(2):
+            for layer in range(2):
+                handle.write(json.dumps({
+                    "step": step,
+                    "layer": layer,
+                    "L2_loss": {
+                        "3,1,10": [0.2, 0.1],
+                        "1,5,7": [0.1, 0.3],
+                    },
+                    "L1_loss": {
+                        "3,1,10": [0.2, 0.1],
+                        "1,5,7": [0.1, 0.3],
+                    },
+                }) + "\n")
+    (search_dir / "metrics_gpu0.jsonl").write_text(json.dumps({"status": "ok"}) + "\n", encoding="utf-8")
+
+    output_file = tmp_path / "mask_strategy_wan13.json"
+    summary = tune_search_results(
+        search_dir,
+        output_file,
+        candidates=[(3, 1, 10), (1, 5, 7)],
+        full_window=(3, 6, 10),
+        skip_time_steps=1,
+        timesteps=2,
+        layers=2,
+        heads=2,
+    )
+    data = json.loads(output_file.read_text(encoding="utf-8"))
+
+    assert summary["entries"] == 8
+    assert data["0_0_0"] == [3, 6, 10]
+    assert data["1_0_0"] == [1, 5, 7]
+    assert data["1_0_1"] == [3, 1, 10]
+    assert summarize_strategy(output_file)["strategy_counts"]["3,6,10"] == 4
+
+
+def test_sta_search_tuning_infers_shape_from_records(tmp_path):
+    search_dir = tmp_path / "search"
+    search_dir.mkdir()
+    with (search_dir / "mask_search_prompt0.jsonl").open("w", encoding="utf-8") as handle:
+        for step in range(3):
+            for layer in range(2):
+                handle.write(json.dumps({
+                    "step": step,
+                    "layer": layer,
+                    "L2_loss": {
+                        "3,1,10": [0.2, 0.1, 0.4],
+                        "1,5,7": [0.1, 0.3, 0.2],
+                    },
+                }) + "\n")
+
+    output_file = tmp_path / "mask_strategy_inferred.json"
+    summary = tune_search_results(
+        search_dir,
+        output_file,
+        candidates=[(3, 1, 10), (1, 5, 7)],
+        skip_time_steps=1,
+    )
+
+    assert summary["timesteps"] == 3
+    assert summary["layers"] == 2
+    assert summary["heads"] == 3
+    assert summary["entries"] == 18
+
+
+def test_sta_search_tuning_uses_model_shape_defaults(tmp_path):
+    search_dir = tmp_path / "search"
+    search_dir.mkdir()
+    (search_dir / "mask_search_prompt0.jsonl").write_text(
+        json.dumps({
+            "step": 12,
+            "layer": 0,
+            "L2_loss": {
+                "3,1,10": [0.2],
+                "1,5,7": [0.1],
+            },
+        }) + "\n",
+        encoding="utf-8",
+    )
+
+    output_file = tmp_path / "mask_strategy_wan13.json"
+    summary = tune_search_results(search_dir, output_file, model="wan1.3b")
+
+    assert summary["timesteps"] == 50
+    assert summary["layers"] == 30
+    assert summary["heads"] == 12
+    assert summary["entries"] == 50 * 30 * 12
+
+
+def test_sta_search_model_defaults_cover_supported_backbones():
+    assert model_strategy_shape("wan1.3b") == (50, 30, 12)
+    assert model_strategy_shape("wan22") == (40, 40, 40)
+    assert model_strategy_shape("hunyuan-i2v") == (50, 60, 24)
+    assert model_strategy_shape("cogvideox") == (50, 42, 48)
+    assert model_strategy_shape("ltx-i2v") == (50, 28, 32)
+    assert model_strategy_shape("allegro") == (100, 32, 24)
+    assert model_strategy_shape("mochi") == (64, 48, 24)
+    assert model_strategy_shape("easyanimate") == (50, 48, 48)
+
+
+def test_sta_search_uses_hunyuan_tuning_defaults(tmp_path):
+    search_dir = tmp_path / "search"
+    search_dir.mkdir()
+    with (search_dir / "mask_search_prompt0.jsonl").open("w", encoding="utf-8") as handle:
+        handle.write(json.dumps({
+            "step": 15,
+            "layer": 0,
+            "L2_loss": {
+                "5,3,3": [0.2],
+                "1,6,10": [0.1],
+            },
+        }) + "\n")
+
+    output_file = tmp_path / "mask_strategy_hunyuan_small.json"
+    summary = tune_search_results(
+        search_dir,
+        output_file,
+        model="hunyuan",
+        timesteps=16,
+        layers=1,
+        heads=1,
+    )
+    data = json.loads(output_file.read_text(encoding="utf-8"))
+
+    assert model_search_defaults("hunyuan")["skip_time_steps"] == 15
+    assert summary["skip_time_steps"] == 15
+    assert data["14_0_0"] == [5, 6, 10]
+    assert data["15_0_0"] == [1, 6, 10]
+
+
+def test_sta_searching_mode_records_candidate_losses(monkeypatch, tmp_path):
+    def fake_sta_attention(query, key, value, *, kernel_size, **kwargs):
+        return torch.zeros_like(query) + float(kernel_size[0])
+
+    monkeypatch.setattr("sparsevideo.methods.sta.method._sta_attention", fake_sta_attention)
+
+    method = STAMethod(
+        config={
+            "STA_mode": "STA_searching",
+            "mask_candidates": [[1, 1, 1], [2, 1, 1]],
+            "mask_search_output_dir": str(tmp_path),
+            "mask_search_prompt_id": "unit",
+        },
+        model_info=SimpleNamespace(model_type="wan", model_key="wan21-t2v-1.3b"),
+    )
+    processor = method.create_processor(
+        layer_idx=0,
+        total_layers=1,
+        original_processor=None,
+        step_tracker=SimpleNamespace(step=1),
+    )
+    query = torch.zeros(1, 4, 2, 3)
+
+    out = processor.attn_fn(query, query, query, None)
+    method._mask_search_recorder.close()
+    records = list(tmp_path.glob("mask_search_unit_*.jsonl"))
+    payload = json.loads(records[0].read_text(encoding="utf-8").strip())
+
+    assert torch.equal(out, torch.zeros_like(query))
+    assert payload["step"] == 0
+    assert payload["layer"] == 0
+    assert set(payload["L2_loss"]) == {"1,1,1", "2,1,1"}
+    assert payload["L2_loss"]["1,1,1"] == [1.0, 1.0]
+    assert payload["L2_loss"]["2,1,1"] == [4.0, 4.0]
+
+
 def test_sta_hunyuan_processor_passes_prompt_length_to_kernel_path(monkeypatch):
     calls = []
 
@@ -335,7 +569,7 @@ def test_sta_hunyuan_processor_passes_prompt_length_to_kernel_path(monkeypatch):
         layer_idx=2,
         total_layers=60,
         original_processor=None,
-        step_tracker=SimpleNamespace(step=3),
+        step_tracker=SimpleNamespace(step=10),
     )
     query = torch.randn(1, 10, 2, 4)
 
@@ -347,6 +581,63 @@ def test_sta_hunyuan_processor_passes_prompt_length_to_kernel_path(monkeypatch):
 
 
 def test_sta_hunyuan_kernel_uses_prompt_length_not_text_tail_length(monkeypatch):
+    calls = []
+
+    def fake_sliding_tile_attention(q, k, v, window_size, text_length, has_text, seq_shape):
+        calls.append(
+            {
+                "shape": tuple(q.shape),
+                "text_length": text_length,
+                "has_text": has_text,
+                "seq_shape": seq_shape,
+            }
+        )
+        return q
+
+    monkeypatch.setattr(sta_ops, "sliding_tile_attention", fake_sliding_tile_attention)
+
+    query = torch.arange(1 * 12 * 1 * 2, dtype=torch.float32).reshape(1, 12, 1, 2)
+    out = _sta_sparsevideo_fastvideo_path(
+        query,
+        query,
+        query,
+        B=1,
+        N=12,
+        H=1,
+        D=2,
+        vid_start=0,
+        video_len=8,
+        text_len=4,
+        context_len=0,
+        T=1,
+        spatial_h=2,
+        spatial_w=4,
+        T_pad=1,
+        H_pad=2,
+        W_pad=4,
+        tile_size=(1, 2, 2),
+        kernel_size=(1, 1, 1),
+        model_type="hunyuan_video",
+        seq_shape_override="1x2x4",
+        has_text_config=True,
+        layer_idx=0,
+        step_idx=0,
+        mask_strategy=None,
+        prompt_length=2,
+    )
+
+    assert calls == [
+        {
+            "shape": (1, 1, 12, 2),
+            "text_length": 2,
+            "has_text": True,
+            "seq_shape": "1x2x4",
+        }
+    ]
+    assert torch.equal(out, query)
+
+
+def test_sta_hunyuan_text_tail_over_kernel_capacity_uses_dense_tail(monkeypatch):
     calls = []
 
     def fake_sliding_tile_attention(q, k, v, window_size, text_length, has_text, seq_shape):
@@ -394,13 +685,13 @@ def test_sta_hunyuan_kernel_uses_prompt_length_not_text_tail_length(monkeypatch)
 
     assert calls == [
         {
-            "shape": (1, 1, 12, 2),
-            "text_length": 2,
+            "shape": (1, 1, 9, 2),
+            "text_length": 1,
             "has_text": True,
             "seq_shape": "1x2x4",
         }
     ]
-    assert torch.equal(out, query)
+    assert out.shape == query.shape
 
 
 def test_sta_tile_untile_roundtrip_matches_fastvideo_layout():

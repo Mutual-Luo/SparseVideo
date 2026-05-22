@@ -2,40 +2,39 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from .._config import apply_model_defaults, copy_config_defaults, load_method_config_yaml
 
-_WAN_MASK_STRATEGY = str(Path(__file__).with_name("mask_strategy_wan.json"))
-_HUNYUAN_MASK_STRATEGY = str(Path(__file__).with_name("mask_strategy_hunyuan.json"))
 
-CONFIG_DEFAULTS = {
-    "tile_size": [6, 8, 8],
-    "window_size": [3, 6, 10],
-    "seq_shape": None,
-    "has_text": True,
-    "STA_mode": "STA_inference",
-    "mask_strategy_file_path": None,
-}
+_MASK_STRATEGY_DIR = Path(__file__).with_name("mask_strategies")
+_WAN_MASK_STRATEGY = str(_MASK_STRATEGY_DIR / "mask_strategy_wan.json")
+_WAN13_MASK_STRATEGY = str(_MASK_STRATEGY_DIR / "mask_strategy_wan13.json")
+_HUNYUAN_MASK_STRATEGY = str(_MASK_STRATEGY_DIR / "mask_strategy_hunyuan.json")
 
-CONFIG_ALIASES = {}
+_YAML_CONFIG = load_method_config_yaml(__file__)
+
+CONFIG_DEFAULTS = _YAML_CONFIG["defaults"]
+MODEL_DEFAULTS = _YAML_CONFIG["model_defaults"]
+CONFIG_ALIASES = _YAML_CONFIG["aliases"]
+
+
+def _owned_model_mask_strategy(model_key):
+    if not model_key:
+        return None
+    safe_key = "".join(ch if ch.isalnum() else "_" for ch in str(model_key).lower()).strip("_")
+    path = _MASK_STRATEGY_DIR / f"mask_strategy_{safe_key}.json"
+    return str(path) if path.exists() else None
 
 
 def default_config(**context):
-    config = dict(CONFIG_DEFAULTS)
+    config = copy_config_defaults(CONFIG_DEFAULTS)
     model_key = context.get("model_key")
-    if model_key == "wan21-t2v-14b":
-        config["has_text"] = False
-        config["window_size"] = [3, 6, 10]
+    apply_model_defaults(config, MODEL_DEFAULTS, context)
+    if (owned_strategy := _owned_model_mask_strategy(model_key)) is not None:
+        config["mask_strategy_file_path"] = owned_strategy
+    elif model_key == "wan21-t2v-1.3b":
+        config["mask_strategy_file_path"] = _WAN13_MASK_STRATEGY
+    elif model_key == "wan21-t2v-14b":
         config["mask_strategy_file_path"] = _WAN_MASK_STRATEGY
-    elif context.get("model_family") == "wan":
-        config["has_text"] = False
-        config["window_size"] = [3, 6, 10]
-    elif context.get("model_family") == "hunyuan_video":
-        config["has_text"] = True
-        config["window_size"] = [5, 6, 10]
+    elif model_key in ("hunyuan-t2v", "hunyuan-i2v"):
         config["mask_strategy_file_path"] = _HUNYUAN_MASK_STRATEGY
-    elif context.get("model_family") in ("cogvideox", "mochi", "easyanimate"):
-        config["has_text"] = True
-        config["window_size"] = [1, 1, 1]
-    elif context.get("model_family") in ("ltx_video", "allegro"):
-        config["has_text"] = False
-        config["window_size"] = [1, 1, 1]
     return config

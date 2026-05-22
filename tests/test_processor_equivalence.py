@@ -355,6 +355,42 @@ def test_sparse_allegro_processor_matches_diffusers_dense_processor():
     torch.testing.assert_close(actual, expected, atol=1e-6, rtol=1e-6)
 
 
+def test_sparse_allegro_processor_matches_diffusers_dense_processor_with_rope():
+    torch.manual_seed(31)
+    attn = Attention(
+        query_dim=48,
+        heads=4,
+        dim_head=12,
+        bias=True,
+        cross_attention_dim=None,
+        processor=AllegroAttnProcessor2_0(),
+    )
+    hidden_states = torch.randn(2, 7, 48)
+    max_position = 11
+    rope_dim = 4
+    freqs = []
+    for _ in range(3):
+        angles = torch.randn(max_position, rope_dim)
+        freqs.append((angles.cos(), angles.sin()))
+    positions = (
+        torch.randint(0, max_position, (2, 7)),
+        torch.randint(0, max_position, (2, 7)),
+        torch.randint(0, max_position, (2, 7)),
+    )
+    image_rotary_emb = (tuple(freqs), positions)
+
+    expected = AllegroAttnProcessor2_0()(
+        attn, hidden_states, image_rotary_emb=image_rotary_emb
+    )
+    actual = SparseAllegroAttnProcessor(
+        attn_fn=_dense_video_first_sdpa,
+        layer_idx=0,
+        step_tracker=_StepTracker(),
+    )(attn, hidden_states, image_rotary_emb=image_rotary_emb)
+
+    torch.testing.assert_close(actual, expected, atol=1e-6, rtol=1e-6)
+
+
 def test_sparse_allegro_processor_rejects_cross_attention():
     attn = Attention(
         query_dim=16,

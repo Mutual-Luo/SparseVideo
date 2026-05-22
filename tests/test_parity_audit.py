@@ -43,6 +43,37 @@ def _record(method: str, tmp_path: Path, *, steps: int = 50) -> dict:
     }
 
 
+def _diffsynth_record(method: str, model: str, *, patched_count: int) -> dict:
+    patched_paths = [f"dit.blocks.{idx}.self_attn.attn" for idx in range(patched_count)]
+    apply_summary = {
+        "pipeline_backend": "diffsynth",
+        "diffsynth_version": "2.0.12",
+        "model_key": model,
+        "model_type": "wan",
+        "num_self_attn_layers": max(patched_count, 1),
+        "patched_attention_count": patched_count,
+        "patched_attention_paths": patched_paths,
+        "unpatched_attention_paths": [],
+        "method_runtime": {"backend_counts": {}, "dispatch_counts": {}, "total_calls": 0},
+    }
+    restore_summary = dict(apply_summary)
+    restore_summary["restored"] = True
+    return {
+        "backend": "diffsynth",
+        "model": model,
+        "method": method,
+        "status": "ok",
+        "mode": "apply_only",
+        "resolved_model": {"model": model, "complete": True, "missing": []},
+        "method_config": {},
+        "timings": {"total_sec": 1.0},
+        "elapsed_sec": 1.0,
+        "cuda": {"device": "cuda", "available": True},
+        "apply_summary": apply_summary,
+        "restore_summary": restore_summary,
+    }
+
+
 def _mark_current_flashomni_policy(record: dict, audit_mod) -> dict:
     record["source_fingerprints"] = {
         "flashomni_policy_sha256": audit_mod._current_flashomni_policy_sha256(),
@@ -143,6 +174,267 @@ def test_new_backbone_smoke_gate_requires_all_public_sparse_methods():
 
     assert methods == audit_mod.EXPECTED_FULL_BACKBONE_METHODS
     assert set(methods) == set(audit_mod.EXPECTED_METHODS)
+
+
+def test_default_audit_metrics_include_diffsynth_smoke_outputs():
+    audit_mod = _load_audit_module()
+
+    assert audit_mod.DEFAULT_DIFFSYNTH_METRICS_GLOB == "outputs/diffsynth_method_smoke/**/*.jsonl"
+    assert audit_mod.DEFAULT_DIFFSYNTH_METRICS_GLOB in audit_mod.DEFAULT_METRICS_GLOBS
+
+
+def test_diffsynth_apply_restore_gate_counts_all_method_apply_only_records(monkeypatch):
+    audit_mod = _load_audit_module()
+    monkeypatch.setattr(audit_mod, "_expected_diffsynth_model_keys", lambda: ("wan21-t2v-1.3b",))
+    monkeypatch.setattr(audit_mod, "EXPECTED_DIFFSYNTH_APPLY_METHODS", ("dense", "svg2"))
+    records = [
+        _diffsynth_record("dense", "wan21-t2v-1.3b", patched_count=0),
+        _diffsynth_record("svg2", "wan21-t2v-1.3b", patched_count=30),
+    ]
+
+    gate = audit_mod._diffsynth_apply_restore_evidence_gate(records)
+
+    assert gate["status"] == "pass"
+    assert gate["missing"] == []
+    methods = gate["evidence"]["models"]["wan21-t2v-1.3b"]["methods"]
+    assert methods["dense"]["patched_attention_count"] == 0
+    assert methods["svg2"]["patched_attention_count"] == 30
+    assert methods["svg2"]["diffsynth_version"] == "2.0.12"
+    assert methods["svg2"]["restored"] is True
+    assert methods["svg2"]["method_config"] == {}
+    assert methods["svg2"]["timings"] == {"total_sec": 1.0}
+    assert methods["svg2"]["cuda"] == {"device": "cuda", "available": True}
+
+
+def test_diffsynth_checkpoint_gate_reports_incomplete_bundles(monkeypatch):
+    audit_mod = _load_audit_module()
+    monkeypatch.setattr(
+        audit_mod,
+        "_diffsynth_checkpoint_records",
+        lambda: (
+            "/models",
+            [
+                {
+                    "model": "wan21-t2v-1.3b",
+                    "family": "wan",
+                    "pipeline": "WanVideoPipeline",
+                    "required_inputs": [],
+                    "complete": True,
+                    "components": {"dit": ["/models/Wan2.1-T2V-1.3B/model.safetensors"]},
+                    "missing": [],
+                },
+                {
+                    "model": "wan21-vace-1.3b",
+                    "family": "wan",
+                    "pipeline": "WanVideoPipeline",
+                    "required_inputs": [],
+                    "complete": False,
+                    "components": {},
+                    "missing": ["dit: missing files"],
+                },
+            ],
+        ),
+    )
+    monkeypatch.setattr(
+        audit_mod,
+        "_diffsynth_deferred_model_records",
+        lambda: [
+            {
+                "model": "wan22-dancer-14b",
+                "family": "wan",
+                "pipeline": "WanVideoPipeline",
+                "origin_repo": "Wan-AI/Wan2.2-Dancer-14B",
+                "origin_pattern": "global_model.safetensors",
+                "required_inputs": ["wantodance_music_path"],
+                "deferred_reason": "local-only until source is confirmed",
+            }
+        ],
+    )
+
+    gate = audit_mod._diffsynth_checkpoint_availability_gate()
+
+    assert gate["status"] == "fail"
+    assert gate["evidence"]["model_root"] == "/models"
+    assert gate["evidence"]["complete_count"] == 1
+    assert gate["evidence"]["incomplete_count"] == 1
+    assert gate["evidence"]["missing_component_checks"] == 1
+    assert gate["evidence"]["deferred_count"] == 1
+    assert gate["evidence"]["deferred_models"]["wan22-dancer-14b"]["origin_repo"] == "Wan-AI/Wan2.2-Dancer-14B"
+    assert gate["evidence"]["models"]["wan21-t2v-1.3b"]["complete"] is True
+    assert gate["evidence"]["models"]["wan21-vace-1.3b"]["missing_count"] == 1
+    assert "wan21-vace-1.3b: incomplete DiffSynth bundle (1 missing component checks)" in gate["missing"]
+    assert not any("wan22-dancer-14b" in item for item in gate["missing"])
+
+
+def test_diffsynth_checkpoint_gate_does_not_fail_on_deferred_models(monkeypatch):
+    audit_mod = _load_audit_module()
+    monkeypatch.setattr(
+        audit_mod,
+        "_diffsynth_checkpoint_records",
+        lambda: (
+            "/models",
+            [
+                {
+                    "model": "wan21-t2v-1.3b",
+                    "family": "wan",
+                    "pipeline": "WanVideoPipeline",
+                    "required_inputs": [],
+                    "complete": True,
+                    "components": {"dit": ["/models/Wan2.1-T2V-1.3B/model.safetensors"]},
+                    "missing": [],
+                }
+            ],
+        ),
+    )
+    monkeypatch.setattr(
+        audit_mod,
+        "_diffsynth_deferred_model_records",
+        lambda: [
+            {
+                "model": "wan22-dancer-14b",
+                "family": "wan",
+                "pipeline": "WanVideoPipeline",
+                "origin_repo": "Wan-AI/Wan2.2-Dancer-14B",
+                "origin_pattern": "global_model.safetensors",
+                "required_inputs": ["wantodance_music_path"],
+                "deferred_reason": "local-only until source is confirmed",
+            }
+        ],
+    )
+
+    gate = audit_mod._diffsynth_checkpoint_availability_gate()
+
+    assert gate["status"] == "pass"
+    assert gate["missing"] == []
+    assert gate["evidence"]["complete_count"] == 1
+    assert gate["evidence"]["incomplete_count"] == 0
+    assert gate["evidence"]["deferred_count"] == 1
+    assert "wan22-dancer-14b" in gate["evidence"]["deferred_models"]
+
+
+def test_diffsynth_apply_restore_gate_rejects_missing_restore_or_patch(monkeypatch):
+    audit_mod = _load_audit_module()
+    monkeypatch.setattr(audit_mod, "_expected_diffsynth_model_keys", lambda: ("wan21-t2v-1.3b",))
+    monkeypatch.setattr(audit_mod, "EXPECTED_DIFFSYNTH_APPLY_METHODS", ("dense", "svg2"))
+    dense = _diffsynth_record("dense", "wan21-t2v-1.3b", patched_count=0)
+    sparse = _diffsynth_record("svg2", "wan21-t2v-1.3b", patched_count=0)
+    sparse["restore_summary"]["restored"] = False
+
+    gate = audit_mod._diffsynth_apply_restore_evidence_gate([dense, sparse])
+
+    assert gate["status"] == "fail"
+    assert "wan21-t2v-1.3b/svg2: needs status=ok DiffSynth apply/restore record" in gate["missing"]
+    assert gate["evidence"]["models"]["wan21-t2v-1.3b"]["methods"]["dense"]["restored"] is True
+    assert gate["evidence"]["models"]["wan21-t2v-1.3b"]["methods"]["svg2"] is None
+
+
+def test_diffsynth_apply_restore_gate_rejects_partial_attention_patch(monkeypatch):
+    audit_mod = _load_audit_module()
+    monkeypatch.setattr(audit_mod, "_expected_diffsynth_model_keys", lambda: ("wan21-t2v-1.3b",))
+    monkeypatch.setattr(audit_mod, "EXPECTED_DIFFSYNTH_APPLY_METHODS", ("dense", "svg2"))
+    dense = _diffsynth_record("dense", "wan21-t2v-1.3b", patched_count=0)
+    sparse = _diffsynth_record("svg2", "wan21-t2v-1.3b", patched_count=1)
+    sparse["apply_summary"]["num_self_attn_layers"] = 2
+    sparse["restore_summary"]["num_self_attn_layers"] = 2
+
+    gate = audit_mod._diffsynth_apply_restore_evidence_gate([dense, sparse])
+
+    assert gate["status"] == "fail"
+    assert "wan21-t2v-1.3b/svg2: needs status=ok DiffSynth apply/restore record" in gate["missing"]
+    assert gate["evidence"]["models"]["wan21-t2v-1.3b"]["methods"]["svg2"] is None
+
+
+def test_diffsynth_apply_restore_gate_rejects_missing_layer_count(monkeypatch):
+    audit_mod = _load_audit_module()
+    monkeypatch.setattr(audit_mod, "_expected_diffsynth_model_keys", lambda: ("wan21-t2v-1.3b",))
+    monkeypatch.setattr(audit_mod, "EXPECTED_DIFFSYNTH_APPLY_METHODS", ("dense", "svg2"))
+    dense = _diffsynth_record("dense", "wan21-t2v-1.3b", patched_count=0)
+    sparse = _diffsynth_record("svg2", "wan21-t2v-1.3b", patched_count=30)
+    dense["apply_summary"].pop("num_self_attn_layers")
+    sparse["apply_summary"].pop("num_self_attn_layers")
+
+    gate = audit_mod._diffsynth_apply_restore_evidence_gate([dense, sparse])
+
+    assert gate["status"] == "fail"
+    assert "wan21-t2v-1.3b/dense: needs status=ok DiffSynth apply/restore record" in gate["missing"]
+    assert "wan21-t2v-1.3b/svg2: needs status=ok DiffSynth apply/restore record" in gate["missing"]
+
+
+def test_diffsynth_apply_restore_gate_rejects_non_evidence_mode(monkeypatch):
+    audit_mod = _load_audit_module()
+    monkeypatch.setattr(audit_mod, "_expected_diffsynth_model_keys", lambda: ("wan21-t2v-1.3b",))
+    monkeypatch.setattr(audit_mod, "EXPECTED_DIFFSYNTH_APPLY_METHODS", ("dense", "svg2"))
+    dense = _diffsynth_record("dense", "wan21-t2v-1.3b", patched_count=0)
+    sparse = _diffsynth_record("svg2", "wan21-t2v-1.3b", patched_count=30)
+    dense["mode"] = "dry_run"
+    sparse["mode"] = "dry_run"
+
+    gate = audit_mod._diffsynth_apply_restore_evidence_gate([dense, sparse])
+
+    assert gate["status"] == "fail"
+    assert "wan21-t2v-1.3b/dense: needs status=ok DiffSynth apply/restore record" in gate["missing"]
+    assert "wan21-t2v-1.3b/svg2: needs status=ok DiffSynth apply/restore record" in gate["missing"]
+
+
+def test_diffsynth_apply_restore_gate_requires_sparse_dispatch_for_generate(monkeypatch):
+    audit_mod = _load_audit_module()
+    monkeypatch.setattr(audit_mod, "_expected_diffsynth_model_keys", lambda: ("wan21-t2v-1.3b",))
+    monkeypatch.setattr(audit_mod, "EXPECTED_DIFFSYNTH_APPLY_METHODS", ("dense", "svg2"))
+    dense = _diffsynth_record("dense", "wan21-t2v-1.3b", patched_count=0)
+    sparse = _diffsynth_record("svg2", "wan21-t2v-1.3b", patched_count=30)
+    sparse["mode"] = "generate"
+    sparse["generate_summary"] = {
+        **sparse["apply_summary"],
+        "method_runtime": {"backend_counts": {"flashinfer": 30}, "dispatch_counts": {"dense": 30}},
+    }
+
+    gate = audit_mod._diffsynth_apply_restore_evidence_gate([dense, sparse])
+
+    assert gate["status"] == "fail"
+    assert "wan21-t2v-1.3b/svg2: needs status=ok DiffSynth apply/restore record" in gate["missing"]
+    assert gate["evidence"]["models"]["wan21-t2v-1.3b"]["methods"]["dense"]["restored"] is True
+    assert gate["evidence"]["models"]["wan21-t2v-1.3b"]["methods"]["svg2"] is None
+
+    sparse["generate_summary"]["method_runtime"]["dispatch_counts"] = {"sparse": 60}
+    gate = audit_mod._diffsynth_apply_restore_evidence_gate([dense, sparse])
+
+    assert gate["status"] == "pass"
+    assert gate["missing"] == []
+    assert gate["evidence"]["models"]["wan21-t2v-1.3b"]["methods"]["svg2"]["dispatch_counts"] == {"sparse": 60}
+
+
+def test_diffsynth_apply_restore_gate_rejects_incomplete_resolved_model(monkeypatch):
+    audit_mod = _load_audit_module()
+    monkeypatch.setattr(audit_mod, "_expected_diffsynth_model_keys", lambda: ("wan21-t2v-1.3b",))
+    monkeypatch.setattr(audit_mod, "EXPECTED_DIFFSYNTH_APPLY_METHODS", ("dense", "svg2"))
+    dense = _diffsynth_record("dense", "wan21-t2v-1.3b", patched_count=0)
+    sparse = _diffsynth_record("svg2", "wan21-t2v-1.3b", patched_count=30)
+    dense["resolved_model"] = {"complete": False, "missing": ["dit: missing files"]}
+    sparse["resolved_model"] = {"complete": False, "missing": ["dit: missing files"]}
+
+    gate = audit_mod._diffsynth_apply_restore_evidence_gate([dense, sparse])
+
+    assert gate["status"] == "fail"
+    assert "wan21-t2v-1.3b/dense: needs status=ok DiffSynth apply/restore record" in gate["missing"]
+    assert "wan21-t2v-1.3b/svg2: needs status=ok DiffSynth apply/restore record" in gate["missing"]
+
+
+def test_diffsynth_apply_restore_gate_requires_resolved_model_metadata(monkeypatch):
+    audit_mod = _load_audit_module()
+    monkeypatch.setattr(audit_mod, "_expected_diffsynth_model_keys", lambda: ("wan21-t2v-1.3b",))
+    monkeypatch.setattr(audit_mod, "EXPECTED_DIFFSYNTH_APPLY_METHODS", ("dense", "svg2"))
+    dense = _diffsynth_record("dense", "wan21-t2v-1.3b", patched_count=0)
+    sparse = _diffsynth_record("svg2", "wan21-t2v-1.3b", patched_count=30)
+    dense.pop("resolved_model")
+    sparse["resolved_model"] = {"model": "wan22-ti2v-5b", "complete": True, "missing": []}
+
+    gate = audit_mod._diffsynth_apply_restore_evidence_gate([dense, sparse])
+
+    assert gate["status"] == "fail"
+    assert "wan21-t2v-1.3b/dense: needs status=ok DiffSynth apply/restore record" in gate["missing"]
+    assert "wan21-t2v-1.3b/svg2: needs status=ok DiffSynth apply/restore record" in gate["missing"]
+    assert gate["evidence"]["models"]["wan21-t2v-1.3b"]["methods"]["dense"] is None
+    assert gate["evidence"]["models"]["wan21-t2v-1.3b"]["methods"]["svg2"] is None
 
 
 def test_all_backbone_smoke_gate_reports_missing_and_ignores_dry_run(tmp_path, monkeypatch):

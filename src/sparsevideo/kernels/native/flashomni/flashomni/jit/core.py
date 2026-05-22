@@ -6,7 +6,6 @@ from pathlib import Path
 from typing import List, Optional, Union
 
 import torch
-import torch.utils.cpp_extension as torch_cpp_ext
 from filelock import FileLock
 
 from .env import CUTLASS_INCLUDE_DIRS as CUTLASS_INCLUDE_DIRS
@@ -46,8 +45,15 @@ class FLASHOMNIJITLogger(logging.Logger):
 logger = FLASHOMNIJITLogger("FLASHOMNI.jit")
 
 
+def _torch_cpp_ext():
+    import torch.utils.cpp_extension as torch_cpp_ext
+
+    return torch_cpp_ext
+
+
 def check_cuda_arch():
     # cuda arch check for fp8 at the moment.
+    torch_cpp_ext = _torch_cpp_ext()
     for cuda_arch_flags in torch_cpp_ext._get_cuda_arch_flags():
         arch = int(re.search(r"compute_(\d+)", cuda_arch_flags).group(1))
         if arch < 75:
@@ -62,6 +68,7 @@ def clear_cache_dir():
 
 
 def remove_unwanted_pytorch_nvcc_flags():
+    torch_cpp_ext = _torch_cpp_ext()
     REMOVE_NVCC_FLAGS = [
         "-D__CUDA_NO_HALF_OPERATORS__",
         "-D__CUDA_NO_HALF_CONVERSIONS__",
@@ -75,8 +82,6 @@ def remove_unwanted_pytorch_nvcc_flags():
             suppress(ValueError)
 
 
-remove_unwanted_pytorch_nvcc_flags()
-
 sm90a_nvcc_flags = ["-gencode", "arch=compute_90a,code=sm_90a"]
 
 
@@ -88,6 +93,8 @@ def load_cuda_ops(
     extra_ldflags=None,
     extra_include_paths=None,
 ):
+    torch_cpp_ext = _torch_cpp_ext()
+    remove_unwanted_pytorch_nvcc_flags()
     verbose = os.environ.get("FLASHOMNI_JIT_VERBOSE", "0") == "1"
 
     if extra_cflags is None:

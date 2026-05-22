@@ -1,0 +1,165 @@
+# Editable defaults for Sparse-VideoGen SVG1.
+# Each public backbone has an explicit config block under model_defaults.
+defaults:
+  dense_warmup_step_ratio: 0.1 # Fraction of denoising steps that run dense before sparse attention starts.
+  dense_warmup_layer_ratio: 0.03 # Fraction of earliest transformer layers that always run dense.
+  num_sampled_rows: 64 # Number of sampled query rows used to profile candidate sparse masks.
+  sample_mse_max_row: 10000 # Maximum row count considered when measuring sampled-row MSE.
+  sparsity: 0.3 # SVG1 sparse-mask density/window control; larger keeps more attention.
+  context_length: null # Optional Hunyuan/text-tail context token length override.
+  prompt_length: null # Optional prompt token length override for text/video split handling.
+
+model_defaults:
+  wan21-t2v-1.3b:
+    dense_warmup_step_ratio: 0.1
+    dense_warmup_layer_ratio: 0.03
+    num_sampled_rows: 64
+    sample_mse_max_row: 10000
+    sparsity: 0.3
+    context_length: null
+    prompt_length: null
+  wan21-t2v-14b:
+    dense_warmup_step_ratio: 0.1
+    dense_warmup_layer_ratio: 0.03
+    num_sampled_rows: 64
+    sample_mse_max_row: 10000
+    sparsity: 0.3
+    context_length: null
+    prompt_length: null
+  wan22-t2v-a14b:
+    dense_warmup_step_ratio: 0.1
+    dense_warmup_layer_ratio: 0.03
+    num_sampled_rows: 64
+    sample_mse_max_row: 10000
+    sparsity: 0.3
+    context_length: null
+    prompt_length: null
+  hunyuan-t2v:
+    dense_warmup_step_ratio: 0.1
+    dense_warmup_layer_ratio: 0.03
+    num_sampled_rows: 64
+    sample_mse_max_row: 10000
+    sparsity: 0.25
+    context_length: 256
+    prompt_length: null
+  wan21-i2v-14b:
+    dense_warmup_step_ratio: 0.1
+    dense_warmup_layer_ratio: 0.03
+    num_sampled_rows: 64
+    sample_mse_max_row: 10000
+    sparsity: 0.3
+    context_length: null
+    prompt_length: null
+  wan22-i2v-a14b:
+    dense_warmup_step_ratio: 0.1
+    dense_warmup_layer_ratio: 0.03
+    num_sampled_rows: 64
+    sample_mse_max_row: 10000
+    sparsity: 0.3
+    context_length: null
+    prompt_length: null
+  hunyuan-i2v:
+    dense_warmup_step_ratio: 0.1
+    dense_warmup_layer_ratio: 0.03
+    num_sampled_rows: 64
+    sample_mse_max_row: 10000
+    sparsity: 0.25
+    context_length: 256
+    prompt_length: null
+  skyreels-v2-t2v-14b:
+    dense_warmup_step_ratio: 0.1
+    dense_warmup_layer_ratio: 0.03
+    num_sampled_rows: 64
+    sample_mse_max_row: 10000
+    sparsity: 0.3
+    context_length: null
+    prompt_length: null
+  skyreels-v2-i2v-14b:
+    dense_warmup_step_ratio: 0.1
+    dense_warmup_layer_ratio: 0.03
+    num_sampled_rows: 64
+    sample_mse_max_row: 10000
+    sparsity: 0.3
+    context_length: null
+    prompt_length: null
+  wan22-animate-14b:
+    dense_warmup_step_ratio: 0.1
+    dense_warmup_layer_ratio: 0.03
+    num_sampled_rows: 64
+    sample_mse_max_row: 10000
+    sparsity: 0.3
+    context_length: null
+    prompt_length: null
+  wan21-vace-1.3b:
+    dense_warmup_step_ratio: 0.1
+    dense_warmup_layer_ratio: 0.03
+    num_sampled_rows: 64
+    sample_mse_max_row: 10000
+    sparsity: 0.3
+    context_length: null
+    prompt_length: null
+  wan21-vace-14b:
+    dense_warmup_step_ratio: 0.1
+    dense_warmup_layer_ratio: 0.03
+    num_sampled_rows: 64
+    sample_mse_max_row: 10000
+    sparsity: 0.3
+    context_length: null
+    prompt_length: null
+  cogvideox-t2v:
+    dense_warmup_step_ratio: 0.1
+    dense_warmup_layer_ratio: 0.03
+    num_sampled_rows: 64
+    sample_mse_max_row: 10000
+    sparsity: 0.3
+    context_length: null
+    prompt_length: null
+  cogvideox-i2v:
+    dense_warmup_step_ratio: 0.1
+    dense_warmup_layer_ratio: 0.03
+    num_sampled_rows: 64
+    sample_mse_max_row: 10000
+    sparsity: 0.3
+    context_length: null
+    prompt_length: null
+  ltx-video:
+    dense_warmup_step_ratio: 0.1
+    dense_warmup_layer_ratio: 0.03
+    num_sampled_rows: 64
+    sample_mse_max_row: 10000
+    sparsity: 0.3
+    context_length: null
+    prompt_length: null
+  ltx-video-i2v:
+    dense_warmup_step_ratio: 0.1
+    dense_warmup_layer_ratio: 0.03
+    num_sampled_rows: 64
+    sample_mse_max_row: 10000
+    sparsity: 0.3
+    context_length: null
+    prompt_length: null
+  allegro:
+    dense_warmup_step_ratio: 0.1
+    dense_warmup_layer_ratio: 0.03
+    num_sampled_rows: 64
+    sample_mse_max_row: 10000
+    sparsity: 0.2
+    context_length: null
+    prompt_length: null
+  mochi-1:
+    dense_warmup_step_ratio: 0.1
+    dense_warmup_layer_ratio: 0.03
+    num_sampled_rows: 64
+    sample_mse_max_row: 10000
+    sparsity: 0.3
+    context_length: null
+    prompt_length: null
+  easyanimate-v5-t2v-12b:
+    dense_warmup_step_ratio: 0.1
+    dense_warmup_layer_ratio: 0.03
+    num_sampled_rows: 64
+    sample_mse_max_row: 10000
+    sparsity: 0.3
+    context_length: null
+    prompt_length: null
+aliases: {}

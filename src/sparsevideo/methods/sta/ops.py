@@ -235,6 +235,8 @@ def _sta_triton_head_dim(head_dim: int) -> int:
 def _can_use_h100_sta(q: torch.Tensor) -> bool:
     if sta_fwd is None or not q.is_cuda:
         return False
+    if q.device.type != "cuda":
+        return False
     major, _minor = torch.cuda.get_device_capability(q.device)
     return major >= 9
 

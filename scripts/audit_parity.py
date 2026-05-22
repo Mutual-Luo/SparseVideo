@@ -23,6 +23,9 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 SRC_ROOT = REPO_ROOT / "src"
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
+SCRIPTS_ROOT = REPO_ROOT / "scripts"
+if str(SCRIPTS_ROOT) not in sys.path:
+    sys.path.insert(0, str(SCRIPTS_ROOT))
 
 EXPECTED_METHODS = (
     "adacluster",
@@ -110,8 +113,13 @@ EXPECTED_PROCESSOR_CLASSES = {
 }
 DEFAULT_METRICS_GLOB = "result/inference/**/*.jsonl"
 DEFAULT_SMOKE_METRICS_GLOB = ".tmp_smoke/*.jsonl"
-DEFAULT_METRICS_GLOBS = (DEFAULT_METRICS_GLOB, DEFAULT_SMOKE_METRICS_GLOB)
-DEFAULT_MODEL_ROOT = Path("/home/dataset-assist-0/luojy/models")
+DEFAULT_DIFFSYNTH_METRICS_GLOB = "outputs/diffsynth_method_smoke/**/*.jsonl"
+DEFAULT_METRICS_GLOBS = (
+    DEFAULT_METRICS_GLOB,
+    DEFAULT_SMOKE_METRICS_GLOB,
+    DEFAULT_DIFFSYNTH_METRICS_GLOB,
+)
+DEFAULT_MODEL_ROOT = Path("/home/dataset-assist-0/public-models")
 TRAINING_FREE_IMPORT_RE = re.compile(
     r"^\s*(?:from\s+training_free(?:\.|\s)|import\s+training_free(?:\.|\s|$))"
 )
@@ -549,6 +557,256 @@ def _has_backbone_smoke(record: dict[str, Any], method: str) -> bool:
     if method == "dense":
         return True
     return _has_sparse_smoke_dispatch(record)
+
+
+EXPECTED_DIFFSYNTH_APPLY_METHODS = EXPECTED_FULL_BACKBONE_METHODS
+
+
+def _expected_diffsynth_model_keys() -> tuple[str, ...]:
+    from _diffsynth_models import list_diffsynth_model_specs
+
+    return tuple(spec.key for spec in list_diffsynth_model_specs())
+
+
+def _diffsynth_checkpoint_records() -> tuple[str, list[dict[str, Any]]]:
+    from _diffsynth_models import (
+        DEFAULT_MODEL_ROOT as DIFFSYNTH_DEFAULT_MODEL_ROOT,
+        list_diffsynth_model_specs,
+        resolve_diffsynth_model_paths,
+    )
+
+    model_root = DIFFSYNTH_DEFAULT_MODEL_ROOT
+    return (
+        str(model_root),
+        [
+            resolve_diffsynth_model_paths(spec.key, model_root=model_root).as_dict()
+            for spec in list_diffsynth_model_specs()
+        ],
+    )
+
+
+def _diffsynth_deferred_model_records() -> list[dict[str, Any]]:
+    from _diffsynth_models import list_deferred_diffsynth_model_specs
+
+    return [spec.as_dict() for spec in list_deferred_diffsynth_model_specs()]
+
+
+def _diffsynth_checkpoint_availability_gate() -> dict[str, Any]:
+    try:
+        model_root, resolved_models = _diffsynth_checkpoint_records()
+    except Exception as exc:  # pragma: no cover - defensive audit output
+        return {
+            "gate": "diffsynth_checkpoint_availability",
+            "status": "fail",
+            "evidence": {"error": f"{type(exc).__name__}: {exc}"},
+            "missing": ["scripts/_diffsynth_models.py must resolve DiffSynth target bundles"],
+        }
+    try:
+        deferred_models = _diffsynth_deferred_model_records()
+    except Exception as exc:  # pragma: no cover - defensive audit output
+        deferred_models = [{"error": f"{type(exc).__name__}: {exc}"}]
+
+    missing: list[str] = []
+    evidence: dict[str, Any] = {}
+    deferred_evidence = {
+        str(item.get("model")): item
+        for item in deferred_models
+        if isinstance(item, dict) and item.get("model")
+    }
+    complete_count = 0
+    incomplete_count = 0
+    missing_component_checks = 0
+    for resolved in resolved_models:
+        key = str(resolved.get("model"))
+        missing_items = resolved.get("missing")
+        if not isinstance(missing_items, list):
+            missing_items = []
+        components = resolved.get("components")
+        if not isinstance(components, dict):
+            components = {}
+        evidence[key] = {
+            "family": resolved.get("family"),
+            "pipeline": resolved.get("pipeline"),
+            "required_inputs": resolved.get("required_inputs"),
+            "complete": bool(resolved.get("complete")),
+            "component_count": len(components),
+            "missing_count": len(missing_items),
+            "missing": missing_items,
+        }
+        if not resolved.get("complete"):
+            incomplete_count += 1
+            missing_component_checks += len(missing_items)
+            missing.append(f"{key}: incomplete DiffSynth bundle ({len(missing_items)} missing component checks)")
+        else:
+            complete_count += 1
+
+    return {
+        "gate": "diffsynth_checkpoint_availability",
+        "status": "pass" if not missing else "fail",
+        "evidence": {
+            "model_root": model_root,
+            "complete_count": complete_count,
+            "incomplete_count": incomplete_count,
+            "missing_component_checks": missing_component_checks,
+            "deferred_count": len(deferred_evidence),
+            "deferred_models": deferred_evidence,
+            "models": evidence,
+        },
+        "missing": missing,
+    }
+
+
+def _diffsynth_summary(record: dict[str, Any], name: str) -> dict[str, Any]:
+    summary = record.get(name)
+    return summary if isinstance(summary, dict) else {}
+
+
+def _diffsynth_record_model_candidates(record: dict[str, Any]) -> tuple[str, ...]:
+    candidates: list[str] = []
+    for value in (
+        record.get("model"),
+        _diffsynth_summary(record, "apply_summary").get("model_key"),
+        _diffsynth_summary(record, "generate_summary").get("model_key"),
+        _diffsynth_summary(record, "restore_summary").get("model_key"),
+    ):
+        if isinstance(value, str) and value:
+            candidates.append(value)
+    return tuple(dict.fromkeys(candidates))
+
+
+def _has_diffsynth_apply_restore(
+    record: dict[str, Any],
+    method: str,
+    *,
+    expected_model: str | None = None,
+) -> bool:
+    if record.get("backend") != "diffsynth" or record.get("method") != method:
+        return False
+    if record.get("mode") not in {"apply_only", "generate"}:
+        return False
+    resolved_model = record.get("resolved_model")
+    if not isinstance(resolved_model, dict) or resolved_model.get("complete") is not True:
+        return False
+    if expected_model is not None and resolved_model.get("model") != expected_model:
+        return False
+    if not _is_ok(record):
+        return False
+    apply_summary = _diffsynth_summary(record, "apply_summary")
+    restore_summary = _diffsynth_summary(record, "restore_summary")
+    if apply_summary.get("pipeline_backend") != "diffsynth":
+        return False
+    if not apply_summary.get("diffsynth_version"):
+        return False
+    if restore_summary.get("pipeline_backend") != "diffsynth":
+        return False
+    if restore_summary.get("restored") is not True:
+        return False
+    patched_count = int(apply_summary.get("patched_attention_count") or 0)
+    patched_paths = apply_summary.get("patched_attention_paths")
+    layer_count = int(apply_summary.get("num_self_attn_layers") or 0)
+    if layer_count <= 0:
+        return False
+    if method == "dense":
+        return patched_count == 0 and patched_paths in ([], None)
+    if not isinstance(patched_paths, list) or patched_count != len(patched_paths):
+        return False
+    if patched_count <= 0 or patched_count != layer_count:
+        return False
+    if record.get("mode") == "generate":
+        generate_summary = _diffsynth_summary(record, "generate_summary")
+        runtime = generate_summary.get("method_runtime")
+        if not isinstance(runtime, dict):
+            return False
+        dispatch_counts = runtime.get("dispatch_counts")
+        if not isinstance(dispatch_counts, dict) or int(dispatch_counts.get("sparse") or 0) <= 0:
+            return False
+    return True
+
+
+def _summarize_diffsynth_record(record: dict[str, Any] | None) -> dict[str, Any] | None:
+    if record is None:
+        return None
+    apply_summary = _diffsynth_summary(record, "apply_summary")
+    restore_summary = _diffsynth_summary(record, "restore_summary")
+    generate_summary = _diffsynth_summary(record, "generate_summary")
+    runtime_summary = generate_summary or apply_summary
+    runtime = runtime_summary.get("method_runtime")
+    if not isinstance(runtime, dict):
+        runtime = {}
+    return {
+        "source": f"{record.get('source_file')}:{record.get('source_line')}",
+        "model": record.get("model"),
+        "mode": record.get("mode"),
+        "status": record.get("status"),
+        "method_config": record.get("method_config"),
+        "diffsynth_version": apply_summary.get("diffsynth_version"),
+        "model_key": apply_summary.get("model_key"),
+        "model_type": apply_summary.get("model_type"),
+        "patched_attention_count": apply_summary.get("patched_attention_count"),
+        "num_self_attn_layers": apply_summary.get("num_self_attn_layers"),
+        "unpatched_attention_paths": apply_summary.get("unpatched_attention_paths"),
+        "restored": restore_summary.get("restored"),
+        "backend_counts": runtime.get("backend_counts"),
+        "dispatch_counts": runtime.get("dispatch_counts"),
+        "timings": record.get("timings"),
+        "elapsed_sec": record.get("elapsed_sec"),
+        "cuda": record.get("cuda"),
+    }
+
+
+def _diffsynth_apply_restore_evidence_gate(records: list[dict[str, Any]]) -> dict[str, Any]:
+    try:
+        expected_models = _expected_diffsynth_model_keys()
+    except Exception as exc:  # pragma: no cover - defensive audit output
+        return {
+            "gate": "diffsynth_apply_restore_evidence",
+            "status": "fail",
+            "evidence": {"error": f"{type(exc).__name__}: {exc}"},
+            "missing": ["scripts/_diffsynth_models.py must be importable to list DiffSynth target bundles"],
+        }
+
+    missing: list[str] = []
+    evidence: dict[str, Any] = {}
+    for model_key in expected_models:
+        model_records = [
+            record
+            for record in records
+            if record.get("backend") == "diffsynth"
+            and model_key in _diffsynth_record_model_candidates(record)
+        ]
+        method_evidence: dict[str, Any] = {}
+        for method in EXPECTED_DIFFSYNTH_APPLY_METHODS:
+            record = _best_record(
+                model_records,
+                lambda item, expected_method=method: _has_diffsynth_apply_restore(
+                    item,
+                    expected_method,
+                    expected_model=model_key,
+                ),
+            )
+            method_evidence[method] = _summarize_diffsynth_record(record)
+            if record is None:
+                missing.append(f"{model_key}/{method}: needs status=ok DiffSynth apply/restore record")
+        evidence[model_key] = {
+            "required_methods": list(EXPECTED_DIFFSYNTH_APPLY_METHODS),
+            "records_seen": len(model_records),
+            "methods": method_evidence,
+        }
+
+    return {
+        "gate": "diffsynth_apply_restore_evidence",
+        "status": "pass" if not missing else "fail",
+        "evidence": {
+            "note": (
+                "Counts DiffSynth records only when apply patched the expected backend, "
+                "recorded the installed diffsynth version, and restore_summary.restored is true. "
+                "Sparse generate records must also report sparse dispatch. Apply-only records prove "
+                "load/apply/restore, not quality or speed parity."
+            ),
+            "models": evidence,
+        },
+        "missing": missing,
+    }
 
 
 def _has_quality_output(record: dict[str, Any], min_steps: int) -> bool:
@@ -1632,6 +1890,8 @@ def build_audit(records: list[dict[str, Any]], *, min_steps: int) -> dict[str, A
         _all_backbone_support_contract_gate(),
         _all_backbone_checkpoint_availability_gate(),
         _all_backbone_smoke_evidence_gate(records),
+        _diffsynth_checkpoint_availability_gate(),
+        _diffsynth_apply_restore_evidence_gate(records),
         _runtime_ownership_gate(),
         {
             "gate": "per_method_strict_dispatch_and_quality_evidence",

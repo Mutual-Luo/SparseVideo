@@ -1,15 +1,41 @@
 from __future__ import annotations
 
-from pathlib import Path
+import importlib
 import sys
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+import yaml
 
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 import sparsevideo
+
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+PUBLIC_BACKBONE_KEYS = {
+    "wan21-t2v-1.3b",
+    "wan21-t2v-14b",
+    "wan22-t2v-a14b",
+    "hunyuan-t2v",
+    "wan21-i2v-14b",
+    "wan22-i2v-a14b",
+    "hunyuan-i2v",
+    "skyreels-v2-t2v-14b",
+    "skyreels-v2-i2v-14b",
+    "wan22-animate-14b",
+    "wan21-vace-1.3b",
+    "wan21-vace-14b",
+    "cogvideox-t2v",
+    "cogvideox-i2v",
+    "ltx-video",
+    "ltx-video-i2v",
+    "allegro",
+    "mochi-1",
+    "easyanimate-v5-t2v-12b",
+}
 
 
 def test_public_methods_are_registered():
@@ -27,8 +53,49 @@ def test_public_methods_are_registered():
     ]
 
 
+def test_method_default_configs_are_backed_by_yaml_files():
+    for method in sparsevideo.list_methods():
+        path = REPO_ROOT / "src" / "sparsevideo" / "methods" / method / "config.yaml"
+        assert path.exists()
+        data = yaml.safe_load(path.read_text(encoding="utf-8"))
+        assert isinstance(data, dict)
+        assert isinstance(data["defaults"], dict)
+        assert isinstance(data.get("aliases", {}), dict)
+        assert isinstance(data.get("model_defaults", {}), dict)
+        assert isinstance(data.get("compat_keys", []), list)
+
+        config_module = importlib.import_module(f"sparsevideo.methods.{method}.config")
+        assert config_module.CONFIG_DEFAULTS == data["defaults"]
+        assert config_module.CONFIG_ALIASES == data.get("aliases", {})
+        assert set(getattr(config_module, "CONFIG_COMPAT_KEYS", set())) == set(
+            data.get("compat_keys", [])
+        )
+
+
+def test_method_configs_have_public_backbone_override_slots():
+    for method in sparsevideo.list_methods():
+        path = REPO_ROOT / "src" / "sparsevideo" / "methods" / method / "config.yaml"
+        data = yaml.safe_load(path.read_text(encoding="utf-8"))
+        model_defaults = data.get("model_defaults", {})
+        assert PUBLIC_BACKBONE_KEYS <= set(model_defaults), method
+
+
+def test_method_configs_use_explicit_backbone_blocks_not_family_groups():
+    family_groups = {"wan", "hunyuan_video", "cogvideox", "ltx_video", "mochi", "easyanimate"}
+    for method in sparsevideo.list_methods():
+        path = REPO_ROOT / "src" / "sparsevideo" / "methods" / method / "config.yaml"
+        data = yaml.safe_load(path.read_text(encoding="utf-8"))
+        model_defaults = data.get("model_defaults", {})
+        assert not family_groups & set(model_defaults), method
+        for model_key in PUBLIC_BACKBONE_KEYS:
+            if method == "dense":
+                assert model_defaults[model_key] == {}, (method, model_key)
+            else:
+                assert model_defaults[model_key], (method, model_key)
+
+
 def test_upstream_default_names_are_exposed():
-    assert sparsevideo.default_method_config("svg1")["sparsity"] == 0.25
+    assert sparsevideo.default_method_config("svg1")["sparsity"] == 0.3
     assert sparsevideo.default_method_config("svg1")["context_length"] is None
     assert sparsevideo.default_method_config("svg1")["prompt_length"] is None
     assert sparsevideo.default_method_config("svg2")["top_p_kmeans"] == 0.9
@@ -74,10 +141,17 @@ def test_upstream_default_names_are_exposed():
     assert sparsevideo.default_method_config("spargeattn")["rmse"] == 0.07
     assert sparsevideo.default_method_config("spargeattn")["rearrange_kwargs"] == {}
     assert sparsevideo.default_method_config("spargeattn")["tune_pv"] is True
-    hunyuan_sparge = sparsevideo.default_method_config("spargeattn", model_family="hunyuan_video")
+    hunyuan_sparge = sparsevideo.default_method_config(
+        "spargeattn", model_family="hunyuan_video", model_key="hunyuan-t2v",
+    )
     assert hunyuan_sparge["l1"] == 0.07
     assert hunyuan_sparge["pv_l1"] == 0.08
     assert hunyuan_sparge["tune_pv"] is True
+    allegro_sparge = sparsevideo.default_method_config(
+        "spargeattn", model_family="allegro", model_key="allegro",
+    )
+    assert allegro_sparge["topk"] == 0.5
+    assert allegro_sparge["dense_warmup_step_ratio"] == 0.1
     assert sparsevideo.default_method_config("svoo")["sparsity_csv_path"] == "sparsity_profiles/sparsity_results.csv"
     assert sparsevideo.default_method_config("svoo")["implementation"] == "native"
     assert sparsevideo.default_method_config("svoo")["sparse_backend"] == "flashinfer"
@@ -110,7 +184,6 @@ def test_svoo_inference_context_uses_upstream_720p_defaults():
     assert Path(wan["sparsity_csv_path"]).exists()
 
     wan22 = sparsevideo.default_method_config("svoo", model_family="wan", model_key="wan22-t2v-a14b")
-    assert wan22["num_inference_steps"] == 40
     assert wan22["start_reuse_step"] == 9
     assert wan22["sparsity_csv_path"].endswith("sparsity_wan22_A14B_t2v.csv")
     assert Path(wan22["sparsity_csv_path"]).exists()
@@ -135,7 +208,17 @@ def test_svoo_inference_context_uses_upstream_720p_defaults():
     assert wan_vace["num_q_centroids"] == 256
     assert wan_vace["sparsity_csv_path"] == "sparsity_profiles/sparsity_results.csv"
 
-    hunyuan = sparsevideo.default_method_config("svoo", model_family="hunyuan_video")
+    wan_fun = sparsevideo.default_method_config("svoo", model_family="wan", model_key="wan21-fun-1.3b-control")
+    assert wan_fun["use_dynamic_min_kc_ratio"] is False
+    assert wan_fun["kmeans_iter_init"] == 2
+    assert wan_fun["kmeans_iter_step"] == 2
+    assert wan_fun["sparsity_csv_path"] == "sparsity_profiles/sparsity_results.csv"
+
+    wan22_fun = sparsevideo.default_method_config("svoo", model_family="wan", model_key="wan22-fun-a14b-control")
+    assert wan22_fun["use_dynamic_min_kc_ratio"] is False
+    assert wan22_fun["kmeans_iter_init"] == 2
+
+    hunyuan = sparsevideo.default_method_config("svoo", model_family="hunyuan_video", model_key="hunyuan-t2v")
     assert hunyuan["top_p_kmeans"] == 0.88
     assert hunyuan["start_reuse_step"] == 6
     assert hunyuan["sparsity_csv_path"].endswith("sparsity_hunyuan10_13B_t2v.csv")
@@ -191,30 +274,37 @@ def test_svoo_inference_context_uses_upstream_720p_defaults():
 
 def test_svg2_inference_context_uses_upstream_720p_defaults():
     wan = sparsevideo.default_method_config("svg2", model_family="wan", model_key="wan21-t2v-1.3b")
-    assert wan["first_times_fp"] == 0.2
-    assert wan["first_layers_fp"] == 0.03
+    assert wan["dense_warmup_step_ratio"] == 0.1
+    assert wan["dense_warmup_layer_ratio"] == 0.03
+    assert "first_times_fp" not in wan
+    assert "first_layers_fp" not in wan
     assert wan["num_q_centroids"] == 300
     assert wan["num_k_centroids"] == 1000
     assert wan["min_kc_ratio"] == 0.10
     assert wan["kmeans_iter_init"] == 50
     assert wan["kmeans_iter_step"] == 2
 
-    hunyuan = sparsevideo.default_method_config("svg2", model_family="hunyuan_video")
+    hunyuan = sparsevideo.default_method_config("svg2", model_family="hunyuan_video", model_key="hunyuan-t2v")
     assert hunyuan["num_q_centroids"] == 400
     assert hunyuan["num_k_centroids"] == 1000
-    assert hunyuan["first_times_fp"] == 0.1
+    assert hunyuan["dense_warmup_step_ratio"] == 0.1
+    assert hunyuan["dense_warmup_layer_ratio"] == 0.03
+    assert "first_times_fp" not in hunyuan
+    assert "first_layers_fp" not in hunyuan
     assert hunyuan["zero_step_kmeans_init"] is True
     assert hunyuan["context_length"] == 256
     assert hunyuan["prompt_length"] is None
 
-    mochi = sparsevideo.default_method_config("svg2", model_family="mochi")
+    mochi = sparsevideo.default_method_config("svg2", model_family="mochi", model_key="mochi-1")
     assert mochi["num_q_centroids"] == 300
     assert mochi["num_k_centroids"] == 1000
     assert mochi["min_kc_ratio"] == 0.10
     assert mochi["kmeans_iter_init"] == 50
     assert mochi["kmeans_iter_step"] == 2
 
-    easyanimate = sparsevideo.default_method_config("svg2", model_family="easyanimate")
+    easyanimate = sparsevideo.default_method_config(
+        "svg2", model_family="easyanimate", model_key="easyanimate-v5-t2v-12b",
+    )
     assert easyanimate["num_q_centroids"] == 300
     assert easyanimate["num_k_centroids"] == 1000
     assert easyanimate["min_kc_ratio"] == 0.10
@@ -224,16 +314,20 @@ def test_svg2_inference_context_uses_upstream_720p_defaults():
 
 def test_svg1_inference_context_uses_upstream_720p_defaults():
     wan = sparsevideo.default_method_config("svg1", model_family="wan", model_key="wan21-t2v-1.3b")
-    assert wan["first_times_fp"] == 0.2
-    assert wan["first_layers_fp"] == 0.03
+    assert wan["dense_warmup_step_ratio"] == 0.1
+    assert wan["dense_warmup_layer_ratio"] == 0.03
+    assert "first_times_fp" not in wan
+    assert "first_layers_fp" not in wan
     assert wan["num_sampled_rows"] == 64
     assert wan["sparsity"] == 0.3
 
-    hunyuan = sparsevideo.default_method_config("svg1", model_family="hunyuan_video")
-    assert hunyuan["first_times_fp"] == 0.1
+    hunyuan = sparsevideo.default_method_config("svg1", model_family="hunyuan_video", model_key="hunyuan-t2v")
+    assert hunyuan["dense_warmup_step_ratio"] == 0.1
+    assert hunyuan["dense_warmup_layer_ratio"] == 0.03
+    assert "first_times_fp" not in hunyuan
+    assert "first_layers_fp" not in hunyuan
     assert hunyuan["context_length"] == 256
     assert hunyuan["prompt_length"] is None
-    assert hunyuan["first_layers_fp"] == 0.03
     assert hunyuan["num_sampled_rows"] == 64
     assert hunyuan["sparsity"] == 0.25
 
@@ -251,7 +345,7 @@ def test_radial_inference_context_uses_upstream_shell_defaults():
     assert wan22["decay_factor"] == 0.8
     assert wan22["block_size"] == 64
 
-    hunyuan = sparsevideo.default_method_config("radial", model_family="hunyuan_video")
+    hunyuan = sparsevideo.default_method_config("radial", model_family="hunyuan_video", model_key="hunyuan-t2v")
     assert hunyuan["dense_layers"] == 0
     assert hunyuan["dense_timesteps"] == 12
     assert hunyuan["decay_factor"] == 0.95
@@ -269,12 +363,12 @@ def test_draft_inference_context_uses_upstream_defaults():
     assert wan["batch_size"] is None
     assert wan["allow_triton_fallback"] is False
 
-    hunyuan = sparsevideo.default_method_config("draft", model_family="hunyuan_video")
+    hunyuan = sparsevideo.default_method_config("draft", model_family="hunyuan_video", model_key="hunyuan-t2v")
     assert hunyuan["pool_h"] == 8
     assert hunyuan["pool_w"] == 16
-    assert hunyuan["latent_h"] == 48
-    assert hunyuan["latent_w"] == 80
-    assert hunyuan["visual_len"] == 126_720
+    assert hunyuan["latent_h"] is None
+    assert hunyuan["latent_w"] is None
+    assert hunyuan["visual_len"] is None
     assert hunyuan["text_len"] == 256
     assert hunyuan["sparsity_ratio"] == 0.9
 
@@ -285,31 +379,41 @@ def test_sta_inference_context_uses_upstream_text_boundary_defaults():
     assert wan["window_size"] == [3, 6, 10]
     assert wan["has_text"] is False
     assert wan["STA_mode"] == "STA_inference"
-    assert wan["mask_strategy_file_path"] is None
+    assert wan["mask_strategy_file_path"].endswith("mask_strategy_wan21_t2v_1_3b.json")
+    assert Path(wan["mask_strategy_file_path"]).exists()
 
     wan14b = sparsevideo.default_method_config("sta", model_family="wan", model_key="wan21-t2v-14b")
-    assert wan14b["mask_strategy_file_path"].endswith("mask_strategy_wan.json")
+    assert wan14b["mask_strategy_file_path"].endswith("mask_strategy_wan21_t2v_14b.json")
     assert Path(wan14b["mask_strategy_file_path"]).exists()
 
-    hunyuan = sparsevideo.default_method_config("sta", model_family="hunyuan_video")
+    hunyuan = sparsevideo.default_method_config("sta", model_family="hunyuan_video", model_key="hunyuan-t2v")
     assert hunyuan["tile_size"] == [6, 8, 8]
     assert hunyuan["window_size"] == [5, 6, 10]
     assert hunyuan["has_text"] is True
-    assert hunyuan["mask_strategy_file_path"].endswith("mask_strategy_hunyuan.json")
+    assert hunyuan["mask_strategy_file_path"].endswith("mask_strategy_hunyuan_t2v.json")
+    assert hunyuan["mask_candidates"] == [
+        [5, 3, 3],
+        [1, 6, 10],
+        [3, 3, 5],
+        [5, 1, 10],
+        [5, 6, 1],
+    ]
     assert Path(hunyuan["mask_strategy_file_path"]).exists()
 
 
 def test_svoo_apply_api_defaults_use_model_context():
     from sparsevideo.methods.svoo import SVOOMethod
 
-    method = SVOOMethod(config={}, model_info=SimpleNamespace(model_type="wan", transformers=[object()]))
+    method = SVOOMethod(
+        config={},
+        model_info=SimpleNamespace(model_type="wan", model_key="wan21-t2v-1.3b", transformers=[object()]),
+    )
     assert method.config["num_q_centroids"] == 256
     assert method.config["kmeans_iter_step"] == 2
     assert method.config["sparsity_csv_path"].endswith("sparsity_wan_1.3B_t2v.csv")
     assert Path(method.config["sparsity_csv_path"]).exists()
 
     wan22 = SVOOMethod(config={}, model_info=SimpleNamespace(model_type="wan", transformers=[object(), object()]))
-    assert wan22.config["num_inference_steps"] == 40
     assert wan22.config["start_reuse_step"] == 9
     assert wan22.config["sparsity_csv_path"].endswith("sparsity_wan22_A14B_t2v.csv")
 
@@ -355,6 +459,14 @@ def test_svoo_apply_api_defaults_use_model_context():
     )
     assert wan_vace.config["use_dynamic_min_kc_ratio"] is False
     assert wan_vace.config["sparsity_csv_path"] == "sparsity_profiles/sparsity_results.csv"
+
+    wan_fun = SVOOMethod(
+        config={},
+        model_info=SimpleNamespace(model_type="wan", model_key="wan21-fun-1.3b-control", transformers=[object()]),
+    )
+    assert wan_fun.config["use_dynamic_min_kc_ratio"] is False
+    assert wan_fun.config["kmeans_iter_init"] == 2
+    assert wan_fun.config["kmeans_iter_step"] == 2
 
     cogvideox = SVOOMethod(
         config={},
@@ -433,7 +545,7 @@ def test_svoo_rejects_missing_dynamic_sparsity_profile():
     with pytest.raises(FileNotFoundError, match="sparsity_csv_path"):
         SVOOMethod(
             config={"sparsity_csv_path": "/tmp/sparsevideo-missing-svoo-profile.csv"},
-            model_info=SimpleNamespace(model_type="wan", transformers=[object()]),
+            model_info=SimpleNamespace(model_type="wan", model_key="wan21-t2v-1.3b", transformers=[object()]),
         )
 
 
@@ -443,28 +555,37 @@ def test_base_method_defaults_use_model_context():
     from sparsevideo.methods.radial import RadialMethod
     from sparsevideo.methods.sta import STAMethod
 
-    method = AdaClusterMethod(config={}, model_info=SimpleNamespace(model_type="hunyuan_video"))
+    method = AdaClusterMethod(
+        config={},
+        model_info=SimpleNamespace(model_type="hunyuan_video", model_key="hunyuan-t2v"),
+    )
     assert method.config["topk_num"] == 94
     assert method.config["q_kernel_num"] == 250
     assert method.config["kv_kernel_num"] == 1243
 
-    draft = DraftMethod(config={}, model_info=SimpleNamespace(model_type="wan"))
+    draft = DraftMethod(config={}, model_info=SimpleNamespace(model_type="wan", model_key="wan21-t2v-14b"))
     assert draft.config["sparsity_ratio"] == 0.75
     assert draft.config["allow_triton_fallback"] is False
 
-    radial = RadialMethod(config={}, model_info=SimpleNamespace(model_type="hunyuan_video"))
+    radial = RadialMethod(
+        config={},
+        model_info=SimpleNamespace(model_type="hunyuan_video", model_key="hunyuan-t2v"),
+    )
     assert radial.config["dense_timesteps"] == 12
     assert radial.config["decay_factor"] == 0.95
 
-    sta_hunyuan = STAMethod(config={}, model_info=SimpleNamespace(model_type="hunyuan_video"))
+    sta_hunyuan = STAMethod(
+        config={},
+        model_info=SimpleNamespace(model_type="hunyuan_video", model_key="hunyuan-t2v"),
+    )
     assert sta_hunyuan.config["window_size"] == [5, 6, 10]
     assert sta_hunyuan.config["has_text"] is True
-    assert sta_hunyuan.config["mask_strategy_file_path"].endswith("mask_strategy_hunyuan.json")
+    assert sta_hunyuan.config["mask_strategy_file_path"].endswith("mask_strategy_hunyuan_t2v.json")
 
     sta_wan = STAMethod(config={}, model_info=SimpleNamespace(model_type="wan", model_key="wan21-t2v-14b"))
     assert sta_wan.config["window_size"] == [3, 6, 10]
     assert sta_wan.config["has_text"] is False
-    assert sta_wan.config["mask_strategy_file_path"].endswith("mask_strategy_wan.json")
+    assert sta_wan.config["mask_strategy_file_path"].endswith("mask_strategy_wan21_t2v_14b.json")
 
 
 def test_draft_dense_switch_is_not_exposed_as_sparse_method():
@@ -478,7 +599,9 @@ def test_draft_dense_switch_is_not_exposed_as_sparse_method():
 
 
 def test_contextual_defaults_match_hunyuan_adacluster():
-    config = sparsevideo.default_method_config("adacluster", model_family="hunyuan_video")
+    config = sparsevideo.default_method_config(
+        "adacluster", model_family="hunyuan_video", model_key="hunyuan-t2v",
+    )
     assert config["topk_num"] == 94
     assert config["q_kernel_num"] == 250
     assert config["kv_kernel_num"] == 1243
@@ -488,7 +611,7 @@ def test_contextual_defaults_match_hunyuan_adacluster():
 
 
 def test_contextual_defaults_match_wan_adacluster_runwan_fixed_clusters():
-    config = sparsevideo.default_method_config("adacluster", model_family="wan")
+    config = sparsevideo.default_method_config("adacluster", model_family="wan", model_key="wan21-t2v-1.3b")
     assert config["topk_num"] == 128
     assert config["q_kernel_num"] == 100
     assert config["kv_kernel_num"] == 500
@@ -536,6 +659,8 @@ def test_720p_token_layout_inference_matches_upstream_shapes():
     assert infer_video_frame_shape(18 * 48 * 80, model_type="wan") == (18, 48, 80)
     assert infer_video_frame_shape(33 * 45 * 80, model_type="hunyuan_video") == (33, 45, 80)
     assert infer_video_frame_shape(30 * 48 * 80, model_type="hunyuan_video") == (30, 48, 80)
+    assert infer_video_frame_shape(13 * 60 * 90, model_type="cogvideox") == (13, 60, 90)
+    assert infer_video_frame_shape(22 * 45 * 80, model_type="allegro") == (22, 45, 80)
 
 
 def test_sta_seq_shape_override_must_match_video_tokens():

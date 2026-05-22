@@ -1,0 +1,265 @@
+# Editable defaults for Sparse-VideoGen SVG2 / SAP.
+# Each public backbone has an explicit config block under model_defaults.
+defaults:
+  dense_warmup_step_ratio: 0.1 # Fraction of denoising steps that run dense before sparse attention starts.
+  dense_warmup_layer_ratio: 0.03 # Fraction of earliest transformer layers that always run dense.
+  num_q_centroids: 50 # Number of query centroids for online k-means clustering.
+  num_k_centroids: 200 # Number of key centroids for online k-means clustering.
+  top_p_kmeans: 0.9 # Cumulative attention mass kept when selecting sparse cluster pairs.
+  min_kc_ratio: 0.0 # Minimum kept key-centroid ratio after top-p filtering.
+  kmeans_iter_init: 0 # K-means iterations used when initializing centroids.
+  kmeans_iter_step: 0 # K-means update iterations used on later sparse steps.
+  zero_step_kmeans_init: false # If true, initialize k-means state during dense warmup step 0.
+  context_length: null # Optional Hunyuan/text-tail context token length override.
+  prompt_length: null # Optional prompt token length override for text/video split handling.
+  allow_triton_fallback: false # Allows the local Triton debug block-sparse fallback when strict kernels are disabled.
+
+model_defaults:
+  wan21-t2v-1.3b:
+    dense_warmup_step_ratio: 0.1
+    dense_warmup_layer_ratio: 0.03
+    num_q_centroids: 300
+    num_k_centroids: 1000
+    top_p_kmeans: 0.9
+    min_kc_ratio: 0.1
+    kmeans_iter_init: 50
+    kmeans_iter_step: 2
+    zero_step_kmeans_init: false
+    context_length: null
+    prompt_length: null
+    allow_triton_fallback: false
+  wan21-t2v-14b:
+    dense_warmup_step_ratio: 0.1
+    dense_warmup_layer_ratio: 0.03
+    num_q_centroids: 300
+    num_k_centroids: 1000
+    top_p_kmeans: 0.9
+    min_kc_ratio: 0.1
+    kmeans_iter_init: 50
+    kmeans_iter_step: 2
+    zero_step_kmeans_init: false
+    context_length: null
+    prompt_length: null
+    allow_triton_fallback: false
+  wan22-t2v-a14b:
+    dense_warmup_step_ratio: 0.1
+    dense_warmup_layer_ratio: 0.03
+    num_q_centroids: 300
+    num_k_centroids: 1000
+    top_p_kmeans: 0.9
+    min_kc_ratio: 0.1
+    kmeans_iter_init: 50
+    kmeans_iter_step: 2
+    zero_step_kmeans_init: false
+    context_length: null
+    prompt_length: null
+    allow_triton_fallback: false
+  hunyuan-t2v:
+    dense_warmup_step_ratio: 0.1
+    dense_warmup_layer_ratio: 0.03
+    num_q_centroids: 400
+    num_k_centroids: 1000
+    top_p_kmeans: 0.9
+    min_kc_ratio: 0.1
+    kmeans_iter_init: 50
+    kmeans_iter_step: 2
+    zero_step_kmeans_init: true
+    context_length: 256
+    prompt_length: null
+    allow_triton_fallback: false
+  wan21-i2v-14b:
+    dense_warmup_step_ratio: 0.1
+    dense_warmup_layer_ratio: 0.03
+    num_q_centroids: 300
+    num_k_centroids: 1000
+    top_p_kmeans: 0.9
+    min_kc_ratio: 0.1
+    kmeans_iter_init: 50
+    kmeans_iter_step: 2
+    zero_step_kmeans_init: false
+    context_length: null
+    prompt_length: null
+    allow_triton_fallback: false
+  wan22-i2v-a14b:
+    dense_warmup_step_ratio: 0.1
+    dense_warmup_layer_ratio: 0.03
+    num_q_centroids: 300
+    num_k_centroids: 1000
+    top_p_kmeans: 0.9
+    min_kc_ratio: 0.1
+    kmeans_iter_init: 50
+    kmeans_iter_step: 2
+    zero_step_kmeans_init: false
+    context_length: null
+    prompt_length: null
+    allow_triton_fallback: false
+  hunyuan-i2v:
+    dense_warmup_step_ratio: 0.1
+    dense_warmup_layer_ratio: 0.03
+    num_q_centroids: 400
+    num_k_centroids: 1000
+    top_p_kmeans: 0.9
+    min_kc_ratio: 0.1
+    kmeans_iter_init: 50
+    kmeans_iter_step: 2
+    zero_step_kmeans_init: true
+    context_length: 256
+    prompt_length: null
+    allow_triton_fallback: false
+  skyreels-v2-t2v-14b:
+    dense_warmup_step_ratio: 0.1
+    dense_warmup_layer_ratio: 0.03
+    num_q_centroids: 300
+    num_k_centroids: 1000
+    top_p_kmeans: 0.9
+    min_kc_ratio: 0.1
+    kmeans_iter_init: 50
+    kmeans_iter_step: 2
+    zero_step_kmeans_init: false
+    context_length: null
+    prompt_length: null
+    allow_triton_fallback: false
+  skyreels-v2-i2v-14b:
+    dense_warmup_step_ratio: 0.1
+    dense_warmup_layer_ratio: 0.03
+    num_q_centroids: 300
+    num_k_centroids: 1000
+    top_p_kmeans: 0.9
+    min_kc_ratio: 0.1
+    kmeans_iter_init: 50
+    kmeans_iter_step: 2
+    zero_step_kmeans_init: false
+    context_length: null
+    prompt_length: null
+    allow_triton_fallback: false
+  wan22-animate-14b:
+    dense_warmup_step_ratio: 0.1
+    dense_warmup_layer_ratio: 0.03
+    num_q_centroids: 300
+    num_k_centroids: 1000
+    top_p_kmeans: 0.9
+    min_kc_ratio: 0.1
+    kmeans_iter_init: 50
+    kmeans_iter_step: 2
+    zero_step_kmeans_init: false
+    context_length: null
+    prompt_length: null
+    allow_triton_fallback: false
+  wan21-vace-1.3b:
+    dense_warmup_step_ratio: 0.1
+    dense_warmup_layer_ratio: 0.03
+    num_q_centroids: 300
+    num_k_centroids: 1000
+    top_p_kmeans: 0.9
+    min_kc_ratio: 0.1
+    kmeans_iter_init: 50
+    kmeans_iter_step: 2
+    zero_step_kmeans_init: false
+    context_length: null
+    prompt_length: null
+    allow_triton_fallback: false
+  wan21-vace-14b:
+    dense_warmup_step_ratio: 0.1
+    dense_warmup_layer_ratio: 0.03
+    num_q_centroids: 300
+    num_k_centroids: 1000
+    top_p_kmeans: 0.9
+    min_kc_ratio: 0.1
+    kmeans_iter_init: 50
+    kmeans_iter_step: 2
+    zero_step_kmeans_init: false
+    context_length: null
+    prompt_length: null
+    allow_triton_fallback: false
+  cogvideox-t2v:
+    dense_warmup_step_ratio: 0.1
+    dense_warmup_layer_ratio: 0.03
+    num_q_centroids: 300
+    num_k_centroids: 1000
+    top_p_kmeans: 0.9
+    min_kc_ratio: 0.1
+    kmeans_iter_init: 50
+    kmeans_iter_step: 2
+    zero_step_kmeans_init: false
+    context_length: null
+    prompt_length: null
+    allow_triton_fallback: false
+  cogvideox-i2v:
+    dense_warmup_step_ratio: 0.1
+    dense_warmup_layer_ratio: 0.03
+    num_q_centroids: 300
+    num_k_centroids: 1000
+    top_p_kmeans: 0.9
+    min_kc_ratio: 0.1
+    kmeans_iter_init: 50
+    kmeans_iter_step: 2
+    zero_step_kmeans_init: false
+    context_length: null
+    prompt_length: null
+    allow_triton_fallback: false
+  ltx-video:
+    dense_warmup_step_ratio: 0.1
+    dense_warmup_layer_ratio: 0.03
+    num_q_centroids: 300
+    num_k_centroids: 1000
+    top_p_kmeans: 0.9
+    min_kc_ratio: 0.1
+    kmeans_iter_init: 50
+    kmeans_iter_step: 2
+    zero_step_kmeans_init: false
+    context_length: null
+    prompt_length: null
+    allow_triton_fallback: false
+  ltx-video-i2v:
+    dense_warmup_step_ratio: 0.1
+    dense_warmup_layer_ratio: 0.03
+    num_q_centroids: 300
+    num_k_centroids: 1000
+    top_p_kmeans: 0.9
+    min_kc_ratio: 0.1
+    kmeans_iter_init: 50
+    kmeans_iter_step: 2
+    zero_step_kmeans_init: false
+    context_length: null
+    prompt_length: null
+    allow_triton_fallback: false
+  allegro:
+    dense_warmup_step_ratio: 0.1
+    dense_warmup_layer_ratio: 0.03
+    num_q_centroids: 256
+    num_k_centroids: 1024
+    top_p_kmeans: 0.95
+    min_kc_ratio: 0.20
+    kmeans_iter_init: 30
+    kmeans_iter_step: 2
+    zero_step_kmeans_init: false
+    context_length: null
+    prompt_length: null
+    allow_triton_fallback: false
+  mochi-1:
+    dense_warmup_step_ratio: 0.1
+    dense_warmup_layer_ratio: 0.03
+    num_q_centroids: 300
+    num_k_centroids: 1000
+    top_p_kmeans: 0.9
+    min_kc_ratio: 0.1
+    kmeans_iter_init: 50
+    kmeans_iter_step: 2
+    zero_step_kmeans_init: false
+    context_length: null
+    prompt_length: null
+    allow_triton_fallback: false
+  easyanimate-v5-t2v-12b:
+    dense_warmup_step_ratio: 0.1
+    dense_warmup_layer_ratio: 0.03
+    num_q_centroids: 300
+    num_k_centroids: 1000
+    top_p_kmeans: 0.9
+    min_kc_ratio: 0.1
+    kmeans_iter_init: 50
+    kmeans_iter_step: 2
+    zero_step_kmeans_init: false
+    context_length: null
+    prompt_length: null
+    allow_triton_fallback: false
+aliases: {}

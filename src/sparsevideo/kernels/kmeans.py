@@ -171,9 +171,8 @@ def triton_kmeans(
             generic default keeps self-consistent labels for new centroids.
             AdaCluster upstream returns labels/counts from the last update
             iteration instead, so it passes False.
-        clamp_clusters: cap cluster count at N. Most methods do this before
-            calling k-means; SVOO routing buckets intentionally keep the
-            upstream n_clusters value because random initialization may sample
+        clamp_clusters: cap cluster count at N. Some upstream paths keep the
+            requested n_clusters value because random initialization may sample
             duplicate centers.
 
     Returns:

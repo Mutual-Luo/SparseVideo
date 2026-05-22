@@ -132,7 +132,7 @@ def test_svg2_wan_keeps_centroid_state_per_layer_like_upstream(monkeypatch):
     monkeypatch.setattr(svg2_method, "_svg2_attention", fake_svg2_attention)
 
     method = SVG2Method(
-        {"first_layers_fp": 0, "first_times_fp": 0},
+        {"dense_warmup_layer_ratio": 0.0, "dense_warmup_step_ratio": 0.0},
         SimpleNamespace(model_type="wan", model_key=None),
     )
     step_tracker = SimpleNamespace(step=1, timestep=0)
@@ -165,7 +165,7 @@ def test_svg2_hunyuan_keeps_centroid_state_per_layer_like_upstream(monkeypatch):
     monkeypatch.setattr(svg2_method, "_svg2_attention", fake_svg2_attention)
 
     method = SVG2Method(
-        {"first_layers_fp": 0, "first_times_fp": 0},
+        {"dense_warmup_layer_ratio": 0.0, "dense_warmup_step_ratio": 0.0},
         SimpleNamespace(model_type="hunyuan_video", model_key=None),
     )
     step_tracker = SimpleNamespace(step=1, timestep=0)
@@ -196,8 +196,8 @@ def test_svg2_hunyuan_uses_config_prompt_length_fallback_like_upstream(monkeypat
 
     method = SVG2Method(
         {
-            "first_layers_fp": 0,
-            "first_times_fp": 0,
+            "dense_warmup_layer_ratio": 0.0,
+            "dense_warmup_step_ratio": 0.0,
             "context_length": 4,
             "prompt_length": 3,
         },
@@ -226,8 +226,8 @@ def test_svg2_hunyuan_runtime_prompt_length_overrides_config_fallback(monkeypatc
 
     method = SVG2Method(
         {
-            "first_layers_fp": 0,
-            "first_times_fp": 0,
+            "dense_warmup_layer_ratio": 0.0,
+            "dense_warmup_step_ratio": 0.0,
             "context_length": 4,
             "prompt_length": 4,
         },
@@ -241,7 +241,7 @@ def test_svg2_hunyuan_runtime_prompt_length_overrides_config_fallback(monkeypatc
     assert captured == {"prompt_length": 2}
 
 
-def test_svg2_method_prefers_processor_timestep_over_tracker_for_warmup(monkeypatch):
+def test_svg2_method_uses_dense_warmup_step_ratio(monkeypatch):
     from sparsevideo.methods.svg2.method import SVG2Method
     from sparsevideo.methods.svg2 import method as svg2_method
 
@@ -259,14 +259,18 @@ def test_svg2_method_prefers_processor_timestep_over_tracker_for_warmup(monkeypa
     monkeypatch.setattr(svg2_method, "_svg2_attention", fake_sparse)
 
     method = SVG2Method(
-        {"first_layers_fp": 0, "first_times_fp": 925},
+        {
+            "dense_warmup_step_ratio": 0.5,
+            "dense_warmup_layer_ratio": 0.0,
+            "num_inference_steps": 50,
+        },
         SimpleNamespace(model_type="wan", model_key=None),
     )
     step_tracker = SimpleNamespace(step=20, timestep=0)
     processor = method.create_processor(0, 2, None, step_tracker)
     query = torch.zeros(1, 8, 1, 4)
 
-    processor.attn_fn(query, query, query, None, timestep=torch.tensor([926]))
+    processor.attn_fn(query, query, query, None, timestep=torch.tensor([0]))
 
     assert calls == ["dense"]
 

@@ -1,7 +1,7 @@
 """Variable-block-size and BSR sparse attention via flashinfer.
 
 Provides two public functions:
-  - variable_block_sparse_attn  — for SVG2, SVOO, Draft (cluster-based)
+  - variable_block_sparse_attn  — for SVG2, SVOO, Draft, AdaCluster (cluster-based)
   - bsr_sparse_attn             — for Radial, STA (fixed-block BSR)
 
 Ported from:
@@ -18,6 +18,7 @@ import sys
 from typing import Optional, Tuple, Union
 
 import torch
+import torch.nn.functional as F
 import triton
 import triton.language as tl
 
@@ -56,6 +57,25 @@ def _env_flag_first(names: tuple[str, ...], default: bool) -> bool:
             continue
         return value.lower() not in ("0", "", "false", "no", "off")
     return default
+
+
+def _next_power_of_two(value: int) -> int:
+    return 1 << (max(1, int(value)) - 1).bit_length()
+
+
+def _flashinfer_kernel_head_dim(dtype: torch.dtype, head_dim: int) -> int:
+    if dtype == torch.bfloat16 and head_dim & (head_dim - 1):
+        padded = _next_power_of_two(head_dim)
+        if padded <= 256:
+            return padded
+    return head_dim
+
+
+def _trim_head_dim(result, head_dim: int):
+    if isinstance(result, tuple):
+        out, lse = result
+        return out[..., :head_dim].contiguous(), lse
+    return result[..., :head_dim].contiguous()
 
 
 def _cuda_root_has_toolkit(root: Path) -> bool:
@@ -375,17 +395,46 @@ def _make_variable_block_sparse_wrapper(f_buffer, backend="auto"):
 # Public API
 # ---------------------------------------------------------------------------
 
-def variable_block_sparse_attn(
+def _variable_block_sparse_plan_chunks(
+    block_mask_map: torch.Tensor,
+    block_col_sz: torch.Tensor,
+    max_kv_indices: int,
+) -> list[tuple[int, int]]:
+    if max_kv_indices <= 0 or block_mask_map.shape[0] <= 1:
+        return [(0, int(block_mask_map.shape[0]))]
+
+    work = (
+        block_mask_map.to(torch.int64)
+        * block_col_sz.to(torch.int64)[:, None, :]
+    ).sum(dim=(1, 2))
+    work_cpu = [int(item) for item in work.detach().cpu().tolist()]
+
+    chunks: list[tuple[int, int]] = []
+    start = 0
+    current = 0
+    for idx, amount in enumerate(work_cpu):
+        if idx > start and current + amount > max_kv_indices:
+            chunks.append((start, idx))
+            start = idx
+            current = 0
+        current += amount
+    chunks.append((start, len(work_cpu)))
+    return chunks
+
+
+def _variable_block_sparse_attn_impl(
     q: torch.Tensor,             # [BH, S, D]  (batch × heads already folded)
     k: torch.Tensor,             # [BH, S, D]
     v: torch.Tensor,             # [BH, S, D]
     dynamic_map: torch.Tensor,   # [BH, nqc, nkc] bool (CPU or GPU)
     q_sizes: torch.Tensor,       # [BH, nqc] int
     k_sizes: torch.Tensor,       # [BH, nkc] int
-) -> torch.Tensor:               # [BH, S, D]
+    sm_scale: Optional[float] = None,
+    return_lse: bool = False,
+) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:  # [BH, S, D], optional [BH, S] LSE
     """Variable-block-size sparse attention via flashinfer.
 
-    Used by SVG2, SVOO, Draft, Radial.
+    Used by SVG2, SVOO, Draft, Radial, AdaCluster.
     dynamic_map[bh, i, j] = True means Q-cluster i in head bh attends to K-cluster j.
     Tokens must already be sorted by cluster within each BH slot.
     """
@@ -398,18 +447,11 @@ def variable_block_sparse_attn(
 
     assert dynamic_map.shape == (BH, nqc, nkc)
 
-    # _block_mask_map_to_expanded_indices uses a Triton kernel → needs GPU tensors.
-    # Move everything to q.device (GPU), but also keep CPU copies for plan host args.
-    dev = q.device
-    dynamic_map_dev = dynamic_map.bool().to(dev)
-    q_sizes_dev = q_sizes.to(torch.int32).to(dev)
-    k_sizes_dev = k_sizes.to(torch.int32).to(dev)
-
     workspace_bytes = _env_int_first(
         ("SVOO_FLASHINFER_SPARSE_WORKSPACE_BYTES", "SV_FLASHINFER_WORKSPACE_BYTES"),
         128 * 1024 * 1024,
     )
-    f_buffer = torch.empty((workspace_bytes,), dtype=torch.uint8, device=dev)
+    f_buffer = torch.empty((workspace_bytes,), dtype=torch.uint8, device=q.device)
     backend = _env_str_first(
         ("SVOO_FLASHINFER_SPARSE_BACKEND", "SV_FLASHINFER_BACKEND"),
         "auto",
@@ -430,19 +472,103 @@ def variable_block_sparse_attn(
         )
 
     wrapper.plan(
-        block_mask_map=dynamic_map_dev,
-        block_row_sz=q_sizes_dev,
-        block_col_sz=k_sizes_dev,
+        block_mask_map=dynamic_map,
+        block_row_sz=q_sizes,
+        block_col_sz=k_sizes,
         num_qo_heads=BH,
         num_kv_heads=BH,
         head_dim=D,
         q_data_type=q.dtype,
         kv_data_type=k.dtype,
+        sm_scale=sm_scale,
     )
 
-    o = wrapper.run(q, k, v)
+    o = wrapper.run(q, k, v, return_lse=return_lse)
     del wrapper, f_buffer, i_buffer
     return o
+
+
+def variable_block_sparse_attn(
+    q: torch.Tensor,             # [BH, S, D]  (batch × heads already folded)
+    k: torch.Tensor,             # [BH, S, D]
+    v: torch.Tensor,             # [BH, S, D]
+    dynamic_map: torch.Tensor,   # [BH, nqc, nkc] bool (CPU or GPU)
+    q_sizes: torch.Tensor,       # [BH, nqc] int
+    k_sizes: torch.Tensor,       # [BH, nkc] int
+    sm_scale: Optional[float] = None,
+    return_lse: bool = False,
+) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:  # [BH, S, D], optional [BH, S] LSE
+    """Variable-block-size sparse attention via flashinfer.
+
+    Used by SVG2, SVOO, Draft, Radial, AdaCluster.
+    dynamic_map[bh, i, j] = True means Q-cluster i in head bh attends to K-cluster j.
+    Tokens must already be sorted by cluster within each BH slot.
+    """
+    if not HAS_FLASHINFER:
+        raise ImportError("flashinfer is required for variable_block_sparse_attn")
+
+    BH, _S, original_head_dim = q.shape
+    nqc = q_sizes.shape[-1]
+    nkc = k_sizes.shape[-1]
+
+    assert dynamic_map.shape == (BH, nqc, nkc)
+
+    kernel_head_dim = _flashinfer_kernel_head_dim(q.dtype, original_head_dim)
+    if kernel_head_dim != original_head_dim:
+        if sm_scale is None:
+            sm_scale = original_head_dim ** -0.5
+        pad = kernel_head_dim - original_head_dim
+        q = F.pad(q, (0, pad))
+        k = F.pad(k, (0, pad))
+        v = F.pad(v, (0, pad))
+
+    dev = q.device
+    dynamic_map_dev = dynamic_map.bool().to(dev)
+    q_sizes_dev = q_sizes.to(torch.int32).to(dev)
+    k_sizes_dev = k_sizes.to(torch.int32).to(dev)
+
+    max_kv_indices = _env_int_first(
+        ("SV_FLASHINFER_MAX_KV_INDICES_PER_PLAN", "SVOO_FLASHINFER_MAX_KV_INDICES_PER_PLAN"),
+        256_000_000,
+    )
+    chunks = _variable_block_sparse_plan_chunks(dynamic_map_dev, k_sizes_dev, max_kv_indices)
+    if len(chunks) == 1:
+        result = _variable_block_sparse_attn_impl(
+            q, k, v,
+            dynamic_map_dev, q_sizes_dev, k_sizes_dev,
+            sm_scale=sm_scale,
+            return_lse=return_lse,
+        )
+        if kernel_head_dim != original_head_dim:
+            return _trim_head_dim(result, original_head_dim)
+        return result
+
+    outputs = []
+    lses = []
+    for start, end in chunks:
+        result = _variable_block_sparse_attn_impl(
+            q[start:end],
+            k[start:end],
+            v[start:end],
+            dynamic_map_dev[start:end],
+            q_sizes_dev[start:end],
+            k_sizes_dev[start:end],
+            sm_scale=sm_scale,
+            return_lse=return_lse,
+        )
+        if return_lse:
+            out, lse = result
+            outputs.append(out)
+            lses.append(lse)
+        else:
+            outputs.append(result)
+
+    out = torch.cat(outputs, dim=0)
+    if kernel_head_dim != original_head_dim:
+        out = out[..., :original_head_dim].contiguous()
+    if return_lse:
+        return out, torch.cat(lses, dim=0)
+    return out
 
 
 def hunyuan_flashinfer_varlen_attn(

@@ -53,7 +53,7 @@ def test_wheel_includes_owned_native_sources_and_assets(tmp_path):
 
     required = {
         "sparsevideo/methods/svoo/sparsity_profiles/sparsity_wan_1.3B_t2v.csv",
-        "sparsevideo/methods/sta/mask_strategy_wan.json",
+        "sparsevideo/methods/sta/mask_strategies/mask_strategy_wan.json",
         "sparsevideo/kernels/native/svg_svoo_fused/setup.sh",
         "sparsevideo/kernels/native/svg_svoo_fused/csrc/ops.cu",
         "sparsevideo/kernels/native/spargeattn/setup.sh",
@@ -62,6 +62,8 @@ def test_wheel_includes_owned_native_sources_and_assets(tmp_path):
         "sparsevideo/kernels/native/draft_block_sparse/setup.py",
     }
     assert required <= names
+    for method in METHODS:
+        assert f"sparsevideo/methods/{method}/config.yaml" in names
     assert not any(name.startswith("training_free/") for name in names)
     assert any(name.startswith("sparsevideo/kernels/native/flashomni/csrc/") for name in names)
     assert any(name.startswith("sparsevideo/kernels/native/spargeattn/csrc/") for name in names)
@@ -79,7 +81,7 @@ def test_optional_all_extra_is_explicit_not_self_referential():
         assert name in extras
     assert all(not dep.startswith("sparsevideo[") for dep in extras["all"])
     all_pkg_names = {dep.split(">")[0].split("<")[0].split("=")[0].split("!")[0] for dep in extras["all"]}
-    assert all_pkg_names == {"flashinfer-python", "triton"}
+    assert all_pkg_names == {"diffsynth", "flashinfer-python", "triton"}
 
 
 def test_owned_native_runtime_extras_do_not_install_rejected_runtime_packages():
@@ -103,6 +105,33 @@ def test_methods_are_packages_not_flat_method_files():
     assert not (methods_root / "svg.py").exists()
 
 
+def test_diffsynth_inference_orchestration_stays_out_of_package():
+    script_only_modules = {
+        "_diffsynth_infer.py",
+        "_diffsynth_models.py",
+        "infer_diffsynth.py",
+        "smoke_diffsynth_methods.py",
+    }
+
+    assert not any(path.name in script_only_modules for path in SRC_ROOT.rglob("*.py"))
+    assert (REPO_ROOT / "scripts" / "_diffsynth_models.py").exists()
+    assert (REPO_ROOT / "scripts" / "infer_diffsynth.py").exists()
+    assert (REPO_ROOT / "scripts" / "smoke_diffsynth_methods.py").exists()
+
+    forbidden_snippets = (
+        "argparse",
+        "DEFAULT_MODEL_ROOT",
+        "load_diffsynth_pipeline",
+        "resolve_diffsynth_model_paths",
+        "save_diffsynth_output",
+        "ModelConfig(",
+    )
+    for module in SRC_ROOT.glob("*.py"):
+        text = module.read_text(encoding="utf-8")
+        for snippet in forbidden_snippets:
+            assert snippet not in text, f"{module.relative_to(REPO_ROOT)} contains script-only DiffSynth code: {snippet}"
+
+
 def test_runtime_status_uses_sparsevideo_owned_paths_not_training_free():
     from sparsevideo._runtime import optional_kernel_status
 
@@ -114,6 +143,8 @@ def test_runtime_status_uses_sparsevideo_owned_paths_not_training_free():
     assert "src/sparsevideo/kernels/native/adacluster" in adacluster["fast_kmeans_single"]["path"]
     assert "training_free" not in adacluster["triton_cluster_sparse_attn"]["path"]
     assert "src/sparsevideo/kernels/native/adacluster" in adacluster["triton_cluster_sparse_attn"]["path"]
+    assert "training_free" not in adacluster["triton_cluster_sparse_attn_topk"]["path"]
+    assert "src/sparsevideo/kernels/native/adacluster" in adacluster["triton_cluster_sparse_attn_topk"]["path"]
 
     fused = status["svg_svoo_fused_kernels"]
     assert all("training_free" not in path for path in fused["candidate_dirs"])
@@ -216,7 +247,7 @@ def test_svoo_sparsity_profiles_are_owned_package_data():
 
 
 def test_sta_mask_strategies_are_owned_package_data():
-    strategy_root = SRC_ROOT / "methods" / "sta"
+    strategy_root = SRC_ROOT / "methods" / "sta" / "mask_strategies"
 
     assert (strategy_root / "mask_strategy_wan.json").exists()
     assert (strategy_root / "mask_strategy_hunyuan.json").exists()

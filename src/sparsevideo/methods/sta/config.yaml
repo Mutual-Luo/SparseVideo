@@ -1,0 +1,708 @@
+# Editable defaults for FastVideo Sliding Tile Attention.
+# Model-specific blocks override only the listed keys; unspecified keys inherit
+# from defaults. Dense warmup uses the same names and values for every backbone.
+defaults:
+  dense_warmup_step_ratio: 0.1 # Fraction of denoising steps that run dense before sparse attention starts.
+  dense_warmup_layer_ratio: 0.03 # Fraction of earliest transformer layers that always run dense.
+  tile_size: # STA tile size in temporal, height, and width token units.
+    - 6
+    - 8
+    - 8
+  window_size: # STA sliding window size in temporal, height, and width tile units.
+    - 3
+    - 6
+    - 10
+  seq_shape: null # Optional sequence shape string such as 18x48x80 for strict parity layouts.
+  has_text: true # Whether the attention sequence includes text tokens.
+  STA_mode: STA_inference # FastVideo mode name; only STA_inference is the parity path.
+  mask_strategy_file_path: null # Optional mask strategy JSON path; config.py fills owned per-model asset paths.
+  mask_candidates: # STA_searching records per-step/layer/head losses for these candidate windows.
+    - [3, 1, 10]
+    - [1, 5, 7]
+    - [3, 3, 3]
+    - [1, 6, 5]
+    - [1, 3, 10]
+    - [3, 6, 1]
+  mask_search_output_dir: result/sta_mask_search
+  mask_search_prompt_id: null
+
+model_defaults:
+  wan21-t2v-1.3b:
+    dense_warmup_step_ratio: 0.1
+    dense_warmup_layer_ratio: 0.03
+    tile_size:
+    - 6
+    - 8
+    - 8
+    window_size:
+    - 3
+    - 6
+    - 10
+    seq_shape: null
+    has_text: false
+    STA_mode: STA_inference
+    mask_strategy_file_path: null
+    mask_candidates:
+    - - 3
+      - 1
+      - 10
+    - - 1
+      - 5
+      - 7
+    - - 3
+      - 3
+      - 3
+    - - 1
+      - 6
+      - 5
+    - - 1
+      - 3
+      - 10
+    - - 3
+      - 6
+      - 1
+    mask_search_output_dir: result/sta_mask_search
+    mask_search_prompt_id: null
+  wan21-t2v-14b:
+    dense_warmup_step_ratio: 0.1
+    dense_warmup_layer_ratio: 0.03
+    tile_size:
+    - 6
+    - 8
+    - 8
+    window_size:
+    - 3
+    - 6
+    - 10
+    seq_shape: null
+    has_text: false
+    STA_mode: STA_inference
+    mask_strategy_file_path: null
+    mask_candidates:
+    - - 3
+      - 1
+      - 10
+    - - 1
+      - 5
+      - 7
+    - - 3
+      - 3
+      - 3
+    - - 1
+      - 6
+      - 5
+    - - 1
+      - 3
+      - 10
+    - - 3
+      - 6
+      - 1
+    mask_search_output_dir: result/sta_mask_search
+    mask_search_prompt_id: null
+  wan22-t2v-a14b:
+    dense_warmup_step_ratio: 0.1
+    dense_warmup_layer_ratio: 0.03
+    tile_size:
+    - 6
+    - 8
+    - 8
+    window_size:
+    - 3
+    - 6
+    - 10
+    seq_shape: null
+    has_text: false
+    STA_mode: STA_inference
+    mask_strategy_file_path: null
+    mask_candidates:
+    - - 3
+      - 1
+      - 10
+    - - 1
+      - 5
+      - 7
+    - - 3
+      - 3
+      - 3
+    - - 1
+      - 6
+      - 5
+    - - 1
+      - 3
+      - 10
+    - - 3
+      - 6
+      - 1
+    mask_search_output_dir: result/sta_mask_search
+    mask_search_prompt_id: null
+  hunyuan-t2v:
+    dense_warmup_step_ratio: 0.1
+    dense_warmup_layer_ratio: 0.03
+    tile_size:
+    - 6
+    - 8
+    - 8
+    window_size:
+    - 5
+    - 6
+    - 10
+    seq_shape: null
+    has_text: true
+    STA_mode: STA_inference
+    mask_strategy_file_path: null
+    mask_candidates:
+    - - 5
+      - 3
+      - 3
+    - - 1
+      - 6
+      - 10
+    - - 3
+      - 3
+      - 5
+    - - 5
+      - 1
+      - 10
+    - - 5
+      - 6
+      - 1
+    mask_search_output_dir: result/sta_mask_search
+    mask_search_prompt_id: null
+  wan21-i2v-14b:
+    dense_warmup_step_ratio: 0.1
+    dense_warmup_layer_ratio: 0.03
+    tile_size:
+    - 6
+    - 8
+    - 8
+    window_size:
+    - 3
+    - 6
+    - 10
+    seq_shape: null
+    has_text: false
+    STA_mode: STA_inference
+    mask_strategy_file_path: null
+    mask_candidates:
+    - - 3
+      - 1
+      - 10
+    - - 1
+      - 5
+      - 7
+    - - 3
+      - 3
+      - 3
+    - - 1
+      - 6
+      - 5
+    - - 1
+      - 3
+      - 10
+    - - 3
+      - 6
+      - 1
+    mask_search_output_dir: result/sta_mask_search
+    mask_search_prompt_id: null
+  wan22-i2v-a14b:
+    dense_warmup_step_ratio: 0.1
+    dense_warmup_layer_ratio: 0.03
+    tile_size:
+    - 6
+    - 8
+    - 8
+    window_size:
+    - 3
+    - 6
+    - 10
+    seq_shape: null
+    has_text: false
+    STA_mode: STA_inference
+    mask_strategy_file_path: null
+    mask_candidates:
+    - - 3
+      - 1
+      - 10
+    - - 1
+      - 5
+      - 7
+    - - 3
+      - 3
+      - 3
+    - - 1
+      - 6
+      - 5
+    - - 1
+      - 3
+      - 10
+    - - 3
+      - 6
+      - 1
+    mask_search_output_dir: result/sta_mask_search
+    mask_search_prompt_id: null
+  hunyuan-i2v:
+    dense_warmup_step_ratio: 0.1
+    dense_warmup_layer_ratio: 0.03
+    tile_size:
+    - 6
+    - 8
+    - 8
+    window_size:
+    - 5
+    - 6
+    - 10
+    seq_shape: null
+    has_text: true
+    STA_mode: STA_inference
+    mask_strategy_file_path: null
+    mask_candidates:
+    - - 5
+      - 3
+      - 3
+    - - 1
+      - 6
+      - 10
+    - - 3
+      - 3
+      - 5
+    - - 5
+      - 1
+      - 10
+    - - 5
+      - 6
+      - 1
+    mask_search_output_dir: result/sta_mask_search
+    mask_search_prompt_id: null
+  skyreels-v2-t2v-14b:
+    dense_warmup_step_ratio: 0.1
+    dense_warmup_layer_ratio: 0.03
+    tile_size:
+    - 6
+    - 8
+    - 8
+    window_size:
+    - 3
+    - 6
+    - 10
+    seq_shape: null
+    has_text: false
+    STA_mode: STA_inference
+    mask_strategy_file_path: null
+    mask_candidates:
+    - - 3
+      - 1
+      - 10
+    - - 1
+      - 5
+      - 7
+    - - 3
+      - 3
+      - 3
+    - - 1
+      - 6
+      - 5
+    - - 1
+      - 3
+      - 10
+    - - 3
+      - 6
+      - 1
+    mask_search_output_dir: result/sta_mask_search
+    mask_search_prompt_id: null
+  skyreels-v2-i2v-14b:
+    dense_warmup_step_ratio: 0.1
+    dense_warmup_layer_ratio: 0.03
+    tile_size:
+    - 6
+    - 8
+    - 8
+    window_size:
+    - 3
+    - 6
+    - 10
+    seq_shape: null
+    has_text: false
+    STA_mode: STA_inference
+    mask_strategy_file_path: null
+    mask_candidates:
+    - - 3
+      - 1
+      - 10
+    - - 1
+      - 5
+      - 7
+    - - 3
+      - 3
+      - 3
+    - - 1
+      - 6
+      - 5
+    - - 1
+      - 3
+      - 10
+    - - 3
+      - 6
+      - 1
+    mask_search_output_dir: result/sta_mask_search
+    mask_search_prompt_id: null
+  wan22-animate-14b:
+    dense_warmup_step_ratio: 0.1
+    dense_warmup_layer_ratio: 0.03
+    tile_size:
+    - 6
+    - 8
+    - 8
+    window_size:
+    - 3
+    - 6
+    - 10
+    seq_shape: null
+    has_text: false
+    STA_mode: STA_inference
+    mask_strategy_file_path: null
+    mask_candidates:
+    - - 3
+      - 1
+      - 10
+    - - 1
+      - 5
+      - 7
+    - - 3
+      - 3
+      - 3
+    - - 1
+      - 6
+      - 5
+    - - 1
+      - 3
+      - 10
+    - - 3
+      - 6
+      - 1
+    mask_search_output_dir: result/sta_mask_search
+    mask_search_prompt_id: null
+  wan21-vace-1.3b:
+    dense_warmup_step_ratio: 0.1
+    dense_warmup_layer_ratio: 0.03
+    tile_size:
+    - 6
+    - 8
+    - 8
+    window_size:
+    - 3
+    - 6
+    - 10
+    seq_shape: null
+    has_text: false
+    STA_mode: STA_inference
+    mask_strategy_file_path: null
+    mask_candidates:
+    - - 3
+      - 1
+      - 10
+    - - 1
+      - 5
+      - 7
+    - - 3
+      - 3
+      - 3
+    - - 1
+      - 6
+      - 5
+    - - 1
+      - 3
+      - 10
+    - - 3
+      - 6
+      - 1
+    mask_search_output_dir: result/sta_mask_search
+    mask_search_prompt_id: null
+  wan21-vace-14b:
+    dense_warmup_step_ratio: 0.1
+    dense_warmup_layer_ratio: 0.03
+    tile_size:
+    - 6
+    - 8
+    - 8
+    window_size:
+    - 3
+    - 6
+    - 10
+    seq_shape: null
+    has_text: false
+    STA_mode: STA_inference
+    mask_strategy_file_path: null
+    mask_candidates:
+    - - 3
+      - 1
+      - 10
+    - - 1
+      - 5
+      - 7
+    - - 3
+      - 3
+      - 3
+    - - 1
+      - 6
+      - 5
+    - - 1
+      - 3
+      - 10
+    - - 3
+      - 6
+      - 1
+    mask_search_output_dir: result/sta_mask_search
+    mask_search_prompt_id: null
+  cogvideox-t2v:
+    dense_warmup_step_ratio: 0.1
+    dense_warmup_layer_ratio: 0.03
+    tile_size:
+    - 6
+    - 8
+    - 8
+    window_size:
+    - 1
+    - 1
+    - 1
+    seq_shape: null
+    has_text: true
+    STA_mode: STA_inference
+    mask_strategy_file_path: null
+    mask_candidates:
+    - - 3
+      - 1
+      - 10
+    - - 1
+      - 5
+      - 7
+    - - 3
+      - 3
+      - 3
+    - - 1
+      - 6
+      - 5
+    - - 1
+      - 3
+      - 10
+    - - 3
+      - 6
+      - 1
+    mask_search_output_dir: result/sta_mask_search
+    mask_search_prompt_id: null
+  cogvideox-i2v:
+    dense_warmup_step_ratio: 0.1
+    dense_warmup_layer_ratio: 0.03
+    tile_size:
+    - 6
+    - 8
+    - 8
+    window_size:
+    - 1
+    - 1
+    - 1
+    seq_shape: null
+    has_text: true
+    STA_mode: STA_inference
+    mask_strategy_file_path: null
+    mask_candidates:
+    - - 3
+      - 1
+      - 10
+    - - 1
+      - 5
+      - 7
+    - - 3
+      - 3
+      - 3
+    - - 1
+      - 6
+      - 5
+    - - 1
+      - 3
+      - 10
+    - - 3
+      - 6
+      - 1
+    mask_search_output_dir: result/sta_mask_search
+    mask_search_prompt_id: null
+  ltx-video:
+    dense_warmup_step_ratio: 0.1
+    dense_warmup_layer_ratio: 0.03
+    tile_size:
+    - 6
+    - 8
+    - 8
+    window_size:
+    - 1
+    - 1
+    - 1
+    seq_shape: null
+    has_text: false
+    STA_mode: STA_inference
+    mask_strategy_file_path: null
+    mask_candidates:
+    - - 3
+      - 1
+      - 10
+    - - 1
+      - 5
+      - 7
+    - - 3
+      - 3
+      - 3
+    - - 1
+      - 6
+      - 5
+    - - 1
+      - 3
+      - 10
+    - - 3
+      - 6
+      - 1
+    mask_search_output_dir: result/sta_mask_search
+    mask_search_prompt_id: null
+  ltx-video-i2v:
+    dense_warmup_step_ratio: 0.1
+    dense_warmup_layer_ratio: 0.03
+    tile_size:
+    - 6
+    - 8
+    - 8
+    window_size:
+    - 1
+    - 1
+    - 1
+    seq_shape: null
+    has_text: false
+    STA_mode: STA_inference
+    mask_strategy_file_path: null
+    mask_candidates:
+    - - 3
+      - 1
+      - 10
+    - - 1
+      - 5
+      - 7
+    - - 3
+      - 3
+      - 3
+    - - 1
+      - 6
+      - 5
+    - - 1
+      - 3
+      - 10
+    - - 3
+      - 6
+      - 1
+    mask_search_output_dir: result/sta_mask_search
+    mask_search_prompt_id: null
+  allegro:
+    dense_warmup_step_ratio: 0.1
+    dense_warmup_layer_ratio: 0.03
+    tile_size:
+    - 6
+    - 8
+    - 8
+    window_size:
+    - 1
+    - 1
+    - 1
+    seq_shape: null
+    has_text: false
+    STA_mode: STA_inference
+    mask_strategy_file_path: null
+    mask_candidates:
+    - - 3
+      - 1
+      - 10
+    - - 1
+      - 5
+      - 7
+    - - 3
+      - 3
+      - 3
+    - - 1
+      - 6
+      - 5
+    - - 1
+      - 3
+      - 10
+    - - 3
+      - 6
+      - 1
+    mask_search_output_dir: result/sta_mask_search
+    mask_search_prompt_id: null
+  mochi-1:
+    dense_warmup_step_ratio: 0.1
+    dense_warmup_layer_ratio: 0.03
+    tile_size:
+    - 6
+    - 8
+    - 8
+    window_size:
+    - 1
+    - 1
+    - 1
+    seq_shape: null
+    has_text: true
+    STA_mode: STA_inference
+    mask_strategy_file_path: null
+    mask_candidates:
+    - - 3
+      - 1
+      - 10
+    - - 1
+      - 5
+      - 7
+    - - 3
+      - 3
+      - 3
+    - - 1
+      - 6
+      - 5
+    - - 1
+      - 3
+      - 10
+    - - 3
+      - 6
+      - 1
+    mask_search_output_dir: result/sta_mask_search
+    mask_search_prompt_id: null
+  easyanimate-v5-t2v-12b:
+    dense_warmup_step_ratio: 0.1
+    dense_warmup_layer_ratio: 0.03
+    tile_size:
+    - 6
+    - 8
+    - 8
+    window_size:
+    - 1
+    - 1
+    - 1
+    seq_shape: null
+    has_text: true
+    STA_mode: STA_inference
+    mask_strategy_file_path: null
+    mask_candidates:
+    - - 3
+      - 1
+      - 10
+    - - 1
+      - 5
+      - 7
+    - - 3
+      - 3
+      - 3
+    - - 1
+      - 6
+      - 5
+    - - 1
+      - 3
+      - 10
+    - - 3
+      - 6
+      - 1
+    mask_search_output_dir: result/sta_mask_search
+    mask_search_prompt_id: null
+aliases: {}

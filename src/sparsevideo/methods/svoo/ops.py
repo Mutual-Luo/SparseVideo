@@ -130,15 +130,10 @@ def svoo_attention(
     q_video = q_flat[:, :video_N]
     k_video = k_flat[:, :video_N]
 
-    if cfg.get("use_routing_transformer_strategy"):
-        _validate_routing_config(cfg, video_N)
-        nqc = int(cfg["mq1"]) * int(cfg["mq2"])
-        nkc = int(cfg["mk1"]) * int(cfg["mk2"])
-    else:
-        num_q_centroids = cfg["num_q_centroids"]
-        num_k_centroids = cfg["num_k_centroids"]
-        nqc = min(num_q_centroids, video_N)
-        nkc = min(num_k_centroids, video_N)
+    num_q_centroids = cfg["num_q_centroids"]
+    num_k_centroids = cfg["num_k_centroids"]
+    nqc = min(num_q_centroids, video_N)
+    nkc = min(num_k_centroids, video_N)
 
     cache_key = (B * H, video_N, text_len, D, nqc, nkc, str(q_flat.device))
     cached = state.get("cached_clustering")
@@ -156,17 +151,7 @@ def svoo_attention(
         kmeans_iters = (
             cfg["kmeans_iter_step"] if state["centroids_init"] else cfg["kmeans_iter_init"]
         )
-        if cfg.get("use_routing_transformer_strategy"):
-            (
-                q_labels,
-                q_centroids_token,
-                q_sizes,
-                k_labels,
-                k_centroids,
-                k_sizes,
-            ) = _routing_cluster_tokens(q_video, k_video, cfg, state, kmeans_iters)
-            state["centroids_init"] = False
-        elif cfg["use_svoo"]:
+        if cfg["use_svoo"]:
             (
                 q_labels,
                 q_centroids_token,
@@ -195,8 +180,7 @@ def svoo_attention(
             state["prev_q_centroids"] = q_centroids_token.detach()
             state["prev_k_centroids"] = k_centroids.detach()
 
-        if not cfg.get("use_routing_transformer_strategy"):
-            state["centroids_init"] = True
+        state["centroids_init"] = True
         state["cached_clustering"] = {
             "cache_key": cache_key,
             "q_labels": q_labels.detach(),
@@ -309,151 +293,3 @@ def _svoo_frame_layout(video_len, model_type):
     num_frames, frame_h, frame_w = infer_video_frame_shape(video_len, model_type=model_type)
     return num_frames, frame_h * frame_w
 
-
-def _validate_routing_config(cfg, seq_len):
-    required = ("mq1", "mk1", "mq2", "mk2")
-    missing = [name for name in required if cfg.get(name) is None]
-    if missing:
-        raise ValueError(
-            "svoo use_routing_transformer_strategy requires mq1, mk1, mq2, and mk2; "
-            f"missing {missing}"
-        )
-    for name in required:
-        if int(cfg[name]) <= 0:
-            raise ValueError(f"svoo routing parameter {name} must be a positive integer")
-    if seq_len % int(cfg["mq1"]) != 0:
-        raise ValueError(
-            f"svoo routing requires video token length {seq_len} divisible by mq1={cfg['mq1']}"
-        )
-    if seq_len % int(cfg["mk1"]) != 0:
-        raise ValueError(
-            f"svoo routing requires video token length {seq_len} divisible by mk1={cfg['mk1']}"
-        )
-
-
-def _routing_cluster_tokens(q_video, k_video, cfg, state, kmeans_iters):
-    batch_heads, seq_len, head_dim = q_video.shape
-    mq1 = int(cfg["mq1"])
-    mk1 = int(cfg["mk1"])
-    mq2 = int(cfg["mq2"])
-    mk2 = int(cfg["mk2"])
-
-    q_bucket_labels = _uniform_bucketing(torch.norm(q_video, p=2, dim=-1), mq1)
-    k_bucket_labels = _uniform_bucketing(torch.norm(k_video, p=2, dim=-1), mk1)
-    q_sorted_indices = torch.argsort(q_bucket_labels, dim=-1)
-    k_sorted_indices = torch.argsort(k_bucket_labels, dim=-1)
-    q_inverse_indices = torch.argsort(q_sorted_indices, dim=-1)
-    k_inverse_indices = torch.argsort(k_sorted_indices, dim=-1)
-
-    init_q_centroids = state.get("q_bucket_cluster_centroids") if state.get("centroids_init") else None
-    q_local_labels, q_centroids, _ = _bucket_clustering_parallel(
-        q_video,
-        q_bucket_labels,
-        mq1,
-        mq2,
-        kmeans_iters,
-        init_centroids=init_q_centroids,
-        sorted_indices=q_sorted_indices,
-        inverse_indices=q_inverse_indices,
-    )
-    state["q_bucket_cluster_centroids"] = q_centroids.detach()
-
-    init_k_centroids = state.get("k_bucket_cluster_centroids") if state.get("centroids_init") else None
-    k_local_labels, k_centroids, _ = _bucket_clustering_parallel(
-        k_video,
-        k_bucket_labels,
-        mk1,
-        mk2,
-        kmeans_iters,
-        init_centroids=init_k_centroids,
-        sorted_indices=k_sorted_indices,
-        inverse_indices=k_inverse_indices,
-    )
-    state["k_bucket_cluster_centroids"] = k_centroids.detach()
-
-    q_labels = q_bucket_labels * mq2 + q_local_labels
-    k_labels = k_bucket_labels * mk2 + k_local_labels
-
-    q_cluster_sizes = torch.zeros(batch_heads, mq1 * mq2, device=q_video.device, dtype=torch.long)
-    k_cluster_sizes = torch.zeros(batch_heads, mk1 * mk2, device=k_video.device, dtype=torch.long)
-    q_cluster_sizes.scatter_add_(1, q_labels.long(), torch.ones_like(q_labels, dtype=torch.long))
-    k_cluster_sizes.scatter_add_(1, k_labels.long(), torch.ones_like(k_labels, dtype=torch.long))
-
-    return (
-        q_labels,
-        q_centroids.view(batch_heads, mq1 * mq2, head_dim),
-        q_cluster_sizes,
-        k_labels,
-        k_centroids.view(batch_heads, mk1 * mk2, head_dim),
-        k_cluster_sizes,
-    )
-
-
-def _uniform_bucketing(norms, num_buckets):
-    batch, seq_len = norms.shape
-    device = norms.device
-    sorted_indices = torch.argsort(norms, dim=-1)
-    bucket_size = seq_len // int(num_buckets)
-    bucket_labels_sorted = torch.arange(seq_len, device=device).unsqueeze(0).expand(batch, -1) // bucket_size
-    bucket_labels_sorted = torch.clamp(bucket_labels_sorted, 0, int(num_buckets) - 1)
-    bucket_labels = torch.zeros(batch, seq_len, dtype=torch.long, device=device)
-    bucket_labels.scatter_(1, sorted_indices, bucket_labels_sorted)
-    return bucket_labels
-
-
-def _bucket_clustering_parallel(
-    tokens,
-    bucket_labels,
-    num_buckets,
-    num_clusters_per_bucket,
-    max_iters,
-    init_centroids=None,
-    sorted_indices=None,
-    inverse_indices=None,
-):
-    from ...kernels.kmeans import triton_kmeans
-
-    batch, seq_len, head_dim = tokens.shape
-    device = tokens.device
-    num_buckets = int(num_buckets)
-    num_clusters_per_bucket = int(num_clusters_per_bucket)
-    if seq_len % num_buckets != 0:
-        raise ValueError(
-            f"Sequence length {seq_len} must be divisible by num_buckets {num_buckets} for uniform bucketing"
-        )
-    bucket_size = seq_len // num_buckets
-
-    if sorted_indices is None:
-        sorted_indices = torch.argsort(bucket_labels, dim=-1)
-    if inverse_indices is None:
-        inverse_indices = torch.argsort(sorted_indices, dim=-1)
-    sorted_tokens = torch.gather(tokens, 1, sorted_indices.unsqueeze(-1).expand(-1, -1, head_dim))
-    bucket_tokens = sorted_tokens.contiguous().view(batch * num_buckets, bucket_size, head_dim)
-
-    init_centroids_reshaped = None
-    if init_centroids is not None:
-        init_centroids_reshaped = init_centroids.view(
-            batch * num_buckets, num_clusters_per_bucket, head_dim,
-        )
-        init_centroids_reshaped = torch.nn.functional.normalize(init_centroids_reshaped, p=2, dim=-1)
-
-    bucket_labels_local, bucket_centroids, _ = triton_kmeans(
-        bucket_tokens,
-        num_clusters_per_bucket,
-        max_iters,
-        init_centroids=init_centroids_reshaped,
-        preserve_empty_centroids=True,
-        final_reassign=False,
-        clamp_clusters=False,
-    )
-
-    cluster_labels_sorted = bucket_labels_local.view(batch, seq_len)
-    cluster_labels = torch.gather(cluster_labels_sorted, 1, inverse_indices)
-    all_centroids = bucket_centroids.reshape(batch, num_buckets * num_clusters_per_bucket, head_dim)
-
-    cluster_sizes = torch.zeros(
-        batch, num_buckets * num_clusters_per_bucket, device=device, dtype=torch.long,
-    )
-    cluster_indices = bucket_labels.long() * num_clusters_per_bucket + cluster_labels.long()
-    cluster_sizes.scatter_add_(1, cluster_indices, torch.ones_like(cluster_indices, dtype=torch.long))
-    return cluster_labels, all_centroids, cluster_sizes

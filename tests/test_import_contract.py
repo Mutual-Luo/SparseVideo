@@ -645,12 +645,19 @@ def test_adacluster_load_status_detects_owned_triton_apis(monkeypatch, tmp_path)
         triton_cluster_sparse_attn=lambda *args, **kwargs: None,
         _cluster_sparse_attn=lambda *args, **kwargs: None,
     )
+    cluster_attn_topk = SimpleNamespace(
+        __file__=str(native_root / "triton_cluster_sparse_attn_topk.py"),
+        triton_cluster_sparse_attn_topk=lambda *args, **kwargs: None,
+        _cluster_sparse_attn_topk=lambda *args, **kwargs: None,
+    )
 
     def fake_import_module(name):
         if name == "sparsevideo.kernels.native.adacluster.fast_kmeans_single":
             return fast_kmeans
         if name == "sparsevideo.kernels.native.adacluster.triton_cluster_sparse_attn":
             return cluster_attn
+        if name == "sparsevideo.kernels.native.adacluster.triton_cluster_sparse_attn_topk":
+            return cluster_attn_topk
         return __import__(name)
 
     monkeypatch.setattr(_runtime, "_repo_root", lambda: tmp_path / "repo")
@@ -663,8 +670,10 @@ def test_adacluster_load_status_detects_owned_triton_apis(monkeypatch, tmp_path)
     assert status["owned_runtime"] is True
     assert status["flash_kmeans_single"] is True
     assert status["triton_cluster_sparse_attn"] is True
+    assert status["triton_cluster_sparse_attn_topk"] is True
     assert status["kmeans_jit_kernels"] is True
     assert status["cluster_sparse_attn_jit_kernel"] is True
+    assert status["cluster_sparse_attn_topk_jit_kernel"] is True
     assert status["import_error"] is None
 
 
@@ -697,12 +706,18 @@ def test_adacluster_load_status_rejects_training_free_runtime(monkeypatch, tmp_p
         __file__=str(tmp_path / "training_free" / "Adacluster" / "triton_kernel" / "triton_cluster_sparse_attn.py"),
         triton_cluster_sparse_attn=lambda *args, **kwargs: None,
     )
+    cluster_attn_topk = SimpleNamespace(
+        __file__=str(tmp_path / "training_free" / "Adacluster" / "triton_kernel" / "triton_cluster_sparse_attn_topk.py"),
+        triton_cluster_sparse_attn_topk=lambda *args, **kwargs: None,
+    )
 
     def fake_import_module(name):
         if name == "sparsevideo.kernels.native.adacluster.fast_kmeans_single":
             return fast_kmeans
         if name == "sparsevideo.kernels.native.adacluster.triton_cluster_sparse_attn":
             return cluster_attn
+        if name == "sparsevideo.kernels.native.adacluster.triton_cluster_sparse_attn_topk":
+            return cluster_attn_topk
         return __import__(name)
 
     monkeypatch.setattr(_runtime, "_repo_root", lambda: tmp_path / "repo")
