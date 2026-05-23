@@ -21,7 +21,8 @@ def _sparse_head_placement_kernel(
     mask_idx_stride_b,
     mask_idx_stride_h,
     seq_len: tl.constexpr,
-    head_dim: tl.constexpr,
+    head_dim,
+    head_dim_padded: tl.constexpr,
     context_length: tl.constexpr,
     num_frame: tl.constexpr,
     frame_size: tl.constexpr,
@@ -33,7 +34,8 @@ def _sparse_head_placement_kernel(
 
     offset_token = tl.arange(0, BLOCK_SIZE) + block_id * BLOCK_SIZE
     offset_mask = offset_token < seq_len
-    offset_d = tl.arange(0, head_dim)
+    offset_d = tl.arange(0, head_dim_padded)
+    d_mask = offset_d < head_dim
     is_temporal = tl.load(best_mask_idx_ptr + cfg * mask_idx_stride_b + head * mask_idx_stride_h)
 
     if is_temporal:
@@ -60,12 +62,13 @@ def _sparse_head_placement_kernel(
         + offset_d[None, :] * query_stride_d
     )
 
-    query = tl.load(query_ptr + offset_load, mask=offset_mask[:, None])
-    key = tl.load(key_ptr + offset_load, mask=offset_mask[:, None])
-    value = tl.load(value_ptr + offset_load, mask=offset_mask[:, None])
-    tl.store(query_out_ptr + offset_store, query, mask=offset_mask[:, None])
-    tl.store(key_out_ptr + offset_store, key, mask=offset_mask[:, None])
-    tl.store(value_out_ptr + offset_store, value, mask=offset_mask[:, None])
+    full_mask = offset_mask[:, None] & d_mask[None, :]
+    query = tl.load(query_ptr + offset_load, mask=full_mask)
+    key = tl.load(key_ptr + offset_load, mask=full_mask)
+    value = tl.load(value_ptr + offset_load, mask=full_mask)
+    tl.store(query_out_ptr + offset_store, query, mask=full_mask)
+    tl.store(key_out_ptr + offset_store, key, mask=full_mask)
+    tl.store(value_out_ptr + offset_store, value, mask=full_mask)
 
 
 @triton.jit
@@ -80,7 +83,8 @@ def _hidden_states_placement_kernel(
     mask_idx_stride_b,
     mask_idx_stride_h,
     seq_len: tl.constexpr,
-    head_dim: tl.constexpr,
+    head_dim,
+    head_dim_padded: tl.constexpr,
     context_length: tl.constexpr,
     num_frame: tl.constexpr,
     frame_size: tl.constexpr,
@@ -92,7 +96,8 @@ def _hidden_states_placement_kernel(
 
     offset_token = tl.arange(0, BLOCK_SIZE) + block_id * BLOCK_SIZE
     offset_mask = offset_token < seq_len
-    offset_d = tl.arange(0, head_dim)
+    offset_d = tl.arange(0, head_dim_padded)
+    d_mask = offset_d < head_dim
     is_temporal = tl.load(best_mask_idx_ptr + cfg * mask_idx_stride_b + head * mask_idx_stride_h)
 
     if is_temporal:
@@ -119,12 +124,14 @@ def _hidden_states_placement_kernel(
         + offset_d[None, :] * hidden_states_stride_d
     )
 
-    hidden_states = tl.load(hidden_states_ptr + offset_load, mask=offset_mask[:, None])
-    tl.store(hidden_states_out_ptr + offset_store, hidden_states, mask=offset_mask[:, None])
+    full_mask = offset_mask[:, None] & d_mask[None, :]
+    hidden_states = tl.load(hidden_states_ptr + offset_load, mask=full_mask)
+    tl.store(hidden_states_out_ptr + offset_store, hidden_states, mask=full_mask)
 
 
 def sparse_head_placement(query, key, value, best_mask_idx, context_length, num_frame, frame_size):
     cfg, num_heads, seq_len, head_dim = query.shape
+    head_dim_padded = triton.next_power_of_2(head_dim)
     block_size = 128
     grid = (cfg, num_heads, triton.cdiv(seq_len, block_size))
     query_out = torch.empty_like(query)
@@ -147,6 +154,7 @@ def sparse_head_placement(query, key, value, best_mask_idx, context_length, num_
         best_mask_idx.stride(1),
         seq_len,
         head_dim,
+        head_dim_padded,
         context_length,
         num_frame,
         frame_size,
@@ -157,6 +165,7 @@ def sparse_head_placement(query, key, value, best_mask_idx, context_length, num_
 
 def hidden_states_placement(hidden_states, best_mask_idx, context_length, num_frame, frame_size):
     cfg, num_heads, seq_len, head_dim = hidden_states.shape
+    head_dim_padded = triton.next_power_of_2(head_dim)
     block_size = 128
     grid = (cfg, num_heads, triton.cdiv(seq_len, block_size))
     hidden_states_out = torch.empty_like(hidden_states)
@@ -173,6 +182,7 @@ def hidden_states_placement(hidden_states, best_mask_idx, context_length, num_fr
         best_mask_idx.stride(1),
         seq_len,
         head_dim,
+        head_dim_padded,
         context_length,
         num_frame,
         frame_size,

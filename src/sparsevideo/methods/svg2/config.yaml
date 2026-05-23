@@ -226,11 +226,11 @@ model_defaults:
   allegro:
     dense_warmup_step_ratio: 0.1
     dense_warmup_layer_ratio: 0.03
-    num_q_centroids: 256
-    num_k_centroids: 1024
+    num_q_centroids: 300
+    num_k_centroids: 1000
     top_p_kmeans: 0.95
-    min_kc_ratio: 0.20
-    kmeans_iter_init: 30
+    min_kc_ratio: 0.30
+    kmeans_iter_init: 50
     kmeans_iter_step: 2
     zero_step_kmeans_init: false
     context_length: null

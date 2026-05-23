@@ -15,13 +15,13 @@ import sparsevideo
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+LTX_GEMMA_REPO = "Lightricks/gemma-3-12b-it-qat-q4_0-unquantized"
 SCRIPT = REPO_ROOT / "scripts" / "infer_diffsynth.py"
-SMOKE_SCRIPT = REPO_ROOT / "scripts" / "smoke_diffsynth_methods.py"
 SCRIPTS_ROOT = REPO_ROOT / "scripts"
 if str(SCRIPTS_ROOT) not in sys.path:
     sys.path.insert(0, str(SCRIPTS_ROOT))
 
-from _diffsynth_models import (
+from _infer_diffsynth.models import (
     DEFAULT_MODEL_ROOT,
     diffsynth_output_audio_sample_rate,
     diffsynth_model_list_lines,
@@ -40,7 +40,7 @@ def test_diffsynth_inference_helpers_stay_out_of_sparsevideo_package():
     assert not list((REPO_ROOT / "src/sparsevideo").glob("*diffsynth*infer*.py"))
 
     forbidden = (
-        "_diffsynth_models",
+        "_infer_diffsynth.models",
         "load_diffsynth_pipeline",
         "resolve_diffsynth_model_paths",
         "save_diffsynth_output",
@@ -66,7 +66,7 @@ def test_generic_sparsevideo_model_root_env_does_not_override_diffsynth_default(
             sys.executable,
             "-c",
             "import sys; sys.path.insert(0, 'scripts'); "
-            "from _diffsynth_models import DEFAULT_MODEL_ROOT; print(DEFAULT_MODEL_ROOT)",
+            "from _infer_diffsynth.models import DEFAULT_MODEL_ROOT; print(DEFAULT_MODEL_ROOT)",
         ],
         cwd=REPO_ROOT,
         env=env,
@@ -87,7 +87,7 @@ def test_diffsynth_model_root_env_override_is_specific():
             sys.executable,
             "-c",
             "import sys; sys.path.insert(0, 'scripts'); "
-            "from _diffsynth_models import DEFAULT_MODEL_ROOT; print(DEFAULT_MODEL_ROOT)",
+            "from _infer_diffsynth.models import DEFAULT_MODEL_ROOT; print(DEFAULT_MODEL_ROOT)",
         ],
         cwd=REPO_ROOT,
         env=env,
@@ -98,693 +98,6 @@ def test_diffsynth_model_root_env_override_is_specific():
 
     assert result.stdout.strip() == "/tmp/diffsynth-models"
 
-
-def test_smoke_diffsynth_methods_lists_public_sparse_methods():
-    result = subprocess.run(
-        [sys.executable, str(SMOKE_SCRIPT), "--list-methods"],
-        cwd=REPO_ROOT,
-        check=True,
-        capture_output=True,
-        text=True,
-    )
-
-    assert result.stdout.splitlines() == [
-        "svg1",
-        "svg2",
-        "spargeattn",
-        "radial",
-        "sta",
-        "draft",
-        "adacluster",
-        "flashomni",
-        "svoo",
-    ]
-
-
-def test_smoke_diffsynth_methods_lists_catalog_models():
-    result = subprocess.run(
-        [sys.executable, str(SMOKE_SCRIPT), "--list-models"],
-        cwd=REPO_ROOT,
-        check=True,
-        capture_output=True,
-        text=True,
-    )
-
-    lines = result.stdout.splitlines()
-    assert lines[0].startswith("wan21-t2v-1.3b: DiffSynth Wan2.1 text-to-video 1.3B")
-    active_count = len(list_diffsynth_model_specs())
-    assert lines[active_count - 1].startswith("ltx23: DiffSynth LTX-2.3")
-    assert lines == list(diffsynth_model_list_lines())
-    assert "Deferred/local-only DiffSynth models:" in lines
-    assert any("wan22-dancer-14b" in line and "Wan-AI/Wan2.2-Dancer-14B" in line for line in lines)
-
-
-def test_infer_diffsynth_lists_catalog_and_deferred_models():
-    result = subprocess.run(
-        [sys.executable, str(SCRIPT), "--list-models"],
-        cwd=REPO_ROOT,
-        check=True,
-        capture_output=True,
-        text=True,
-    )
-
-    assert result.stdout.splitlines() == list(diffsynth_model_list_lines())
-
-
-def test_diffsynth_python_catalog_covers_download_catalog_keys():
-    script = (REPO_ROOT / "scripts" / "download_diffsynth_models.sh").read_text(encoding="utf-8")
-    download_keys = set()
-    for line in script.splitlines():
-        line = line.strip()
-        if not line.startswith('"'):
-            continue
-        parts = line.strip('"').split("|")
-        if len(parts) >= 3:
-            download_keys.add(parts[0])
-
-    python_keys = {spec.key for spec in list_diffsynth_model_specs()}
-
-    assert download_keys == python_keys
-
-
-def test_diffsynth_deferred_dancer_is_not_active_download_target():
-    script = (REPO_ROOT / "scripts" / "download_diffsynth_models.sh").read_text(encoding="utf-8")
-    deferred = {spec.key: spec for spec in list_deferred_diffsynth_model_specs()}
-    active = {spec.key for spec in list_diffsynth_model_specs()}
-
-    assert "wan22-dancer-14b" in deferred
-    assert "wan22-dancer-14b" not in active
-    assert "wan22-dancer-14b|" not in script
-    assert "Wan-AI/Wan2.2-Dancer-14B::global_model.safetensors" not in script
-    assert "Deferred/local-only DiffSynth models (not downloaded by this script):" in script
-    assert deferred["wan22-dancer-14b"].origin_repo == "Wan-AI/Wan2.2-Dancer-14B"
-    assert deferred["wan22-dancer-14b"].origin_pattern == "global_model.safetensors"
-    assert "wantodance_music_path" in deferred["wan22-dancer-14b"].required_inputs
-    assert "resumable --all downloader" in deferred["wan22-dancer-14b"].deferred_reason
-
-
-def test_diffsynth_deferred_dancer_alias_fails_clearly():
-    with pytest.raises(ValueError, match="deferred/local-only.*wan22-dancer-14b"):
-        get_diffsynth_model_spec("wantodance")
-
-
-def test_download_diffsynth_list_reports_deferred_without_download_target():
-    result = subprocess.run(
-        ["bash", str(REPO_ROOT / "scripts" / "download_diffsynth_models.sh"), "--list"],
-        cwd=REPO_ROOT,
-        check=True,
-        capture_output=True,
-        text=True,
-    )
-
-    assert "Deferred/local-only DiffSynth models (not downloaded by this script):" in result.stdout
-    assert "wan22-dancer-14b" in result.stdout
-    assert "Wan-AI/Wan2.2-Dancer-14B:global_model.safetensors" in result.stdout
-
-
-def test_smoke_diffsynth_method_configs_are_runtime_usable():
-    smoke = _load_smoke_module()
-
-    assert smoke._smoke_method_config("dense", 1) == {}
-    assert smoke._smoke_method_config("svg2", 1) == {
-        "dense_warmup_step_ratio": 0,
-        "dense_warmup_layer_ratio": 0,
-    }
-    assert smoke._smoke_method_config("draft", 1) == {
-        "dense_warmup_step_ratio": 0,
-        "dense_warmup_layer_ratio": 0,
-        "allow_triton_fallback": True,
-    }
-    assert smoke._smoke_method_config("flashomni", 1) == {
-        "dense_warmup_step_ratio": 0,
-        "dense_warmup_layer_ratio": 0,
-        "num_inference_steps": 1,
-        "sparse_pattern": "global_random",
-    }
-    assert smoke._smoke_call_steps("svg2", 1) == 1
-    assert smoke._smoke_call_steps("draft", 1) == 2
-    assert smoke._smoke_call_steps("draft", 4) == 4
-    for method in smoke.ALL_METHODS:
-        sparsevideo.normalize_method_config(method, smoke._smoke_method_config(method, 1))
-
-
-def test_smoke_diffsynth_validation_requires_patch_sparse_dispatch_and_restore():
-    smoke = _load_smoke_module()
-    apply_summary = {
-        "pipeline_backend": "diffsynth",
-        "diffsynth_version": "2.0.12",
-        "patched_attention_count": 30,
-        "patched_attention_paths": [f"dit.blocks.{idx}.self_attn.attn" for idx in range(30)],
-        "num_self_attn_layers": 30,
-        "method_runtime": {"dispatch_counts": {"sparse": 60}},
-        "restored": True,
-    }
-    dense_summary = {
-        "pipeline_backend": "diffsynth",
-        "diffsynth_version": "2.0.12",
-        "patched_attention_count": 0,
-        "patched_attention_paths": [],
-        "num_self_attn_layers": 30,
-        "method_runtime": {"dispatch_counts": {"dense": 60}},
-        "restored": True,
-    }
-
-    smoke._validate_apply_summary("svg2", apply_summary)
-    smoke._validate_generate_summary("svg2", apply_summary)
-    smoke._validate_apply_summary("dense", dense_summary)
-    smoke._validate_generate_summary("dense", dense_summary)
-    smoke._validate_restore_summary(apply_summary)
-
-    with pytest.raises(RuntimeError, match="did not patch"):
-        smoke._validate_apply_summary(
-            "svg2",
-            {
-                "pipeline_backend": "diffsynth",
-                "patched_attention_count": 0,
-                "num_self_attn_layers": 30,
-            },
-        )
-
-    with pytest.raises(RuntimeError, match="did not report"):
-        smoke._validate_apply_summary("svg2", {"pipeline_backend": "diffsynth", "patched_attention_count": 30})
-
-    with pytest.raises(RuntimeError, match="patched only part"):
-        smoke._validate_apply_summary(
-            "svg2",
-            {
-                "pipeline_backend": "diffsynth",
-                "patched_attention_count": 29,
-                "num_self_attn_layers": 30,
-            },
-        )
-
-    with pytest.raises(RuntimeError, match="patch path count"):
-        smoke._validate_apply_summary(
-            "svg2",
-            {
-                "pipeline_backend": "diffsynth",
-                "patched_attention_count": 30,
-                "patched_attention_paths": ["dit.blocks.0.self_attn.attn"],
-                "num_self_attn_layers": 30,
-            },
-        )
-
-    with pytest.raises(RuntimeError, match="did not record the installed diffsynth version"):
-        smoke._validate_apply_summary(
-            "svg2",
-            {
-                "pipeline_backend": "diffsynth",
-                "patched_attention_count": 30,
-                "patched_attention_paths": [f"dit.blocks.{idx}.self_attn.attn" for idx in range(30)],
-                "num_self_attn_layers": 30,
-            },
-        )
-
-    with pytest.raises(RuntimeError, match="dense smoke unexpectedly patched"):
-        smoke._validate_apply_summary(
-            "dense",
-            {
-                "pipeline_backend": "diffsynth",
-                "patched_attention_count": 1,
-                "num_self_attn_layers": 30,
-            },
-        )
-
-    with pytest.raises(RuntimeError, match="without sparse dispatch"):
-        smoke._validate_generate_summary(
-            "svg2",
-            {
-                "pipeline_backend": "diffsynth",
-                "diffsynth_version": "2.0.12",
-                "patched_attention_count": 30,
-                "patched_attention_paths": [f"dit.blocks.{idx}.self_attn.attn" for idx in range(30)],
-                "num_self_attn_layers": 30,
-                "method_runtime": {"dispatch_counts": {"dense": 60}},
-            }
-        )
-
-    with pytest.raises(RuntimeError, match="did not restore"):
-        smoke._validate_restore_summary({"restored": False})
-
-
-def test_smoke_diffsynth_models_parser_normalizes_aliases():
-    smoke = _load_smoke_module()
-
-    assert smoke._parse_models("all") == [spec.key for spec in list_diffsynth_model_specs()]
-    assert smoke._parse_models("wan1.3b,wan22-s2v,mova") == [
-        "wan21-t2v-1.3b",
-        "wan22-s2v-14b",
-        "mova-720p",
-    ]
-    assert smoke._parse_models("ltx-2,ltx2.3") == ["ltx2", "ltx23"]
-    assert smoke._parse_methods("all") == [
-        "dense",
-        "svg1",
-        "svg2",
-        "spargeattn",
-        "radial",
-        "sta",
-        "draft",
-        "adacluster",
-        "flashomni",
-        "svoo",
-    ]
-    assert smoke._parse_methods("sparse") == [
-        "svg1",
-        "svg2",
-        "spargeattn",
-        "radial",
-        "sta",
-        "draft",
-        "adacluster",
-        "flashomni",
-        "svoo",
-    ]
-    assert smoke._parse_methods("dense,svg2") == ["dense", "svg2"]
-
-
-def test_smoke_diffsynth_call_kwargs_are_model_specific():
-    smoke = _load_smoke_module()
-    args = smoke.build_parser().parse_args(["--model", "wan21-t2v-1.3b"])
-
-    mova_kwargs = smoke._call_kwargs(args, "mova-720p", 1)
-    wan_kwargs = smoke._call_kwargs(args, "wan21-t2v-1.3b", 1)
-    ltx2_kwargs = smoke._call_kwargs(args, "ltx2", 1)
-
-    assert mova_kwargs["frame_rate"] == 24
-    assert mova_kwargs["switch_DiT_boundary"] == 0.9
-    assert mova_kwargs["num_frames"] == 5
-    assert wan_kwargs["switch_DiT_boundary"] == 0.875
-    assert wan_kwargs["num_frames"] == 5
-    assert "frame_rate" not in wan_kwargs
-    assert ltx2_kwargs["frame_rate"] == 24
-    assert ltx2_kwargs["num_frames"] == 9
-    assert "switch_DiT_boundary" not in ltx2_kwargs
-    assert "sigma_shift" not in ltx2_kwargs
-
-
-def test_smoke_diffsynth_call_kwargs_keep_explicit_ltx2_frame_count():
-    smoke = _load_smoke_module()
-    args = smoke.build_parser().parse_args(["--model", "ltx2", "--num-frames", "17"])
-
-    kwargs = smoke._call_kwargs(args, "ltx2", 1)
-
-    assert kwargs["num_frames"] == 17
-
-
-def test_smoke_diffsynth_default_kwargs_match_installed_pipeline_signatures():
-    pytest.importorskip("diffsynth")
-    from diffsynth.pipelines.ltx2_audio_video import LTX2AudioVideoPipeline
-    from diffsynth.pipelines.mova_audio_video import MovaAudioVideoPipeline
-    from diffsynth.pipelines.wan_video import WanVideoPipeline
-
-    smoke = _load_smoke_module()
-    pipeline_classes = {
-        "wan21-t2v-1.3b": WanVideoPipeline,
-        "mova-720p": MovaAudioVideoPipeline,
-        "ltx2": LTX2AudioVideoPipeline,
-    }
-    for model, pipeline_cls in pipeline_classes.items():
-        args = smoke.build_parser().parse_args(["--model", model])
-        kwargs = smoke._call_kwargs(args, model, 1)
-        assert set(kwargs) <= _call_signature_params(pipeline_cls)
-
-
-def test_smoke_diffsynth_generation_blocks_media_required_models_before_loading():
-    smoke = _load_smoke_module()
-    generate_args = smoke.build_parser().parse_args(["--model", "longcat-video"])
-    apply_only_args = smoke.build_parser().parse_args(["--model", "longcat-video", "--apply-only"])
-    flf_args = smoke.build_parser().parse_args(["--model", "wan21-flf2v-14b-720p"])
-
-    assert "--longcat-video" in smoke._generation_smoke_error("longcat-video", generate_args)
-    assert "scripts/infer_diffsynth.py" in smoke._generation_smoke_error("longcat-video", generate_args)
-    assert "--input-image" in smoke._generation_smoke_error("wan21-flf2v-14b-720p", flf_args)
-    assert "--end-image" in smoke._generation_smoke_error("wan21-flf2v-14b-720p", flf_args)
-    assert smoke._generation_smoke_error("longcat-video", apply_only_args) is None
-    assert smoke._generation_smoke_error("wan21-t2v-1.3b", generate_args) is None
-
-
-def test_smoke_diffsynth_generation_rejects_shape_that_diffsynth_would_round():
-    smoke = _load_smoke_module()
-    wan_bad_height = smoke.build_parser().parse_args(["--model", "wan21-t2v-1.3b", "--height", "127"])
-    ltx_bad_frames = smoke.build_parser().parse_args(["--model", "ltx2", "--num-frames", "5"])
-    apply_only_bad_shape = smoke.build_parser().parse_args(
-        ["--model", "ltx2", "--num-frames", "5", "--apply-only"]
-    )
-
-    assert "height/width multiples of 16" in smoke._generation_shape_error("wan21-t2v-1.3b", wan_bad_height)
-    assert "num_frames % 8 == 1" in smoke._generation_shape_error("ltx2", ltx_bad_frames)
-    assert smoke._generation_shape_error("ltx2", apply_only_bad_shape) is None
-
-
-def test_smoke_diffsynth_cleanup_unloads_models_and_empties_cuda_cache(monkeypatch):
-    smoke = _load_smoke_module()
-    calls = []
-
-    class FakePipe:
-        def load_models_to_device(self, names):
-            calls.append(("load_models_to_device", names))
-
-    fake_torch = type(sys)("torch")
-    fake_torch.cuda = type("Cuda", (), {"empty_cache": staticmethod(lambda: calls.append(("empty_cache", None)))})()
-    monkeypatch.setitem(sys.modules, "torch", fake_torch)
-
-    smoke._cleanup_after_model(FakePipe(), "cuda")
-
-    assert calls == [("load_models_to_device", []), ("empty_cache", None)]
-
-
-def test_smoke_diffsynth_resets_cuda_memory_before_each_method(monkeypatch, tmp_path):
-    smoke = _load_smoke_module()
-    args = smoke.build_parser().parse_args(["--model", "wan21-t2v-1.3b", "--apply-only"])
-    reset_calls = []
-
-    class FakeHandle:
-        def __init__(self):
-            self.restored = False
-
-        def summary(self):
-            return {
-                "pipeline_backend": "diffsynth",
-                "diffsynth_version": "2.0.12",
-                "model_key": "wan21-t2v-1.3b",
-                "model_type": "wan",
-                "num_self_attn_layers": 30,
-                "patched_attention_count": 0,
-                "patched_attention_paths": [],
-                "method_runtime": {"dispatch_counts": {}, "backend_counts": {}},
-                "restored": self.restored,
-            }
-
-        def restore(self):
-            self.restored = True
-
-    monkeypatch.setattr(smoke, "_reset_cuda_memory", lambda device: reset_calls.append(device))
-    monkeypatch.setattr(smoke, "_cuda_memory", lambda device: {"device": device, "available": False})
-    monkeypatch.setattr(smoke, "apply_sparse_attention", lambda *args, **kwargs: FakeHandle())
-
-    record = smoke._run_method_smoke(
-        object(),
-        args,
-        "wan21-t2v-1.3b",
-        "dense",
-        tmp_path,
-        resolved_model={"model": "wan21-t2v-1.3b", "complete": True, "missing": []},
-    )
-
-    assert record["status"] == "ok"
-    assert reset_calls == ["cuda"]
-
-
-def test_smoke_diffsynth_reset_cuda_memory_uses_torch_peak_reset(monkeypatch):
-    smoke = _load_smoke_module()
-    calls = []
-
-    fake_torch = type(sys)("torch")
-    fake_torch.cuda = type(
-        "Cuda",
-        (),
-        {"reset_peak_memory_stats": staticmethod(lambda device=None: calls.append(device))},
-    )()
-    monkeypatch.setitem(sys.modules, "torch", fake_torch)
-
-    smoke._reset_cuda_memory("cuda:0")
-    smoke._reset_cuda_memory("cuda")
-    smoke._reset_cuda_memory("cpu")
-
-    assert calls == ["cuda:0", None]
-
-
-def test_smoke_diffsynth_cuda_memory_uses_selected_device(monkeypatch):
-    smoke = _load_smoke_module()
-    calls = []
-
-    fake_torch = type(sys)("torch")
-    fake_torch.cuda = type(
-        "Cuda",
-        (),
-        {
-            "is_available": staticmethod(lambda: True),
-            "max_memory_allocated": staticmethod(lambda device=None: calls.append(("allocated", device)) or 1024**3),
-            "max_memory_reserved": staticmethod(lambda device=None: calls.append(("reserved", device)) or 2 * 1024**3),
-        },
-    )()
-    monkeypatch.setitem(sys.modules, "torch", fake_torch)
-
-    assert smoke._cuda_memory("cuda:1") == {
-        "device": "cuda:1",
-        "available": True,
-        "peak_allocated_gb": 1.0,
-        "peak_reserved_gb": 2.0,
-    }
-    assert calls == [("allocated", "cuda:1"), ("reserved", "cuda:1")]
-
-
-def test_smoke_diffsynth_replaces_metrics_by_default_and_can_append(tmp_path):
-    smoke = _load_smoke_module()
-    metrics = tmp_path / "metrics.jsonl"
-    metrics.write_text("old\n", encoding="utf-8")
-
-    smoke._prepare_metrics_file(metrics, append=False)
-    smoke._append_jsonl(metrics, {"status": "ok"})
-
-    assert metrics.read_text(encoding="utf-8").splitlines() == ['{"status": "ok"}']
-
-    smoke._prepare_metrics_file(metrics, append=True)
-    smoke._append_jsonl(metrics, {"status": "second"})
-
-    assert metrics.read_text(encoding="utf-8").splitlines() == [
-        '{"status": "ok"}',
-        '{"status": "second"}',
-    ]
-
-
-def test_smoke_diffsynth_records_resolved_model_in_method_record(monkeypatch, tmp_path):
-    smoke = _load_smoke_module()
-    args = smoke.build_parser().parse_args(["--model", "wan21-t2v-1.3b", "--apply-only"])
-    resolved_model = {"model": "wan21-t2v-1.3b", "complete": True, "components": {"dit": ["/models/dit.safetensors"]}}
-
-    class FakeHandle:
-        def __init__(self):
-            self.restored = False
-
-        def summary(self):
-            return {
-                "pipeline_backend": "diffsynth",
-                "diffsynth_version": "2.0.12",
-                "model_key": "wan21-t2v-1.3b",
-                "model_type": "wan",
-                "num_self_attn_layers": 30,
-                "patched_attention_count": 0,
-                "patched_attention_paths": [],
-                "method_runtime": {"dispatch_counts": {}, "backend_counts": {}},
-                "restored": self.restored,
-            }
-
-        def restore(self):
-            self.restored = True
-
-    monkeypatch.setattr(smoke, "apply_sparse_attention", lambda *args, **kwargs: FakeHandle())
-    monkeypatch.setattr(smoke, "_cuda_memory", lambda device: {"device": device, "available": False})
-
-    record = smoke._run_method_smoke(
-        object(),
-        args,
-        "wan21-t2v-1.3b",
-        "dense",
-        tmp_path,
-        resolved_model=resolved_model,
-    )
-
-    assert record["status"] == "ok"
-    assert record["resolved_model"] == resolved_model
-    assert record["restore_summary"]["restored"] is True
-    assert record["timings"]["total_sec"] >= 0
-    assert record["cuda"] == {"device": "cuda", "available": False}
-
-
-def test_smoke_diffsynth_generation_uses_pipeline_audio_sample_rate(monkeypatch, tmp_path):
-    smoke = _load_smoke_module()
-    args = smoke.build_parser().parse_args(["--model", "ltx2", "--methods", "dense", "--device", "cpu"])
-    captured = {}
-
-    class FakePipe:
-        audio_vocoder = type("Vocoder", (), {"output_sampling_rate": 24000})()
-
-        def __call__(self, **kwargs):
-            captured["call_kwargs"] = kwargs
-            return ([object()], object())
-
-    class FakeHandle:
-        def __init__(self):
-            self.restored = False
-
-        def summary(self):
-            return {
-                "pipeline_backend": "diffsynth",
-                "diffsynth_version": "2.0.12",
-                "model_key": "ltx2",
-                "model_type": "ltx_video",
-                "num_self_attn_layers": 1,
-                "patched_attention_count": 0,
-                "patched_attention_paths": [],
-                "method_runtime": {"dispatch_counts": {}, "backend_counts": {}},
-                "restored": self.restored,
-            }
-
-        def restore(self):
-            self.restored = True
-
-    def fake_save_output(output, output_file, *, fps, quality, audio_sample_rate):
-        captured["output"] = output
-        captured["audio_sample_rate"] = audio_sample_rate
-        return {
-            "output_file": str(output_file),
-            "output_type": "video_audio",
-            "audio_sample_rate": audio_sample_rate,
-        }
-
-    monkeypatch.setattr(smoke, "apply_sparse_attention", lambda *args, **kwargs: FakeHandle())
-    monkeypatch.setattr(smoke, "save_diffsynth_output", fake_save_output)
-    monkeypatch.setattr(smoke, "_reset_cuda_memory", lambda device: None)
-    monkeypatch.setattr(smoke, "_cuda_memory", lambda device: {"device": device, "available": False})
-
-    record = smoke._run_method_smoke(
-        FakePipe(),
-        args,
-        "ltx2",
-        "dense",
-        tmp_path,
-        resolved_model={"model": "ltx2", "complete": True, "missing": []},
-    )
-
-    assert record["status"] == "ok"
-    assert record["mode"] == "generate"
-    assert record["audio_sample_rate"] == 24000
-    assert captured["audio_sample_rate"] == 24000
-    assert captured["call_kwargs"]["frame_rate"] == 24
-    assert record["restore_summary"]["restored"] is True
-
-
-def test_smoke_diffsynth_records_incomplete_resolved_model_before_loading(monkeypatch, tmp_path):
-    smoke = _load_smoke_module()
-    metrics = tmp_path / "metrics.jsonl"
-    resolved_model = {
-        "model": "wan21-t2v-1.3b",
-        "complete": False,
-        "components": {},
-        "missing": ["dit: missing files"],
-    }
-
-    class FakeResolved:
-        complete = False
-        model_root = tmp_path
-
-        class spec:
-            key = "wan21-t2v-1.3b"
-
-        def as_dict(self):
-            return resolved_model
-
-    monkeypatch.setattr(smoke, "resolve_diffsynth_model_paths", lambda *args, **kwargs: FakeResolved())
-    monkeypatch.setattr(
-        smoke,
-        "load_diffsynth_pipeline",
-        lambda *args, **kwargs: pytest.fail("incomplete smoke should not load pipeline"),
-    )
-
-    rc = smoke.main(
-        [
-            "--model",
-            "wan21-t2v-1.3b",
-            "--apply-only",
-            "--metrics-file",
-            str(metrics),
-            "--output-dir",
-            str(tmp_path / "out"),
-        ]
-    )
-
-    assert rc == 1
-    record = json.loads(metrics.read_text(encoding="utf-8"))
-    assert record["status"] == "failed"
-    assert record["error_type"] == "FileNotFoundError"
-    assert record["resolved_model"] == resolved_model
-
-
-def test_smoke_diffsynth_records_resolved_model_when_loading_fails(monkeypatch, tmp_path):
-    smoke = _load_smoke_module()
-    metrics = tmp_path / "metrics.jsonl"
-    resolved_model = {
-        "model": "wan21-t2v-1.3b",
-        "complete": True,
-        "components": {"dit": ["/models/dit.safetensors"]},
-        "missing": [],
-    }
-
-    class FakeResolved:
-        complete = True
-        model_root = tmp_path
-
-        class spec:
-            key = "wan21-t2v-1.3b"
-
-        def as_dict(self):
-            return resolved_model
-
-    monkeypatch.setattr(smoke, "resolve_diffsynth_model_paths", lambda *args, **kwargs: FakeResolved())
-    monkeypatch.setattr(
-        smoke,
-        "load_diffsynth_pipeline",
-        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("load failed")),
-    )
-
-    rc = smoke.main(
-        [
-            "--model",
-            "wan21-t2v-1.3b",
-            "--apply-only",
-            "--metrics-file",
-            str(metrics),
-            "--output-dir",
-            str(tmp_path / "out"),
-        ]
-    )
-
-    assert rc == 1
-    record = json.loads(metrics.read_text(encoding="utf-8"))
-    assert record["status"] == "failed"
-    assert record["error_type"] == "RuntimeError"
-    assert record["resolved_model"] == resolved_model
-
-
-def test_smoke_diffsynth_cli_records_incomplete_resolved_model(tmp_path):
-    metrics = tmp_path / "metrics.jsonl"
-    result = subprocess.run(
-        [
-            sys.executable,
-            str(SMOKE_SCRIPT),
-            "--model",
-            "wan21-t2v-1.3b",
-            "--model-root",
-            str(tmp_path),
-            "--apply-only",
-            "--metrics-file",
-            str(metrics),
-            "--output-dir",
-            str(tmp_path / "out"),
-        ],
-        cwd=REPO_ROOT,
-        capture_output=True,
-        text=True,
-    )
-    record = json.loads(metrics.read_text(encoding="utf-8"))
-
-    assert result.returncode == 1
-    assert record["status"] == "failed"
-    assert record["error_type"] == "FileNotFoundError"
-    assert record["resolved_model"]["complete"] is False
-    assert record["resolved_model"]["missing"]
 
 
 def test_split_diffsynth_output_accepts_video_and_video_audio():
@@ -823,7 +136,7 @@ def test_diffsynth_output_audio_sample_rate_falls_back_to_mova_audio_vae():
 def test_save_diffsynth_output_uses_torchaudio_when_torchcodec_is_missing(monkeypatch, tmp_path):
     import torch
 
-    models = sys.modules["_diffsynth_models"]
+    models = sys.modules["_infer_diffsynth.models"]
     calls = {}
 
     def fake_save_video(frames, save_path, *, fps, quality):
@@ -865,7 +178,7 @@ def test_save_diffsynth_output_uses_torchaudio_when_torchcodec_is_missing(monkey
 
 
 def test_save_diffsynth_output_rejects_missing_video_file(monkeypatch, tmp_path):
-    models = sys.modules["_diffsynth_models"]
+    models = sys.modules["_infer_diffsynth.models"]
     monkeypatch.setattr(models, "_diffsynth_save_video", lambda: lambda *args, **kwargs: None)
 
     with pytest.raises(RuntimeError, match="video export did not create output file"):
@@ -875,7 +188,7 @@ def test_save_diffsynth_output_rejects_missing_video_file(monkeypatch, tmp_path)
 def test_save_diffsynth_output_rejects_stale_existing_video_file(monkeypatch, tmp_path):
     output_file = tmp_path / "stale.mp4"
     output_file.write_bytes(b"old")
-    models = sys.modules["_diffsynth_models"]
+    models = sys.modules["_infer_diffsynth.models"]
     monkeypatch.setattr(models, "_diffsynth_save_video", lambda: lambda *args, **kwargs: None)
 
     with pytest.raises(RuntimeError, match="video export did not create output file"):
@@ -886,7 +199,7 @@ def test_save_diffsynth_output_rejects_stale_existing_video_file(monkeypatch, tm
 def test_save_diffsynth_output_rejects_missing_audio_file(monkeypatch, tmp_path):
     import torch
 
-    models = sys.modules["_diffsynth_models"]
+    models = sys.modules["_infer_diffsynth.models"]
 
     def fake_save_video(frames, save_path, *, fps, quality):
         Path(save_path).write_bytes(b"video")
@@ -904,7 +217,7 @@ def test_save_diffsynth_output_rejects_stale_existing_audio_file(monkeypatch, tm
     output_file = tmp_path / "stale_audio.mp4"
     audio_file = tmp_path / "stale_audio.wav"
     audio_file.write_bytes(b"old")
-    models = sys.modules["_diffsynth_models"]
+    models = sys.modules["_infer_diffsynth.models"]
 
     def fake_save_video(frames, save_path, *, fps, quality):
         Path(save_path).write_bytes(b"video")
@@ -915,16 +228,6 @@ def test_save_diffsynth_output_rejects_stale_existing_audio_file(monkeypatch, tm
     with pytest.raises(RuntimeError, match="audio export did not create output file"):
         save_diffsynth_output(([object()], torch.zeros(1, 16)), output_file, fps=24)
     assert not audio_file.exists()
-
-
-def _load_smoke_module():
-    spec = importlib.util.spec_from_file_location("sparsevideo_smoke_diffsynth_methods", SMOKE_SCRIPT)
-    module = importlib.util.module_from_spec(spec)
-    assert spec.loader is not None
-    sys.modules[spec.name] = module
-    spec.loader.exec_module(module)
-    return module
-
 
 def _load_infer_module():
     spec = importlib.util.spec_from_file_location("sparsevideo_infer_diffsynth", SCRIPT)
@@ -1451,7 +754,7 @@ def test_load_diffsynth_s2v_loads_audio_processor_after_pipeline(monkeypatch, tm
     _touch(tmp_path / "Wan2.2-S2V-14B/wav2vec2-large-xlsr-53-english/preprocessor_config.json")
     _touch(tmp_path / "Wan2.2-S2V-14B/wav2vec2-large-xlsr-53-english/vocab.json")
     calls = {}
-    models = sys.modules["_diffsynth_models"]
+    models = sys.modules["_infer_diffsynth.models"]
 
     class FakeModelConfig:
         def __init__(self, **kwargs):
@@ -2056,6 +1359,115 @@ def test_download_diffsynth_modelscope_first_keeps_hf_only_repos_on_hf(tmp_path)
     assert "would download ByteDance/Video-As-Prompt-Wan2.1-14B:transformer/diffusion_pytorch_model*.safetensors via huggingface" in result.stdout
 
 
+def test_download_diffsynth_defaults_to_hf_mirror_without_proxy(tmp_path):
+    env = os.environ.copy()
+    env.update(
+        {
+            "HTTP_PROXY": "http://127.0.0.1:10000",
+            "HTTPS_PROXY": "http://127.0.0.1:10000",
+            "ALL_PROXY": "http://127.0.0.1:10000",
+        }
+    )
+
+    result = subprocess.run(
+        [
+            "bash",
+            str(REPO_ROOT / "scripts" / "download_diffsynth_models.sh"),
+            "--dry-run",
+            "--model-root",
+            str(tmp_path),
+            "wan21-t2v-14b",
+        ],
+        cwd=REPO_ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+
+    assert "HF endpoint: https://hf-mirror.com" in result.stdout
+    assert "Proxy: disabled" in result.stdout
+    assert "Proxy: http://127.0.0.1:10000" not in result.stdout
+
+
+def test_download_diffsynth_no_proxy_clears_proxy_env_for_hf_cli(tmp_path):
+    model_root = tmp_path / "models"
+    env_log = tmp_path / "env.log"
+    fake_hf = tmp_path / "hf"
+    _make_wan21_common(model_root)
+    fake_hf.write_text(
+        """#!/usr/bin/env bash
+set -euo pipefail
+local_dir=
+include=
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --local-dir)
+            local_dir=$2
+            shift 2
+            ;;
+        --include)
+            include=$2
+            shift 2
+            ;;
+        *)
+            shift
+            ;;
+    esac
+done
+{
+    printf 'HTTP_PROXY=%s\n' "${HTTP_PROXY-}"
+    printf 'HTTPS_PROXY=%s\n' "${HTTPS_PROXY-}"
+    printf 'ALL_PROXY=%s\n' "${ALL_PROXY-}"
+    printf 'PROXY=%s\n' "${PROXY-}"
+} >> "$ENV_LOG"
+mkdir -p "$local_dir"
+case "$include" in
+    diffusion_pytorch_model*.safetensors)
+        printf x > "$local_dir/diffusion_pytorch_model-00001-of-00001.safetensors"
+        ;;
+    *)
+        printf 'unexpected include: %s\n' "$include" >&2
+        exit 2
+        ;;
+esac
+""",
+        encoding="utf-8",
+    )
+    fake_hf.chmod(0o755)
+    env = os.environ.copy()
+    env.update(
+        {
+            "HF_CLI": str(fake_hf),
+            "ENV_LOG": str(env_log),
+            "HTTP_PROXY": "http://127.0.0.1:10000",
+            "HTTPS_PROXY": "http://127.0.0.1:10000",
+            "ALL_PROXY": "http://127.0.0.1:10000",
+            "PROXY": "http://127.0.0.1:10000",
+        }
+    )
+
+    result = subprocess.run(
+        [
+            "bash",
+            str(REPO_ROOT / "scripts" / "download_diffsynth_models.sh"),
+            "--source",
+            "huggingface",
+            "--model-root",
+            str(model_root),
+            "wan21-t2v-14b",
+        ],
+        cwd=REPO_ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+
+    assert "Proxy: disabled" in result.stdout
+    assert env_log.read_text(encoding="utf-8") == "HTTP_PROXY=\nHTTPS_PROXY=\nALL_PROXY=\nPROXY=\n"
+
+
 def test_download_diffsynth_huggingface_first_dry_run_reports_modelscope_fallback(tmp_path):
     result = subprocess.run(
         [
@@ -2227,21 +1639,21 @@ def test_download_diffsynth_ltx_text_download_uses_explicit_patterns(tmp_path):
         text=True,
     )
 
-    assert "google/gemma-3-12b-it-qat-q4_0-unquantized:tokenizer.json" in result.stdout
-    assert "google/gemma-3-12b-it-qat-q4_0-unquantized:tokenizer.model" in result.stdout
-    assert "google/gemma-3-12b-it-qat-q4_0-unquantized:tokenizer_config.json" in result.stdout
-    assert "google/gemma-3-12b-it-qat-q4_0-unquantized:preprocessor_config.json" in result.stdout
-    assert "google/gemma-3-12b-it-qat-q4_0-unquantized:processor_config.json" in result.stdout
-    assert "google/gemma-3-12b-it-qat-q4_0-unquantized:special_tokens_map.json" in result.stdout
-    assert "google/gemma-3-12b-it-qat-q4_0-unquantized:added_tokens.json" in result.stdout
-    assert "google/gemma-3-12b-it-qat-q4_0-unquantized:chat_template.json" in result.stdout
-    assert "google/gemma-3-12b-it-qat-q4_0-unquantized:config.json" in result.stdout
-    assert "google/gemma-3-12b-it-qat-q4_0-unquantized:generation_config.json" in result.stdout
-    assert "google/gemma-3-12b-it-qat-q4_0-unquantized:model.safetensors.index.json" in result.stdout
-    assert "google/gemma-3-12b-it-qat-q4_0-unquantized:model*.safetensors" in result.stdout
-    assert "google/gemma-3-12b-it-qat-q4_0-unquantized:*.json" not in result.stdout
+    assert f"{LTX_GEMMA_REPO}:tokenizer.json" in result.stdout
+    assert f"{LTX_GEMMA_REPO}:tokenizer.model" in result.stdout
+    assert f"{LTX_GEMMA_REPO}:tokenizer_config.json" in result.stdout
+    assert f"{LTX_GEMMA_REPO}:preprocessor_config.json" in result.stdout
+    assert f"{LTX_GEMMA_REPO}:processor_config.json" in result.stdout
+    assert f"{LTX_GEMMA_REPO}:special_tokens_map.json" in result.stdout
+    assert f"{LTX_GEMMA_REPO}:added_tokens.json" in result.stdout
+    assert f"{LTX_GEMMA_REPO}:chat_template.json" in result.stdout
+    assert f"{LTX_GEMMA_REPO}:config.json" in result.stdout
+    assert f"{LTX_GEMMA_REPO}:generation_config.json" in result.stdout
+    assert f"{LTX_GEMMA_REPO}:model.safetensors.index.json" in result.stdout
+    assert f"{LTX_GEMMA_REPO}:model*.safetensors" in result.stdout
+    assert f"{LTX_GEMMA_REPO}:*.json" not in result.stdout
     assert not any(
-        line.strip() == "- google/gemma-3-12b-it-qat-q4_0-unquantized:*"
+        line.strip() == f"- {LTX_GEMMA_REPO}:*"
         for line in result.stdout.splitlines()
     )
 
@@ -2298,8 +1710,8 @@ def test_download_diffsynth_file_pattern_does_not_match_directory(tmp_path):
         text=True,
     )
 
-    assert "would download google/gemma-3-12b-it-qat-q4_0-unquantized:tokenizer.json" in result.stdout
-    assert "would skip existing complete google/gemma-3-12b-it-qat-q4_0-unquantized:tokenizer.json" not in result.stdout
+    assert f"would download {LTX_GEMMA_REPO}:tokenizer.json" in result.stdout
+    assert f"would skip existing complete {LTX_GEMMA_REPO}:tokenizer.json" not in result.stdout
 
 
 def test_download_diffsynth_dry_run_does_not_skip_empty_checkpoint_file(tmp_path):
@@ -2349,13 +1761,13 @@ def test_download_diffsynth_ltx_text_partial_json_dir_downloads_missing_configs(
         text=True,
     )
 
-    assert "would skip existing complete google/gemma-3-12b-it-qat-q4_0-unquantized:tokenizer.json" in result.stdout
-    assert "would download google/gemma-3-12b-it-qat-q4_0-unquantized:tokenizer.model" in result.stdout
-    assert "would download google/gemma-3-12b-it-qat-q4_0-unquantized:tokenizer_config.json" in result.stdout
-    assert "would download google/gemma-3-12b-it-qat-q4_0-unquantized:preprocessor_config.json" in result.stdout
-    assert "would download google/gemma-3-12b-it-qat-q4_0-unquantized:processor_config.json" in result.stdout
-    assert "would download google/gemma-3-12b-it-qat-q4_0-unquantized:config.json" in result.stdout
-    assert "would download google/gemma-3-12b-it-qat-q4_0-unquantized:generation_config.json" in result.stdout
+    assert f"would skip existing complete {LTX_GEMMA_REPO}:tokenizer.json" in result.stdout
+    assert f"would download {LTX_GEMMA_REPO}:tokenizer.model" in result.stdout
+    assert f"would download {LTX_GEMMA_REPO}:tokenizer_config.json" in result.stdout
+    assert f"would download {LTX_GEMMA_REPO}:preprocessor_config.json" in result.stdout
+    assert f"would download {LTX_GEMMA_REPO}:processor_config.json" in result.stdout
+    assert f"would download {LTX_GEMMA_REPO}:config.json" in result.stdout
+    assert f"would download {LTX_GEMMA_REPO}:generation_config.json" in result.stdout
 
 
 def test_infer_diffsynth_requires_i2v_input_image_for_generation():
@@ -2809,6 +2221,17 @@ def test_infer_diffsynth_sparse_summary_validation_rejects_no_patch_or_no_sparse
 
     infer._validate_sparse_apply_summary("svg2", sparse_summary)
     infer._validate_sparse_generate_summary("svg2", sparse_summary)
+    infer._validate_sparse_backend_summary(
+        "svg2",
+        {
+            **sparse_summary,
+            "method_runtime": {
+                "dispatch_counts": {"sparse": 60},
+                "backend_counts": {"flashinfer": 60},
+            },
+        },
+        strict_kernels=True,
+    )
     infer._validate_sparse_apply_summary(
         "dense",
         {
@@ -2902,6 +2325,39 @@ def test_infer_diffsynth_sparse_summary_validation_rejects_no_patch_or_no_sparse
             },
         )
 
+    with pytest.raises(RuntimeError, match="without backend evidence"):
+        infer._validate_sparse_backend_summary(
+            "svg2",
+            sparse_summary,
+            strict_kernels=True,
+        )
+
+    with pytest.raises(RuntimeError, match="debug fallback"):
+        infer._validate_sparse_backend_summary(
+            "svg2",
+            {
+                **sparse_summary,
+                "method_runtime": {
+                    "dispatch_counts": {"sparse": 60},
+                    "backend_counts": {"triton_debug_fallback": 60},
+                },
+            },
+            strict_kernels=True,
+        )
+
+    with pytest.raises(RuntimeError, match="unexpected sparse backend"):
+        infer._validate_sparse_backend_summary(
+            "svg2",
+            {
+                **sparse_summary,
+                "method_runtime": {
+                    "dispatch_counts": {"sparse": 60},
+                    "backend_counts": {"torch_sdpa": 60},
+                },
+            },
+            strict_kernels=True,
+        )
+
 
 def test_infer_diffsynth_restores_when_apply_validation_fails(monkeypatch, tmp_path):
     infer = _load_infer_module()
@@ -2987,7 +2443,7 @@ def test_infer_diffsynth_apply_only_records_method_config_timing_and_cuda(monkey
             "--method",
             "svg2",
             "--method-config",
-            "num_inference_steps=3",
+            "num_q_centroids=3",
             "--method-config",
             "dense_warmup_step_ratio=0",
             "--device",
@@ -3001,10 +2457,32 @@ def test_infer_diffsynth_apply_only_records_method_config_timing_and_cuda(monkey
     assert rc == 0
     assert payload["status"] == "ok"
     assert payload["mode"] == "apply_only"
-    assert payload["method_config"] == {"num_inference_steps": 3, "dense_warmup_step_ratio": 0}
+    assert payload["method_config"]["num_q_centroids"] == 3
+    assert payload["method_config"]["dense_warmup_step_ratio"] == 0
+    assert payload["method_config"]["allow_triton_fallback"] is False
+    assert payload["strict_kernels"] is True
+    assert payload["allow_debug_fallbacks"] is False
+    assert payload["sparse_attention_handle"] == payload["apply_summary"]
+    assert payload["sparse_attention_handle_after_restore"] == payload["restore_summary"]
     assert payload["timings"]["load_apply_sec"] >= 0
     assert payload["cuda"] == {"device": "cpu", "available": False}
     assert payload["restore_summary"]["restored"] is True
+
+
+def test_infer_diffsynth_allow_debug_fallbacks_marks_config_non_strict():
+    infer = _load_infer_module()
+    args = infer.build_parser().parse_args(
+        [
+            "--method",
+            "svg2",
+            "--allow-debug-fallbacks",
+        ]
+    )
+    spec = infer.get_diffsynth_model_spec(args.model)
+
+    method_config = infer._build_method_config(args, spec, strict_kernels=False)
+
+    assert method_config["allow_triton_fallback"] is True
 
 
 def test_infer_diffsynth_generation_uses_pipeline_audio_sample_rate(monkeypatch, tmp_path):
@@ -3080,6 +2558,17 @@ def test_infer_diffsynth_generation_uses_pipeline_audio_sample_rate(monkeypatch,
     assert rc == 0
     assert payload["status"] == "ok"
     assert payload["mode"] == "generate"
+    assert payload["model_arg"] == "ltx2"
+    assert payload["height"] == 512
+    assert payload["width"] == 768
+    assert payload["num_frames"] == 121
+    assert payload["fps"] == 24
+    assert payload["num_inference_steps"] == 50
+    assert payload["seed"] == 0
+    assert payload["strict_kernels"] is True
+    assert payload["allow_debug_fallbacks"] is False
+    assert payload["sparse_attention_handle"] == payload["generate_summary"]
+    assert payload["sparse_attention_handle_after_restore"] == payload["restore_summary"]
     assert payload["audio_sample_rate"] == 24000
     assert captured["audio_sample_rate"] == 24000
     assert captured["call_kwargs"]["frame_rate"] == 24
@@ -3209,7 +2698,7 @@ def test_download_diffsynth_catalog_tracks_installed_video_model_config_examples
         (
             "google/gemma-3-12b-it-qat-q4_0-unquantized",
             "model-*.safetensors",
-        ): "google/gemma-3-12b-it-qat-q4_0-unquantized:model*.safetensors",
+        ): f"{LTX_GEMMA_REPO}:model*.safetensors",
     }
 
     missing = []
@@ -3436,27 +2925,3 @@ def test_infer_diffsynth_deferred_model_fails_as_json_without_traceback():
     assert payload["error_type"] == "ValueError"
     assert "deferred/local-only as 'wan22-dancer-14b'" in payload["error"]
 
-
-def test_smoke_diffsynth_deferred_model_fails_as_json_without_traceback():
-    result = subprocess.run(
-        [
-            sys.executable,
-            str(SMOKE_SCRIPT),
-            "--models",
-            "wantodance",
-            "--print-json",
-        ],
-        cwd=REPO_ROOT,
-        capture_output=True,
-        text=True,
-    )
-    payload = json.loads(result.stdout)
-
-    assert result.returncode == 1
-    assert result.stderr == ""
-    assert payload["backend"] == "diffsynth"
-    assert payload["model"] == "wantodance"
-    assert payload["models"] == []
-    assert payload["status"] == "failed"
-    assert payload["error_type"] == "ValueError"
-    assert "deferred/local-only as 'wan22-dancer-14b'" in payload["error"]

@@ -233,7 +233,7 @@ model_defaults:
     latent_w: null
     visual_len: null
     text_len: null
-    sparsity_ratio: 0.9
+    sparsity_ratio: 0.70
     batch_size: null
     block_sparse_attention: true
     allow_triton_fallback: false

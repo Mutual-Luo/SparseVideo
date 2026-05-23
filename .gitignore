@@ -81,13 +81,13 @@ torch_extensions/
 *.engine
 
 # Datasets and Hugging Face caches
-/data/
 /datasets/
 /hf_cache/
 /.huggingface/
 
 # Experiment, benchmark, and generation outputs
 outputs/
+logs/
 output/
 result/
 runs/

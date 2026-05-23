@@ -14,7 +14,7 @@ import torch
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-SCRIPT = REPO_ROOT / "scripts" / "infer.py"
+SCRIPT = REPO_ROOT / "scripts" / "infer_diffusers.py"
 
 
 def _load_infer_module():
@@ -314,6 +314,13 @@ def test_infer_dry_run_resolves_wan_vace_sparse_alias(tmp_path):
     assert payload["runtime"]["preflight"]["errors"] == []
 
 
+def test_hunyuan_specs_use_existing_diffusers_local_dirs():
+    infer = _load_infer_module()
+
+    assert infer.MODEL_SPECS["hunyuan-t2v"].local_dir == "HunyuanVideo-Diffusers"
+    assert infer.MODEL_SPECS["hunyuan-i2v"].local_dir == "HunyuanVideo-I2V-Diffusers"
+
+
 @pytest.mark.parametrize(
     ("model_key", "message"),
     [
@@ -497,7 +504,7 @@ def test_sta_strategy_shapes_cover_sparsevideo_backbones():
 
 def test_inference_sh_has_runnable_sta_line_for_every_backbone():
     infer = _load_infer_module()
-    script = REPO_ROOT / "scripts" / "inference.sh"
+    script = REPO_ROOT / "scripts" / "inference_diffusers.sh"
     sta_families = (
         "wan",
         "hunyuan_video",
@@ -536,7 +543,7 @@ def test_inference_sh_has_runnable_sta_line_for_every_backbone():
 
 def test_inference_sh_has_runnable_inputs_for_every_command():
     infer = _load_infer_module()
-    script = REPO_ROOT / "scripts" / "inference.sh"
+    script = REPO_ROOT / "scripts" / "inference_diffusers.sh"
     model_families = (
         "wan",
         "hunyuan_video",
@@ -567,7 +574,7 @@ def test_inference_sh_has_runnable_inputs_for_every_command():
         tokens = shlex.split(line, comments=True, posix=True)
         while tokens and "=" in tokens[0] and not tokens[0].startswith("--"):
             tokens.pop(0)
-        assert tokens[:2] == ["python", "scripts/infer.py"]
+        assert tokens[:2] == ["python", "scripts/infer_diffusers.py"]
         model_arg = tokens[tokens.index("--model") + 1]
         method = tokens[tokens.index("--method") + 1]
         model = infer.MODEL_ALIASES[model_arg]
@@ -1222,7 +1229,7 @@ def test_infer_dry_run_resolves_draft_defaults_for_default_target_shape(tmp_path
 
 
 def test_infer_dry_run_resolves_radial_upstream_defaults(tmp_path):
-    payload = _run_infer_dry_run_preflight_failure(tmp_path, "--model", "wan1.3b", "--method", "radial")
+    payload = _run_infer_dry_run(tmp_path, "--model", "wan1.3b", "--method", "radial")
     cfg = payload["method_config"]
 
     assert payload["strict_kernels"] is True
@@ -1231,11 +1238,11 @@ def test_infer_dry_run_resolves_radial_upstream_defaults(tmp_path):
     assert cfg["decay_factor"] == 0.2
     assert cfg["block_size"] == 128
     assert cfg["allow_flex_fallback"] is False
-    assert any("allow_flex_fallback" in item for item in payload["runtime"]["preflight"]["errors"])
+    assert payload["runtime"]["preflight"]["errors"] == []
 
 
 def test_infer_dry_run_resolves_wan22_radial_upstream_defaults(tmp_path):
-    payload = _run_infer_dry_run_preflight_failure(tmp_path, "--model", "wan22", "--method", "radial")
+    payload = _run_infer_dry_run(tmp_path, "--model", "wan22", "--method", "radial")
     cfg = payload["method_config"]
 
     assert cfg["dense_layers"] == 1
@@ -1252,19 +1259,18 @@ def test_infer_dry_run_allows_radial_debug_fallback_when_explicit(tmp_path):
     assert payload["strict_kernels"] is False
     assert payload["allow_debug_fallbacks"] is True
     assert payload["method_config"]["allow_flex_fallback"] is True
-    assert any("allow_flex_fallback" in item for item in payload["runtime"]["preflight"]["warnings"])
-    assert not any("allow_flex_fallback" in item for item in payload["runtime"]["preflight"]["errors"])
+    assert payload["runtime"]["preflight"]["errors"] == []
 
 
 def test_infer_dry_run_resolves_hunyuan_radial_upstream_defaults(tmp_path):
-    payload = _run_infer_dry_run_preflight_failure(tmp_path, "--model", "hunyuan", "--method", "radial")
+    payload = _run_infer_dry_run(tmp_path, "--model", "hunyuan", "--method", "radial")
     cfg = payload["method_config"]
 
     assert cfg["dense_layers"] == 0
     assert cfg["dense_timesteps"] == 12
     assert cfg["decay_factor"] == 0.95
     assert cfg["block_size"] == 128
-    assert any("allow_flex_fallback" in item for item in payload["runtime"]["preflight"]["errors"])
+    assert payload["runtime"]["preflight"]["errors"] == []
 
 
 def test_radial_upstream_shape_avoids_flex_fallback_warning(tmp_path):

@@ -909,7 +909,10 @@ def _add_ltx2_components(add, *, repo: str) -> None:
 def _add_ltx2_text_components(add) -> None:
     add(
         "tokenizer",
-        (("google/gemma-3-12b-it-qat-q4_0-unquantized", ""),),
+        (
+            ("Lightricks/gemma-3-12b-it-qat-q4_0-unquantized", ""),
+            ("google/gemma-3-12b-it-qat-q4_0-unquantized", ""),
+        ),
         directory=True,
         required_files=(
             "tokenizer.json",
@@ -924,7 +927,13 @@ def _add_ltx2_text_components(add) -> None:
             "generation_config.json",
         ),
     )
-    add("text_encoder", (("google/gemma-3-12b-it-qat-q4_0-unquantized", "model*.safetensors"),))
+    add(
+        "text_encoder",
+        (
+            ("Lightricks/gemma-3-12b-it-qat-q4_0-unquantized", "model*.safetensors"),
+            ("google/gemma-3-12b-it-qat-q4_0-unquantized", "model*.safetensors"),
+        ),
+    )
 
 
 def _find_first_complete(

@@ -620,8 +620,7 @@ def _restore_svg_heads_pytorch(hidden_states, head_choices, video_len, num_frame
 
 
 def _svg_placement_triton_supported(tensor):
-    head_dim = int(tensor.shape[-1])
-    return head_dim > 0 and (head_dim & (head_dim - 1)) == 0
+    return int(tensor.shape[-1]) > 0
 
 
 def _select_temporal_heads(spatial_tensor, temporal_tensor, head_choices):

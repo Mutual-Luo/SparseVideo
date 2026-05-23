@@ -4,7 +4,7 @@ Goal: make SparseVideo a plug-and-play sparse-attention layer for both major com
 Diffusers video DiT pipelines and DiffSynth-Studio video pipelines. Use one API,
 `sparsevideo.apply(pipe, method=...)`; keep `dense` as the baseline and guarantee restore-to-dense.
 
-Current Diffusers status: Wan, HunyuanVideo, SkyReels, CogVideoX, LTX Video, Allegro, Mochi, and EasyAnimate have processor wiring. The newly added backbones now have real smoke coverage for `dense` plus all public sparse methods: `svg1`, `svg2`, `spargeattn`, `radial`, `sta`, `draft`, `adacluster`, `flashomni`, and `svoo`. The reduced-surface method guards for these new backbones have been removed.
+Current Diffusers status: Wan, HunyuanVideo, SkyReels, CogVideoX, LTX Video, Allegro, Mochi, and EasyAnimate have processor wiring. The reduced-surface method guards for the new backbones have been removed, but the default all-backbone audit still requires missing real smoke evidence before this can be called complete.
 
 Current DiffSynth-Studio status: adapter work is in progress. SparseVideo now keeps Diffusers and DiffSynth discovery in
 separate backend files, keeps DiffSynth-native local model loading in a separate DiffSynth inference entrypoint, and has
@@ -66,25 +66,65 @@ unprofiled Wan-family variants instead of borrowing an unrelated dynamic sparsit
 Control/Control-Camera now have real `dense` baseline and all-public-sparse-method `--apply-only` evidence after their
 high-noise DiTs completed locally. Video-as-Prompt Wan2.1 14B now has real `dense` baseline and
 all-public-sparse-method `--apply-only` evidence after all five native shards completed locally; VAP
-`MotWanAttentionBlock.flash_attention` is reported as an unpatched auxiliary path.
+`MotWanAttentionBlock.flash_attention` is reported as an unpatched auxiliary path. MOVA 720P now has real `dense`
+baseline and all-public-sparse-method `--apply-only` evidence after its tokenizer, audio DiT, audio VAE, and
+dual-tower bridge components completed locally; MOVA `audio_dit` and `dual_tower_bridge` attention paths are reported
+as unpatched auxiliary paths.
 The reproducible sweep entrypoint is
 `scripts/smoke_diffsynth_methods.py`, whose default `--methods all` includes `dense` plus every public sparse method;
 use `--methods sparse` only for sparse-method-only debugging, and use `--list-models` or `--models all` to inspect or
 sweep the full DiffSynth catalog. The test suite now checks the active downloader/catalog against the installed
 DiffSynth video model-config examples for Wan/MOVA/LTX2, allowing only documented converted/shared-file alternatives
 and explicit deferred/local-only entries. The current strict audit requires each DiffSynth smoke/inference record to include
-`resolved_model.complete=true` for the same local bundle it loaded. The audit reports `diffsynth_checkpoint_availability`
-failing on 3 incomplete active local bundles with 15 missing component checks, plus 1 explicit deferred/local-only
-WanToDance bundle; `diffsynth_apply_restore_evidence` is missing 30 method records for those incomplete active bundles.
-The 26 complete local bundles have regenerated `dense` plus all-public-sparse-method apply/restore
+`resolved_model.complete=true` for the same local bundle it loaded. The LTX2 Gemma text model is now complete locally.
+LTX-2 now has real `dense` baseline and all-public-sparse-method `--apply-only` evidence after its repackaged DiT,
+video VAE, audio VAE/vocoder, and text post-module components completed locally; `dense` patches zero modules, while
+each sparse method patches 48 LTX2 video self-attention modules and reports text/audio/cross-attention as unpatched
+auxiliary paths. LTX-2.3 now has the same real `dense` baseline and all-public-sparse-method `--apply-only` evidence
+after its source checkpoint and latent upsampler completed locally; `dense` patches zero modules, while each sparse
+method patches 48 LTX2 video self-attention modules and reports text/audio/cross-attention as unpatched auxiliary paths.
+The audit reports `diffsynth_checkpoint_availability` passing with 29 complete active local bundles, 0 incomplete
+bundles, 0 missing component checks, and 1 explicit deferred/local-only WanToDance bundle. The
+`diffsynth_apply_restore_evidence` gate also passes with no missing method records.
+The 29 complete local bundles have regenerated `dense` plus all-public-sparse-method apply/restore
 records with resolved local bundle metadata: Wan2.1 T2V 1.3B/14B, Wan2.1 I2V 14B 480p/720p, Wan2.1 FLF2V 14B 720p,
 Wan2.1 SpeedControl 1.3B, Wan2.1-Fun 1.3B Control/InP, Wan2.1-Fun 14B Control/InP, Wan2.1-Fun V1.1 1.3B
 Control/Control-Camera, Wan2.1-Fun V1.1 14B Control/Control-Camera, Wan2.1 VACE 1.3B/14B, Wan2.2 Animate 14B, Wan2.2 T2V A14B,
 Wan2.2 I2V A14B, Wan2.2 TI2V 5B, Wan2.2 S2V 14B, Wan2.2-Fun A14B Control/Control-Camera, Video-as-Prompt Wan2.1 14B,
-Krea realtime video 14B, and LongCat-Video. Older local
-apply/restore records without resolved bundle metadata no longer count. Full DiffSynth status remains incomplete until
-the remaining bundles are downloaded and rerun with native load/apply/restore records that include resolved local bundle
-metadata and normal-step quality evidence across the target model families.
+Krea realtime video 14B, MOVA 720P, LongCat-Video, LTX-2, and LTX-2.3. Older local
+apply/restore records without resolved bundle metadata no longer count. DiffSynth checkpoint/load/apply/restore status is
+complete. DiffSynth Wan2.1 T2V 1.3B now has a first matched 50-step quality pair under
+`outputs/diffsynth_quality/wan21-t2v-1.3b/20260522_194929/`: `dense` and `svg2` use the same prompt, seed 0,
+480x832, 81 frames, 15 fps, and local native DiffSynth bundle; `svg2` records 2610 sparse FlashInfer dispatches,
+390 dense warmup dispatches, restore success, and valid 81-frame mp4 output. The DiffSynth inference entrypoint now
+writes audit-compatible `sparse_attention_handle` summaries for strict quality records. Wan2.1 T2V 1.3B also has
+50-step strict DiffSynth quality records under `outputs/diffsynth_quality/wan21-t2v-1.3b/20260522_200551/` for
+`adacluster`, `draft`, and `svoo`, with valid 81-frame mp4 outputs, restore success, and observed sparse backend
+dispatch: `triton_cluster_sparse_attn_topk`, `mit_block_sparse`, and `svoo_flashinfer`, respectively. A second
+Wan2.1 T2V 1.3B 50-step strict DiffSynth quality sweep under
+`outputs/diffsynth_quality/wan21-t2v-1.3b/20260522_201452/` adds `svg1`, `spargeattn`, `radial`, and `sta`, with valid
+81-frame mp4 outputs, restore success, and observed sparse backends
+`flex_attention`, `spas_sage_topk`, `flashinfer`, and `fastvideo_sta_a100_triton`. A matching STA legacy-triton record
+under `outputs/diffsynth_quality/wan21-t2v-1.3b/20260522_202816/` uses the same prompt, seed, shape, frames, fps, and
+50-step settings with `fastvideo_sta_triton`, produces a valid 81-frame mp4, and records 269.46s generation time versus
+211.00s for the A100-optimized record. This satisfies the current A100 STA before/after speed evidence. The method-level
+strict quality gate now remains blocked only by FlashOmni explicit/paper-policy Hunyuan evidence. Full all-backbone
+status remains incomplete while the broader non-DiffSynth smoke gate still has missing records, and FlashOmni still
+needs its explicit/paper-policy evidence.
+
+Current non-DiffSynth audit status: `all_backbone_checkpoint_availability` now passes after the Hunyuan Diffusers model
+specs were aligned with the existing local directories `HunyuanVideo-Diffusers` and `HunyuanVideo-I2V-Diffusers`.
+Hunyuan T2V and I2V now have real 1-step `--skip-decode` smoke records for `dense`, `svg2`, and `svoo` under
+`result/inference/hunyuan-t2v-smoke/metrics.jsonl` and `result/inference/hunyuan-i2v-smoke/metrics.jsonl`; both sparse
+methods record sparse dispatch. `scripts/smoke_all_backbones.sh` is the bandwidth-safe Diffusers smoke entrypoint for
+this gate: it defaults to `--missing`, `--local-files-only`, `HF_HUB_OFFLINE=1`, `TRANSFORMERS_OFFLINE=1`, and
+`--skip-decode`, and automatically adds the local portrait image for I2V backbones. The Wan I2V/T2V high-priority
+gap records in `result/inference/all_backbone_smoke/metrics.jsonl` now include `wan21-i2v-14b`, `wan22-t2v-a14b`, and
+`wan22-i2v-a14b` for `dense`, `svg2`, and `svoo`; `svg2` records `flashinfer` sparse dispatch and `svoo` records
+`svoo_flashinfer` sparse dispatch. CogVideoX T2V and I2V now also have 1-step `--skip-decode` records for `dense`,
+`svg2`, and `svoo`; both sparse methods record the expected `flashinfer`/`svoo_flashinfer` sparse dispatch. The
+`all_backbone_smoke_evidence` gate is Diffusers-only and must not count DiffSynth quality/apply records as Diffusers
+smoke. It is still incomplete with 67 missing smoke records across the remaining Diffusers backbones/methods.
 
 Public methods: `svg1`, `svg2`, `spargeattn`, `radial`, `sta`, `draft`, `adacluster`, `flashomni`, `svoo`, plus `dense`.
 
@@ -158,8 +198,8 @@ Current DiffSynth-Studio video pipelines that must be covered or explicitly defe
   the LTX-2 base pipeline from the repackaged local components. LTX-2.3 loading is wired through the DiffSynth 2.0.12
   source checkpoint plus latent upsampler path to avoid duplicate large-model loading from mixed repackage/source
   components. The LTX2 video self-attention wrapper must preserve DiffSynth's `self_attention_mask` path by passing it
-  to the selected SparseVideo method instead of rejecting or dropping it. LTX-2.3 still needs real local-file
-  load/apply/restore evidence after the LTX-2.3 bundle is downloaded.
+  to the selected SparseVideo method instead of rejecting or dropping it. LTX-2.3 has real local-file load/apply/restore
+  evidence after the source checkpoint and latent upsampler are present locally.
 - Legacy DiffSynth checkpoints such as `HunyuanVideo` or old CogVideoX directories are not current DiffSynth 2.x video
   pipeline targets unless the installed `diffsynth` package exposes a matching pipeline class again. Keep their current
   SparseVideo support under the Diffusers backend until a real DiffSynth runtime path exists.
@@ -200,7 +240,8 @@ DiffSynth-Studio support rules:
   not available there. `--source huggingface-first`/`--source hf-first` must try Hugging Face/HF mirror first and then
   fall back to ModelScope when useful. HF-only repos must stay on Hugging Face directly, and known ModelScope-only repos
   should not waste time on a guaranteed failed Hugging Face request. A matching checkpoint file must be non-empty before
-  the resolver or downloader can treat it as complete.
+  the resolver or downloader can treat it as complete. The default network policy is HF mirror plus no proxy; proxy use
+  must be explicit because proxy bandwidth is constrained.
 - DiffSynth Wan-family loaders must de-duplicate shared checkpoint paths before constructing `ModelConfig` objects.
   Some DiffSynth checkpoints are intentionally multi-role by hash, such as VACE/Animate/VAP files that load both a
   video DiT and an adapter from the same file. Passing the same file twice causes duplicate large-model loading.

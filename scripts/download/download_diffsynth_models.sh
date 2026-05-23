@@ -9,8 +9,9 @@
 #   bash scripts/download_diffsynth_models.sh --dry-run wan21-t2v-1.3b
 #   bash scripts/download_diffsynth_models.sh --tier 1 --source huggingface
 #   bash scripts/download_diffsynth_models.sh mova-720p --source modelscope
-#   bash scripts/download_diffsynth_models.sh wan21-t2v-14b --hf-endpoint https://hf-mirror.com
-#   bash scripts/download_diffsynth_models.sh wan21-t2v-14b --no-proxy --hf-endpoint https://hf-mirror.com
+#   bash scripts/download_diffsynth_models.sh wan21-t2v-14b
+#   # Only use proxy after confirming the mirror path cannot fetch the required files.
+#   bash scripts/download_diffsynth_models.sh wan21-t2v-14b --proxy http://127.0.0.1:10000
 #   bash scripts/download_diffsynth_models.sh --link-root /path/to/existing/models wan21-t2v-1.3b
 # bash scripts/download_diffsynth_models.sh \
 #     --all \
@@ -27,9 +28,9 @@ PYTHON=${PYTHON:-/home/dataset-assist-0/luojy/miniconda3/envs/sparsevideo/bin/py
 HF_CLI=${HF_CLI:-/home/dataset-assist-0/luojy/miniconda3/envs/sparsevideo/bin/hf}
 MODELSCOPE_CLI=${MODELSCOPE_CLI:-/home/dataset-assist-0/luojy/miniconda3/envs/sparsevideo/bin/modelscope}
 MODEL_ROOT=${MODEL_ROOT:-/home/dataset-assist-0/luojy/models}
-PROXY=${PROXY:-http://127.0.0.1:10000}
+PROXY=${PROXY:-}
 SOURCE=${SOURCE:-auto}
-HF_ENDPOINT=${HF_ENDPOINT:-}
+HF_ENDPOINT=${HF_ENDPOINT:-https://hf-mirror.com}
 LINK_ROOT=
 MAX_ATTEMPTS=${MAX_ATTEMPTS:-5}
 BASE_DELAY=${BASE_DELAY:-10}
@@ -38,7 +39,7 @@ MAX_WORKERS=${MAX_WORKERS:-8}
 DRY_RUN=0
 LIST=0
 ALL=0
-SKIP_PROXY=0
+SKIP_PROXY=1
 TIER_FILTER=
 FAMILY_FILTER=
 EXPLICIT_KEYS=()
@@ -52,7 +53,7 @@ WAN_COMMON_21="${WAN_TOKENIZER};;${WAN_T5};;${WAN21_VAE}"
 WAN_COMMON_21_IMAGE="${WAN_COMMON_21};;${WAN_CLIP}"
 WAN_COMMON_22="${WAN_TOKENIZER};;${WAN_T5};;${WAN22_VAE}"
 WAN_COMMON_22_IMAGE="${WAN_COMMON_22};;${WAN_CLIP}"
-LTX2_GEMMA="google/gemma-3-12b-it-qat-q4_0-unquantized::tokenizer.json;;google/gemma-3-12b-it-qat-q4_0-unquantized::tokenizer.model;;google/gemma-3-12b-it-qat-q4_0-unquantized::tokenizer_config.json;;google/gemma-3-12b-it-qat-q4_0-unquantized::preprocessor_config.json;;google/gemma-3-12b-it-qat-q4_0-unquantized::processor_config.json;;google/gemma-3-12b-it-qat-q4_0-unquantized::special_tokens_map.json;;google/gemma-3-12b-it-qat-q4_0-unquantized::added_tokens.json;;google/gemma-3-12b-it-qat-q4_0-unquantized::chat_template.json;;google/gemma-3-12b-it-qat-q4_0-unquantized::config.json;;google/gemma-3-12b-it-qat-q4_0-unquantized::generation_config.json;;google/gemma-3-12b-it-qat-q4_0-unquantized::model.safetensors.index.json;;google/gemma-3-12b-it-qat-q4_0-unquantized::model*.safetensors"
+LTX2_GEMMA="Lightricks/gemma-3-12b-it-qat-q4_0-unquantized::tokenizer.json;;Lightricks/gemma-3-12b-it-qat-q4_0-unquantized::tokenizer.model;;Lightricks/gemma-3-12b-it-qat-q4_0-unquantized::tokenizer_config.json;;Lightricks/gemma-3-12b-it-qat-q4_0-unquantized::preprocessor_config.json;;Lightricks/gemma-3-12b-it-qat-q4_0-unquantized::processor_config.json;;Lightricks/gemma-3-12b-it-qat-q4_0-unquantized::special_tokens_map.json;;Lightricks/gemma-3-12b-it-qat-q4_0-unquantized::added_tokens.json;;Lightricks/gemma-3-12b-it-qat-q4_0-unquantized::chat_template.json;;Lightricks/gemma-3-12b-it-qat-q4_0-unquantized::config.json;;Lightricks/gemma-3-12b-it-qat-q4_0-unquantized::generation_config.json;;Lightricks/gemma-3-12b-it-qat-q4_0-unquantized::model.safetensors.index.json;;Lightricks/gemma-3-12b-it-qat-q4_0-unquantized::model*.safetensors"
 S2V_WAV2VEC="Wan-AI/Wan2.2-S2V-14B::wav2vec2-large-xlsr-53-english/model.safetensors;;Wan-AI/Wan2.2-S2V-14B::wav2vec2-large-xlsr-53-english/preprocessor_config.json;;Wan-AI/Wan2.2-S2V-14B::wav2vec2-large-xlsr-53-english/vocab.json;;Wan-AI/Wan2.2-S2V-14B::wav2vec2-large-xlsr-53-english/special_tokens_map.json"
 MOVA_TOKENIZER="openmoss/MOVA-720p::tokenizer/tokenizer.json;;openmoss/MOVA-720p::tokenizer/tokenizer_config.json;;openmoss/MOVA-720p::tokenizer/special_tokens_map.json"
 
@@ -213,6 +214,8 @@ configure_proxy() {
 
 clear_proxy() {
     unset HTTP_PROXY HTTPS_PROXY ALL_PROXY http_proxy https_proxy all_proxy
+    PROXY=
+    export -n PROXY 2>/dev/null || true
 }
 
 resolve_tools() {
@@ -691,6 +694,7 @@ parse_args() {
             --proxy)
                 [[ $# -ge 2 && "$2" != -* ]] || die "--proxy requires a URL"
                 PROXY=$2
+                SKIP_PROXY=0
                 shift 2
                 ;;
             --no-proxy)

@@ -108,15 +108,12 @@ def test_methods_are_packages_not_flat_method_files():
 def test_diffsynth_inference_orchestration_stays_out_of_package():
     script_only_modules = {
         "_diffsynth_infer.py",
-        "_diffsynth_models.py",
         "infer_diffsynth.py",
-        "smoke_diffsynth_methods.py",
     }
 
     assert not any(path.name in script_only_modules for path in SRC_ROOT.rglob("*.py"))
-    assert (REPO_ROOT / "scripts" / "_diffsynth_models.py").exists()
+    assert (REPO_ROOT / "scripts" / "_infer_diffsynth" / "models.py").exists()
     assert (REPO_ROOT / "scripts" / "infer_diffsynth.py").exists()
-    assert (REPO_ROOT / "scripts" / "smoke_diffsynth_methods.py").exists()
 
     forbidden_snippets = (
         "argparse",

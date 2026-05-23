@@ -72,7 +72,7 @@ def test_unvalidated_method_reasons_are_shared_by_api_and_infer():
 
     from sparsevideo._support import unvalidated_method_reason
 
-    script = REPO_ROOT / "scripts" / "infer.py"
+    script = REPO_ROOT / "scripts" / "infer_diffusers.py"
     spec = importlib.util.spec_from_file_location("sparsevideo_infer_for_support_test", script)
     infer = importlib.util.module_from_spec(spec)
     assert spec.loader is not None

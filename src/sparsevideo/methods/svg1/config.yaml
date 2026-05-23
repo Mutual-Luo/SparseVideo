@@ -143,7 +143,7 @@ model_defaults:
     dense_warmup_layer_ratio: 0.03
     num_sampled_rows: 256
     sample_mse_max_row: 10000
-    sparsity: 0.2
+    sparsity: 0.3
     context_length: null
     prompt_length: null
   mochi-1:

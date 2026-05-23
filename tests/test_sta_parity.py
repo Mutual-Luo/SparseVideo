@@ -157,8 +157,18 @@ def test_sta_backend_name_marks_a100_triton_path(monkeypatch):
     monkeypatch.setattr(torch.Tensor, "is_cuda", property(lambda self: True))
     monkeypatch.setattr(torch.cuda, "get_device_capability", lambda device=None: (8, 0))
     monkeypatch.setattr(sta_ops, "sta_fwd", object())
+    monkeypatch.delenv("SPARSEVIDEO_STA_TRITON_AUTOTUNE", raising=False)
 
     assert _sta_backend_name(torch.empty(1)) == "fastvideo_sta_a100_triton"
+
+
+def test_sta_backend_name_marks_full_autotune_as_legacy_triton(monkeypatch):
+    monkeypatch.setattr(torch.Tensor, "is_cuda", property(lambda self: True))
+    monkeypatch.setattr(torch.cuda, "get_device_capability", lambda device=None: (8, 0))
+    monkeypatch.setattr(sta_ops, "sta_fwd", object())
+    monkeypatch.setenv("SPARSEVIDEO_STA_TRITON_AUTOTUNE", "full")
+
+    assert _sta_backend_name(torch.empty(1)) == "fastvideo_sta_triton"
 
 
 def test_sta_wan_generalized_shape_reaches_owned_path(monkeypatch):

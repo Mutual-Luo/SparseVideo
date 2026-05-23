@@ -97,7 +97,7 @@ MODEL_SPECS: dict[str, ModelSpec] = {
     ),
     "hunyuan-t2v": ModelSpec(
         key="hunyuan-t2v", family="hunyuan_video", pipeline_class="HunyuanVideoPipeline",
-        hf_id="tencent/HunyuanVideo", local_dir="HunyuanVideo",
+        hf_id="tencent/HunyuanVideo", local_dir="HunyuanVideo-Diffusers",
         fps=24, default_frames=129, default_steps=50, guidance_scale=6.0, output_type="pil",
     ),
     "wan21-i2v-14b": ModelSpec(
@@ -112,7 +112,7 @@ MODEL_SPECS: dict[str, ModelSpec] = {
     ),
     "hunyuan-i2v": ModelSpec(
         key="hunyuan-i2v", family="hunyuan_video", pipeline_class="HunyuanVideoImageToVideoPipeline",
-        hf_id="hunyuanvideo-community/HunyuanVideo-I2V", local_dir="HunyuanVideo-I2V",
+        hf_id="hunyuanvideo-community/HunyuanVideo-I2V", local_dir="HunyuanVideo-I2V-Diffusers",
         fps=24, default_frames=129, default_steps=50, guidance_scale=6.0, output_type="pil",
     ),
     "skyreels-v2-t2v-14b": ModelSpec(

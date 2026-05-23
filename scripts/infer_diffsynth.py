@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 import time
 from pathlib import Path
@@ -18,11 +19,13 @@ from typing import Any, Dict, Mapping
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SRC_ROOT = REPO_ROOT / "src"
-if str(SRC_ROOT) not in sys.path:
-    sys.path.insert(0, str(SRC_ROOT))
+SCRIPT_DIR = Path(__file__).resolve().parent
+for _p in (SCRIPT_DIR, SRC_ROOT):
+    if str(_p) not in sys.path:
+        sys.path.insert(0, str(_p))
 
-from sparsevideo import apply_sparse_attention
-from _diffsynth_models import (
+from sparsevideo import apply_sparse_attention, default_method_config, normalize_method_config
+from _infer_diffsynth.models import (
     DEFAULT_MODEL_ROOT,
     diffsynth_output_audio_sample_rate,
     diffsynth_model_list_lines,
@@ -37,11 +40,23 @@ DEFAULT_PROMPT = "A serene mountain lake at sunrise, cinematic, natural motion."
 DEFAULT_NEGATIVE_PROMPT = (
     "overexposed, low quality, blurry, distorted, static, watermark, subtitles, text"
 )
+EXPECTED_SPARSE_BACKENDS = {
+    "adacluster": {"adacluster_flashinfer", "triton_cluster_sparse_attn", "triton_cluster_sparse_attn_topk"},
+    "draft": {"mit_block_sparse"},
+    "flashomni": {"flashomni_explicit_upstream", "flashomni_full_upstream"},
+    "radial": {"flashinfer", "sage_block_sparse"},
+    "spargeattn": {"spas_sage", "spas_sage_block_sparse", "spas_sage_cdfthreshd", "spas_sage_topk", "spas_sage_tuned"},
+    "sta": {"fastvideo_sta_h100", "fastvideo_sta_a100_triton", "fastvideo_sta_triton"},
+    "svg1": {"flex_attention"},
+    "svg2": {"flashinfer"},
+    "svoo": {"svoo_flashinfer", "svoo_triton"},
+}
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
+    strict_kernels = args.strict_kernels or not args.allow_debug_fallbacks
 
     if args.list_models:
         for line in diffsynth_model_list_lines():
@@ -57,6 +72,21 @@ def main(argv: list[str] | None = None) -> int:
     try:
         spec = get_diffsynth_model_spec(args.model)
         payload["model"] = spec.key
+        payload.update(
+            {
+                "model_arg": args.model,
+                "height": args.height or spec.default_height,
+                "width": args.width or spec.default_width,
+                "num_frames": args.num_frames or spec.default_num_frames,
+                "fps": args.fps or spec.default_fps,
+                "num_inference_steps": args.num_inference_steps,
+                "seed": args.seed,
+                "device": args.device,
+                "dtype": args.dtype,
+                "strict_kernels": strict_kernels,
+                "allow_debug_fallbacks": args.allow_debug_fallbacks,
+            }
+        )
         if args.dry_run:
             resolved = resolve_diffsynth_model_paths(args.model, model_root=args.model_root)
             payload.update(
@@ -81,6 +111,7 @@ def main(argv: list[str] | None = None) -> int:
             )
 
         started = time.perf_counter()
+        _configure_method_runtime_env(args.method)
         torch_dtype = _torch_dtype(args.dtype)
         _reset_cuda_memory(args.device)
         pipe, resolved = load_diffsynth_pipeline(
@@ -96,11 +127,13 @@ def main(argv: list[str] | None = None) -> int:
 
         handle = None
         try:
-            method_config = _parse_method_config(args.method_config)
+            method_config = _build_method_config(args, spec, strict_kernels=strict_kernels)
             payload["method_config"] = method_config
             handle = apply_sparse_attention(pipe, method=args.method, config=method_config)
             apply_summary = handle.summary()
             payload["apply_summary"] = apply_summary
+            payload["sparse_attention_handle"] = apply_summary
+            payload["method_config"] = apply_summary.get("method_config") or method_config
             _validate_sparse_apply_summary(args.method, apply_summary)
 
             if args.apply_only:
@@ -125,7 +158,13 @@ def main(argv: list[str] | None = None) -> int:
             video = pipe(**call_kwargs)
             generate_sec = time.perf_counter() - generate_started
             payload["generate_summary"] = handle.summary()
+            payload["sparse_attention_handle"] = payload["generate_summary"]
             _validate_sparse_generate_summary(args.method, payload["generate_summary"])
+            _validate_sparse_backend_summary(
+                args.method,
+                payload["generate_summary"],
+                strict_kernels=strict_kernels,
+            )
 
             save_fps = args.fps or spec.default_fps
             output_metadata = save_diffsynth_output(
@@ -139,7 +178,7 @@ def main(argv: list[str] | None = None) -> int:
                 {
                     "status": "ok",
                     "mode": "generate",
-                    "method_config": method_config,
+                    "method_config": payload["generate_summary"].get("method_config") or method_config,
                     "fps": save_fps,
                     "generate_kwargs": _jsonable(call_kwargs),
                     "timings": {
@@ -155,6 +194,7 @@ def main(argv: list[str] | None = None) -> int:
             if handle is not None:
                 handle.restore()
                 payload["restore_summary"] = handle.summary()
+                payload["sparse_attention_handle_after_restore"] = payload["restore_summary"]
                 _validate_restore_summary(payload["restore_summary"])
     except Exception as exc:
         payload.update(
@@ -187,6 +227,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--vram-limit", type=float)
     parser.add_argument("--no-vram-management", action="store_true")
     parser.add_argument("--use-usp", action="store_true", help="Use DiffSynth USP. Sparse methods currently reject this.")
+    parser.add_argument("--strict-kernels", action="store_true", help="Require strict sparse backend evidence.")
+    parser.add_argument("--allow-debug-fallbacks", action="store_true", help="Allow debug fallback kernels and mark metrics non-strict.")
 
     parser.add_argument("--prompt", default=DEFAULT_PROMPT)
     parser.add_argument("--prompt-file", type=Path)
@@ -425,6 +467,40 @@ def _validate_sparse_generate_summary(method: str, summary: Mapping[str, Any]) -
         raise RuntimeError(
             f"DiffSynth method '{method}' generated without sparse dispatch: "
             f"dispatch_counts={dispatch_counts}"
+        )
+
+
+def _validate_sparse_backend_summary(
+    method: str,
+    summary: Mapping[str, Any],
+    *,
+    strict_kernels: bool,
+) -> None:
+    if method == "dense" or not strict_kernels:
+        return
+    runtime = summary.get("method_runtime") or {}
+    backend_counts = runtime.get("backend_counts") or {}
+    observed_backends = {
+        str(name)
+        for name, count in backend_counts.items()
+        if _runtime_count(count) > 0
+    }
+    if not observed_backends:
+        raise RuntimeError(
+            f"DiffSynth method '{method}' generated without backend evidence: "
+            f"backend_counts={backend_counts}"
+        )
+    debug_backends = sorted(name for name in observed_backends if "debug_fallback" in name)
+    if debug_backends:
+        raise RuntimeError(
+            f"DiffSynth method '{method}' used debug fallback backend(s) in strict mode: "
+            f"{debug_backends}"
+        )
+    expected = EXPECTED_SPARSE_BACKENDS.get(method, set())
+    if expected and not (observed_backends & expected):
+        raise RuntimeError(
+            f"DiffSynth method '{method}' used unexpected sparse backend(s): "
+            f"observed={sorted(observed_backends)}, expected={sorted(expected)}"
         )
 
 
@@ -668,6 +744,23 @@ def _parse_method_config(items: list[str]) -> Dict[str, Any]:
     return config
 
 
+def _build_method_config(args, spec, *, strict_kernels: bool) -> Dict[str, Any]:
+    user_config = _parse_method_config(args.method_config)
+    method_config = default_method_config(
+        args.method,
+        num_inference_steps=args.num_inference_steps,
+        model_family=spec.family,
+        model_key=spec.key,
+    )
+    method_config.update(normalize_method_config(args.method, user_config))
+    if not strict_kernels:
+        if args.method == "radial":
+            method_config["allow_flex_fallback"] = True
+        if args.method in {"svg2", "draft"}:
+            method_config["allow_triton_fallback"] = True
+    return method_config
+
+
 def _parse_value(value: str) -> Any:
     lowered = value.lower()
     if lowered in {"true", "false"}:
@@ -756,6 +849,47 @@ def _torch_dtype(name: str):
     }[name]
 
 
+def _configure_method_runtime_env(method: str) -> None:
+    os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
+
+    python_prefix = Path(sys.prefix)
+    nvcc = python_prefix / "bin" / "nvcc"
+    if "CUDA_HOME" not in os.environ and nvcc.exists():
+        os.environ["CUDA_HOME"] = str(python_prefix)
+    cuda_home = os.environ.get("CUDA_HOME")
+    if cuda_home:
+        cuda_path = Path(cuda_home)
+        os.environ.setdefault("CUDA_PATH", str(cuda_path))
+        nvcc_path = cuda_path / "bin" / "nvcc"
+        if nvcc_path.exists():
+            os.environ.setdefault("CUDACXX", str(nvcc_path))
+        bin_path = str(cuda_path / "bin")
+        if bin_path not in os.environ.get("PATH", "").split(os.pathsep):
+            os.environ["PATH"] = bin_path + os.pathsep + os.environ.get("PATH", "")
+        lib_paths = [
+            str(cuda_path / "lib"),
+            str(cuda_path / "targets" / "x86_64-linux" / "lib"),
+        ]
+        ld_library_path = os.environ.get("LD_LIBRARY_PATH", "")
+        for lib_path in reversed(lib_paths):
+            if lib_path not in ld_library_path.split(os.pathsep):
+                ld_library_path = lib_path + os.pathsep + ld_library_path
+        os.environ["LD_LIBRARY_PATH"] = ld_library_path.rstrip(os.pathsep)
+        os.environ.setdefault(
+            "FLASHINFER_EXTRA_LDFLAGS",
+            "-L{0}/lib -L{0}/targets/x86_64-linux/lib "
+            "-L{0}/lib/stubs -L{0}/targets/x86_64-linux/lib/stubs".format(cuda_home),
+        )
+
+    if method != "svoo":
+        return
+    cache_root = Path(os.environ.get("SVOO_CACHE_ROOT", REPO_ROOT / ".triton_cache"))
+    os.environ.setdefault("TRITON_CACHE_DIR", str(cache_root))
+    os.environ.setdefault("TORCHINDUCTOR_CACHE_DIR", str(cache_root / "torchinductor"))
+    os.environ.setdefault("FLASHINFER_WORKSPACE_BASE", str(cache_root / "flashinfer"))
+    os.environ.setdefault("SVOO_ENABLE_MEM_SAVE", "1")
+
+
 def _reset_cuda_memory(device: str) -> None:
     if not device.startswith("cuda"):
         return
@@ -785,6 +919,13 @@ def _cuda_memory(device: str) -> Dict[str, Any]:
 
 def _cuda_device_arg(device: str) -> str | None:
     return None if device == "cuda" else device
+
+
+def _runtime_count(value: Any) -> int:
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return 0
 
 
 def _jsonable(data: Mapping[str, Any]) -> Dict[str, Any]:

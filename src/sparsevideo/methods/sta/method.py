@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from math import ceil
 from pathlib import Path
 
@@ -173,6 +174,8 @@ def _sta_backend_name(query):
     if query.is_cuda and ops.sta_fwd is not None and capability[0] >= 9:
         return "fastvideo_sta_h100"
     if query.is_cuda and capability[0] == 8:
+        if os.environ.get("SPARSEVIDEO_STA_TRITON_AUTOTUNE", "a100").lower() in {"full", "1", "true", "yes"}:
+            return "fastvideo_sta_triton"
         return "fastvideo_sta_a100_triton"
     return "fastvideo_sta_triton"
 
