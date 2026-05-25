@@ -42,7 +42,6 @@ class SVG1Method(SparseMethod):
 
         cfg = self.config
         first_layer_count = configured_dense_warmup_layer_count(cfg, total_layers)
-
         state = {"block_mask": None, "profiled_step": -1}
         model_type = self.model_info.model_type
 
@@ -58,6 +57,7 @@ class SVG1Method(SparseMethod):
                     runtime_num_inference_steps(step_tracker),
                     step_tracker.step,
                     scheduler_timestep,
+                    notifier=self.warmup_notifier,
                 )
             )
             if full_attention:

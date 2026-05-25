@@ -196,19 +196,20 @@ def preflight_runtime(
 
     spargeattn_needs_runtime = (
         method == "spargeattn"
-        and (config.get("mode") != "full" or config.get("tune") or config.get("model_out_path"))
     )
     if spargeattn_needs_runtime:
-        if model_family == "hunyuan_video":
-            errors.append(
-                "spargeattn sparse/tuned paths are not upstream-equivalent for HunyuanVideo here: "
-                "Hunyuan passes attention_mask, but upstream spas_sage_attn sparse kernels do not "
-                "support attention_mask. The upstream Hunyuan profile uses mode=full; use mode=full "
-                "as the dense baseline until a faithful Hunyuan sparse path is ported."
-            )
         sparge = kernels["spas_sage_attn"]
         sparge_env_error = (sparge.get("env_root") or {}).get("error")
         sparsevideo_runtime = sparge.get("sparsevideo_runtime", {})
+        if model_family == "hunyuan_video":
+            hunyuan_forward_patch = sparsevideo_runtime.get("hunyuan_forward_patch", {})
+            if not hunyuan_forward_patch.get("source_files"):
+                errors.append(
+                    "spargeattn HunyuanVideo sparse/tuned paths require the SparseVideo-owned "
+                    "Hunyuan forward patch to trim padded text tokens before clearing attention_mask. "
+                    "Without that patch, upstream spas_sage_attn sparse kernels are not "
+                    "attention_mask-equivalent."
+                )
         sparsevideo_ready = (
             sparsevideo_runtime.get("package")
             and sparsevideo_runtime.get("qattn_extension")
@@ -262,9 +263,6 @@ def preflight_runtime(
                 "spargeattn sparse modes require spas_sage_attn with _qattn and _fused extensions built. "
                 "Build the SparseVideo-owned source at src/sparsevideo/kernels/native/spargeattn."
             )
-    elif method == "spargeattn":
-        warnings.append("spargeattn mode=full runs dense attention; set mode/value to benchmark sparse SpargeAttn.")
-
     if method == "radial" and config.get("use_sage_attention"):
         sparge = kernels["spas_sage_attn"]
         sparge_env_error = (sparge.get("env_root") or {}).get("error")
@@ -301,7 +299,7 @@ def preflight_runtime(
             )
             if load_error is not None:
                 errors.append(load_error)
-        if int(config.get("dense_timesteps", 0) or 0) > 0 or int(config.get("dense_layers", 0) or 0) > 0:
+        if _has_dense_warmup(config):
             sageattention = kernels.get("sageattention", {})
             sage_env_error = (sageattention.get("env_root") or {}).get("error")
             sage_runtime = sageattention.get("sparsevideo_runtime", {})
@@ -378,7 +376,6 @@ def preflight_runtime(
                     "bsr_sparse_attn",
                     "ensure_cuda_home_for_flashinfer_jit",
                     "expand_attention_mask",
-                    "radial_is_dense_layer_or_timestep",
                     "radial_window_width",
                 ):
                     if not radial_runtime.get(attr):
@@ -472,7 +469,7 @@ def preflight_runtime(
                 errors.append(message)
             else:
                 warnings.append(message)
-        if config.get("sparse_pattern", "explicit") == "explicit" and not config.get("is_full"):
+        if config.get("sparse_pattern", "explicit") == "explicit":
             missing = [key for key in FLASHOMNI_SPARSE_INFO_KEYS if config.get(key) is None]
             if missing:
                 errors.append(
@@ -509,42 +506,25 @@ def preflight_runtime(
             errors.append(message)
         else:
             warnings.append(message)
-    if method == "flashomni" and config.get("sparse_pattern") == "paper_mmdit":
-        warnings.append(
-            "flashomni sparse_pattern=paper_mmdit uses SparseVideo-owned FlashOmni attention "
-            "sparse-info code. Hunyuan runs use the public anonymous FlashOmni Hunyuan "
-            "sparse-symbol policy and upstream default names threshold_q, threshold_kv, "
-            "fresh_threshold, max_order, first_enhance, and saving_threshold_q_for_taylor. "
-            "It can exercise the owned FlashOmni attention and GEMM-Q/GEMM-O kernels with "
-            "generated sparse-info tensors, cached output/bias reuse, and the owned Hunyuan "
-            "forward/Taylor-cache patch."
+    if (
+        method == "flashomni"
+        and config.get("sparse_pattern") == "paper_mmdit"
+        and model_family == "hunyuan_video"
+        and bool(config.get("use_sparse_gemm", False))
+    ):
+        errors.append(
+            "flashomni Hunyuan paper_mmdit sparse-GEMM path is not supported for inference. "
+            "Use use_sparse_gemm=false. The retained GEMM code caused measured quality "
+            "degradation and performance regression."
         )
-        if model_family == "hunyuan_video":
-            if int(config.get("max_order", 0) or 0) == 0 and not bool(config.get("use_sparse_gemm", False)):
-                warnings.append(
-                    "flashomni Hunyuan paper_mmdit is using the CLI quality-safe defaults "
-                    "max_order=0,use_sparse_gemm=false."
-                )
-            elif bool(config.get("use_sparse_gemm", False)):
-                errors.append(
-                    "flashomni Hunyuan paper_mmdit sparse-GEMM path is not supported for inference. "
-                    "Use use_sparse_gemm=false. The retained GEMM code caused measured quality "
-                    "degradation and performance regression."
-                )
-    if method == "flashomni" and config.get("is_full"):
-        warnings.append(
-            "flashomni is_full=true disables sparsity in the upstream FlashOmni kernel path; "
-            "use method=dense for the dense baseline and is_full=false for sparse benchmarking."
-        )
-
-    if method == "svoo" and config.get("sparse_backend") == "flashinfer":
+    if method == "svoo":
         if not kernels["flashinfer"].get("package"):
-            errors.append("svoo sparse_backend=flashinfer requires the flashinfer package.")
+            errors.append("svoo sparse path requires the flashinfer package.")
         elif not kernels["flashinfer"].get("sparse_module"):
-            errors.append("svoo sparse_backend=flashinfer requires flashinfer.sparse APIs.")
+            errors.append("svoo sparse path requires flashinfer.sparse APIs.")
         elif not kernels["flashinfer"].get("cuda_toolkit", {}).get("available"):
             errors.append(
-                "svoo sparse_backend=flashinfer requires a CUDA toolkit with nvcc for FlashInfer sparse JIT. "
+                "svoo sparse path requires a CUDA toolkit with nvcc for FlashInfer sparse JIT. "
                 "Set CUDA_HOME/CUDA_PATH or put nvcc on PATH."
             )
         else:
@@ -558,25 +538,15 @@ def preflight_runtime(
                     "sparse_determine_attention_backend",
                     "sparse_get_batch_prefill_module",
                 ),
-                requirement="svoo sparse_backend=flashinfer requires loadable FlashInfer sparse APIs",
+                requirement="svoo sparse path requires loadable FlashInfer sparse APIs",
             )
             if error is not None:
                 errors.append(error)
-    if method == "svoo" and model_family == "hunyuan_video" and config.get("sparse_backend") != "flashinfer":
-        errors.append(
-            "svoo Hunyuan upstream path requires sparse_backend=flashinfer; "
-            "the Triton sparse backend is only a Wan fallback path and is not Hunyuan SVOO parity."
-        )
 
     if method == "svoo":
         svoo = kernels.get("svoo_kernels", {})
         if not svoo.get("triton_package"):
             errors.append("svoo requires the triton package for its upstream co-clustering kernels.")
-        if not config.get("use_svoo", True) and not svoo.get("triton_kmeans", {}).get("source_files"):
-            errors.append(
-                "svoo use_svoo=False requires SparseVideo-owned Triton k-means source at "
-                "src/sparsevideo/kernels/kmeans.py."
-            )
         if not svoo.get("triton_l2norm", {}).get("source_files"):
             errors.append(
                 "svoo requires SparseVideo-owned Triton L2 normalization source at "
@@ -611,11 +581,6 @@ def preflight_runtime(
                 "svoo requires SparseVideo-owned Triton permutation source at "
                 "src/sparsevideo/kernels/permute.py."
             )
-        if not svoo.get("triton_block_sparse_attn", {}).get("source_files"):
-            errors.append(
-                "svoo requires SparseVideo-owned Triton block sparse attention source at "
-                "src/sparsevideo/kernels/block_sparse_attn.py."
-            )
         if not svoo.get("flashinfer_block_sparse", {}).get("source_files"):
             errors.append(
                 "svoo requires SparseVideo-owned FlashInfer block sparse wrapper source at "
@@ -639,11 +604,8 @@ def preflight_runtime(
             "co_cluster",
             "dynamic_map",
             "triton_permute",
-            "triton_block_sparse_attn",
             "flashinfer_block_sparse",
         ]
-        if not config.get("use_svoo", True):
-            required_source_keys.append("triton_kmeans")
         if config.get("measure_attention_sparsity"):
             required_source_keys.extend(["sparsity_counts", "sparsity_profiler"])
         sources_ready = all(
@@ -676,16 +638,11 @@ def preflight_runtime(
                     "identify_dynamic_map",
                     "permute_tensor_by_labels_triton",
                     "apply_inverse_permutation_triton",
-                    "block_sparse_attention",
                     "variable_block_sparse_attn",
                     "hunyuan_flashinfer_varlen_attn",
                 ):
                     if not svoo_runtime.get(attr):
                         missing.append(attr)
-                if not config.get("use_svoo", True):
-                    for attr in ("triton_kmeans", "kmeans_assign_kernel", "kmeans_update_kernel"):
-                        if not svoo_runtime.get(attr):
-                            missing.append(attr)
                 if config.get("measure_attention_sparsity"):
                     for attr in ("counts_from_sorted_probabilities_triton", "compute_exact_attention_sparsity"):
                         if not svoo_runtime.get(attr):
@@ -707,11 +664,6 @@ def preflight_runtime(
             )
         if not svg2.get("dynamic_map", {}).get("source_files"):
             errors.append("svg2 requires SparseVideo-owned dynamic-map source at src/sparsevideo/kernels/dynamic_map.py.")
-        if not svg2.get("triton_block_sparse_attn", {}).get("source_files"):
-            errors.append(
-                "svg2 requires SparseVideo-owned Triton block sparse attention source at "
-                "src/sparsevideo/kernels/block_sparse_attn.py."
-            )
         if not svg2.get("triton_permute", {}).get("source_files"):
             errors.append(
                 "svg2 requires SparseVideo-owned Triton permutation source at "
@@ -727,7 +679,6 @@ def preflight_runtime(
             for key in (
                 "triton_kmeans",
                 "dynamic_map",
-                "triton_block_sparse_attn",
                 "triton_permute",
                 "flashinfer_block_sparse",
             )
@@ -754,7 +705,6 @@ def preflight_runtime(
                     "centroid_update_triton",
                     "identify_dynamic_map",
                     "identify_dynamic_map_global",
-                    "block_sparse_attention",
                     "permute_tensor_by_labels_triton",
                     "apply_inverse_permutation_triton",
                     "variable_block_sparse_attn",
@@ -850,12 +800,12 @@ def preflight_runtime(
                 "svg1 requires PyTorch FlexAttention APIs for the upstream Sparse-VideoGen sparse path. "
                 f"Missing: {missing}.{detail}"
             )
-        if model_family == "hunyuan_video":
+        if model_family == "hunyuan_video" and _has_dense_warmup(config):
             error = _flash_attn_preflight_error(
                 kernels,
                 required_func="flash_attn_varlen_func",
                 requirement=(
-                    "svg1 Hunyuan dense gates require FlashAttention varlen, matching "
+                    "svg1 Hunyuan dense warmup requires FlashAttention varlen, matching "
                     "Sparse-VideoGen's Hunyuan SVG path"
                 ),
             )
@@ -911,12 +861,12 @@ def preflight_runtime(
                     "adacluster owned Triton runtime is missing loadable API(s): "
                     f"{missing}."
                 )
-        if model_family == "hunyuan_video":
+        if model_family == "hunyuan_video" and _has_dense_warmup(config):
             error = _flash_attn_preflight_error(
                 kernels,
                 required_func="flash_attn_func",
                 requirement=(
-                    "adacluster Hunyuan dense gates require FlashAttention, matching "
+                    "adacluster Hunyuan dense warmup requires FlashAttention, matching "
                     "the upstream Hunyuan AdaCluster path"
                 ),
             )
@@ -924,11 +874,11 @@ def preflight_runtime(
                 errors.append(error)
 
     if method == "draft":
-        if model_family in (None, "wan", "hunyuan_video"):
+        if model_family in (None, "wan", "hunyuan_video") and _has_dense_warmup(config):
             message = _flash_attn_preflight_error(
                 kernels,
                 required_func="flash_attn_varlen_func",
-                requirement="draft dense gates require FlashAttention varlen for upstream parity",
+                requirement="draft dense warmup requires FlashAttention varlen for upstream parity",
             )
             if message is not None:
                 if strict_kernels:
@@ -993,23 +943,21 @@ def preflight_runtime(
                 "so --allow-debug-fallbacks cannot exercise the local fallback path."
             )
 
-    if method in ("radial", "svg2"):
+    if method == "radial":
         flashinfer = kernels["flashinfer"]
-        fallback_name = "allow_flex_fallback" if method == "radial" else "allow_triton_fallback"
-        fallback_path = "FlexAttention" if method == "radial" else "Triton block-sparse"
         if not flashinfer.get("package"):
             message = (
-                f"{method} FlashInfer is not importable; the {fallback_path} path is debug-only "
-                f"and requires {fallback_name}."
+                "radial FlashInfer is not importable; the FlexAttention path is debug-only "
+                "and requires allow_flex_fallback."
             )
         elif not flashinfer.get("sparse_module"):
             message = (
-                f"{method} requires flashinfer.sparse for the upstream sparse kernel path; "
-                f"the {fallback_path} path is debug-only and requires {fallback_name}."
+                "radial requires flashinfer.sparse for the upstream sparse kernel path; "
+                "the FlexAttention path is debug-only and requires allow_flex_fallback."
             )
         elif "cuda_toolkit" in flashinfer and not flashinfer.get("cuda_toolkit", {}).get("available"):
             message = (
-                f"{method} FlashInfer sparse kernels require a CUDA toolkit with nvcc for JIT. "
+                "radial FlashInfer sparse kernels require a CUDA toolkit with nvcc for JIT. "
                 "Set CUDA_HOME/CUDA_PATH or put nvcc on PATH before benchmarking."
             )
         else:
@@ -1021,34 +969,22 @@ def preflight_runtime(
                 warnings.append(message)
         else:
             required_attrs = (
-                (
-                    "top_level_block_sparse_attention_wrapper",
-                    "top_level_single_prefill_with_kv_cache",
-                    "top_level_merge_state",
-                )
-                if method == "radial"
-                else (
-                    "sparse_variable_block_sparse_attention_wrapper",
-                    "sparse_canonicalize_torch_dtype",
-                    "sparse_mask_mode",
-                    "sparse_pos_encoding_mode",
-                    "sparse_determine_attention_backend",
-                    "sparse_get_batch_prefill_module",
-                )
+                "top_level_block_sparse_attention_wrapper",
+                "top_level_single_prefill_with_kv_cache",
+                "top_level_merge_state",
             )
-            if method == "radial":
-                required_attrs = required_attrs + (
-                    "sparse_variable_block_sparse_attention_wrapper",
-                    "sparse_canonicalize_torch_dtype",
-                    "sparse_mask_mode",
-                    "sparse_pos_encoding_mode",
-                    "sparse_determine_attention_backend",
-                    "sparse_get_batch_prefill_module",
-                )
+            required_attrs = required_attrs + (
+                "sparse_variable_block_sparse_attention_wrapper",
+                "sparse_canonicalize_torch_dtype",
+                "sparse_mask_mode",
+                "sparse_pos_encoding_mode",
+                "sparse_determine_attention_backend",
+                "sparse_get_batch_prefill_module",
+            )
             load_error = _flashinfer_load_preflight_error(
                 kernels,
                 required_attrs=required_attrs,
-                requirement=f"{method} requires loadable FlashInfer sparse APIs for the upstream sparse path",
+                requirement="radial requires loadable FlashInfer sparse APIs for the upstream sparse path",
             )
             if load_error is not None:
                 if strict_kernels:
@@ -1056,9 +992,35 @@ def preflight_runtime(
                 else:
                     warnings.append(load_error)
 
+    if method == "svg2":
+        flashinfer = kernels["flashinfer"]
+        if not flashinfer.get("package"):
+            errors.append("svg2 sparse path requires the flashinfer package.")
+        elif not flashinfer.get("sparse_module"):
+            errors.append("svg2 sparse path requires flashinfer.sparse APIs.")
+        elif "cuda_toolkit" in flashinfer and not flashinfer.get("cuda_toolkit", {}).get("available"):
+            errors.append(
+                "svg2 FlashInfer sparse kernels require a CUDA toolkit with nvcc for JIT. "
+                "Set CUDA_HOME/CUDA_PATH or put nvcc on PATH before benchmarking."
+            )
+        else:
+            load_error = _flashinfer_load_preflight_error(
+                kernels,
+                required_attrs=(
+                    "sparse_variable_block_sparse_attention_wrapper",
+                    "sparse_canonicalize_torch_dtype",
+                    "sparse_mask_mode",
+                    "sparse_pos_encoding_mode",
+                    "sparse_determine_attention_backend",
+                    "sparse_get_batch_prefill_module",
+                ),
+                requirement="svg2 requires loadable FlashInfer sparse APIs for the upstream sparse path",
+            )
+            if load_error is not None:
+                errors.append(load_error)
+
     if method == "sta":
         sta = kernels["sta_kernels"]
-        fastvideo_triton = sta.get("sparsevideo_fastvideo_triton", {})
         sta_mode = config.get("STA_mode", "STA_inference")
         if sta_mode not in ("STA_inference", "STA_searching"):
             errors.append(
@@ -1067,7 +1029,7 @@ def preflight_runtime(
             )
         if sta_mode == "STA_searching":
             warnings.append(
-                "sta STA_searching returns dense attention outputs while recording sparse-window losses; "
+                "sta STA_searching returns full-window STA outputs while recording sparse-window losses; "
                 "it is a calibration run, not a speed benchmark."
             )
         tile_size = _normalize_int_triple(config.get("tile_size", [6, 8, 8]))
@@ -1076,26 +1038,21 @@ def preflight_runtime(
                 "sta tile_size differs from FastVideo's fixed upstream tile_size=(6,8,8); "
                 "SparseVideo rejects the non-upstream generalized STA fallback for parity runs."
             )
-        if not fastvideo_triton.get("source_files"):
-            errors.append(
-                "sta requires the SparseVideo-owned copy of FastVideo's Triton STA source at "
-                "src/sparsevideo/kernels/native/sta_h100/python/fastvideo_kernel/triton_kernels/st_attn_triton.py."
-            )
-        elif sta.get("triton_load_checked"):
-            if sta.get("triton_import_error"):
-                errors.append(
-                    "sta SparseVideo-owned FastVideo Triton fallback failed to import during preflight: "
-                    f"{sta.get('triton_import_error_type')}: {sta.get('triton_import_error')}."
-                )
-            elif not sta.get("triton_sliding_tile_attention_triton"):
-                errors.append(
-                    "sta SparseVideo-owned FastVideo Triton fallback is missing "
-                    "sliding_tile_attention_triton."
-                )
+        has_hopper = _has_hopper_device(torch_status)
+        has_ampere = _has_ampere_device(torch_status)
         if not sta["sparsevideo_h100"].get("source", {}).get("source_files"):
             message = (
                 "sta FastVideo H100/TK C++ source is missing under "
                 "src/sparsevideo/kernels/native/sta_h100; this is not package-ready kernel parity."
+            )
+            if strict_kernels:
+                errors.append(message)
+            else:
+                warnings.append(message)
+        if has_ampere and not sta.get("sparsevideo_a100_block_sparse", {}).get("source", {}).get("source_files"):
+            message = (
+                "sta A100 block-sparse CUDA source is missing under "
+                "src/sparsevideo/kernels/native/draft_block_sparse; A100 STA cannot be used for speed claims."
             )
             if strict_kernels:
                 errors.append(message)
@@ -1115,11 +1072,33 @@ def preflight_runtime(
                 errors.append(f"sta seq_shape={seq_shape} is invalid; expected TxHxW.")
             else:
                 warnings.append(
-                    f"sta seq_shape={seq_shape} uses SparseVideo's generalized FastVideo Triton STA path "
-                    "for this backbone's inferred tile-padded video layout; this is not a FastVideo parity profile."
+                    f"sta seq_shape={seq_shape} uses SparseVideo's generalized STA A100 block-sparse CUDA path "
+                    "for this backbone's inferred tile-padded video layout; this is not a FastVideo H100/TK native profile."
                 )
-        elif seq_shape in STA_NATIVE_SEQ_SHAPES:
-            has_hopper = _has_hopper_device(torch_status)
+        if has_ampere:
+            a100_extension = bool(sta.get("sparsevideo_a100_block_sparse", {}).get("native_extension"))
+            a100_usable = a100_extension
+            if sta.get("a100_block_sparse_load_checked"):
+                a100_usable = bool(sta.get("a100_block_sparse_ready"))
+                if sta.get("a100_import_error"):
+                    message = (
+                        "sta A100 block-sparse CUDA backend failed to load during preflight: "
+                        f"{sta.get('a100_import_error_type')}: {sta.get('a100_import_error')}."
+                    )
+                    if strict_kernels:
+                        errors.append(message)
+                    else:
+                        warnings.append(message)
+            if not a100_usable:
+                message = (
+                    "sta A100 block-sparse CUDA backend is not available as SparseVideo-owned native code; "
+                    "strict STA speed runs on A100 require this backend."
+                )
+                if strict_kernels:
+                    errors.append(message)
+                else:
+                    warnings.append(message)
+        if seq_shape in STA_NATIVE_SEQ_SHAPES:
             h100_extension = bool(sta["sparsevideo_h100"].get("native_extension"))
             h100_load_error = None
             h100_usable = h100_extension
@@ -1143,17 +1122,16 @@ def preflight_runtime(
             if has_hopper and not h100_usable:
                 message = (
                     "sta H100/TK C++ parity kernel is not available as a SparseVideo-owned sta_h100 extension; "
-                    "runtime will use the SparseVideo-owned copy of FastVideo's Triton STA fallback instead."
+                    "runtime cannot claim H100 STA native parity."
                 )
                 if strict_kernels:
                     errors.append(message)
                 else:
                     warnings.append(message)
-            elif h100_usable and not has_hopper:
+            elif h100_usable and not has_hopper and not has_ampere:
                 message = (
                     "sta_h100 extension is built but no Hopper GPU is visible; "
-                    "this run will use the SparseVideo-owned copy of FastVideo's Triton STA fallback, "
-                    "matching FastVideo's non-Hopper fallback path."
+                    "this does not prove H100/TK dispatch."
                 )
                 warnings.append(message)
 
@@ -1166,3 +1144,18 @@ def _has_hopper_device(torch_status: Dict[str, Any]) -> bool:
         if capability and int(capability[0]) >= 9:
             return True
     return False
+
+
+def _has_ampere_device(torch_status: Dict[str, Any]) -> bool:
+    for device in torch_status.get("cuda_devices") or []:
+        capability = device.get("capability") or []
+        if capability and int(capability[0]) == 8:
+            return True
+    return False
+
+
+def _has_dense_warmup(config: Dict[str, Any]) -> bool:
+    return (
+        float(config.get("dense_warmup_step_ratio", 0) or 0) > 0
+        or float(config.get("dense_warmup_layer_ratio", 0) or 0) > 0
+    )

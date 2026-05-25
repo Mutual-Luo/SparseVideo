@@ -72,6 +72,24 @@ def test_legacy_svg_warmup_names_are_rejected():
             )
 
 
+def test_radial_legacy_dense_timestep_keys_are_rejected():
+    for key in ("dense_timesteps", "dense_layers"):
+        with pytest.raises(ValueError, match="Unknown config keys"):
+            sparsevideo.normalize_method_config("radial", {key: 1})
+
+
+def test_method_local_dense_switches_are_rejected():
+    from sparsevideo.methods.spargeattn import SpargeAttnMethod
+
+    with pytest.raises(ValueError, match="mode"):
+        SpargeAttnMethod(
+            config={"mode": "full"},
+            model_info=SimpleNamespace(model_type="wan", model_key=None),
+        )
+    with pytest.raises(ValueError, match="Unknown config keys"):
+        sparsevideo.normalize_method_config("flashomni", {"is_full": True})
+
+
 def test_dense_warmup_ratio_helper_uses_first_step_and_layer_counts():
     from sparsevideo.methods._schedule import (
         configured_dense_warmup_layer_count,

@@ -42,19 +42,18 @@ UPSTREAM_INFERENCE_PROFILES: Dict[tuple, Dict[str, Any]] = {
         "negative_prompt": HUNYUAN_VIDEO_NEGATIVE_PROMPT,
         "source": "training_free/Sparse-VideoGen/scripts/hyvideo/hyvideo_t2v_720p_sap.sh",
     },
-    # SpargeAttn/inference_examples/wan_infer.py defaults to --mode full.
+    # SpargeAttn/inference_examples/wan_infer.py defaulted to dense/full.
+    # SparseVideo keeps dense baseline under method=dense and uses sparse topk here.
     ("spargeattn", "wan21-t2v-1.3b"): {
         "height": 480, "width": 832, "num_frames": 81, "fps": 15, "guidance_scale": 5.0,
         "seed": 42, "cpu_offload": True, "cpu_offload_mode": "sequential",
         "vae_tiling": True, "vae_slicing": True, "vae_decoder_chunk_size": 1,
-        "method_config": {"mode": "full", "value": None},
         "source": "training_free/SpargeAttn/inference_examples/wan_infer.py",
     },
     ("spargeattn", "wan21-t2v-14b"): {
         "height": 480, "width": 832, "num_frames": 81, "fps": 15, "guidance_scale": 5.0,
         "seed": 42, "cpu_offload": True, "cpu_offload_mode": "sequential",
         "vae_tiling": True, "vae_slicing": True, "vae_decoder_chunk_size": 1,
-        "method_config": {"mode": "full", "value": None},
         "source": "training_free/SpargeAttn/inference_examples/wan_infer.py",
     },
     # SpargeAttn/inference_examples/README.md shows Wan2.2 with --mode topk --value 0.4.
@@ -67,12 +66,12 @@ UPSTREAM_INFERENCE_PROFILES: Dict[tuple, Dict[str, Any]] = {
         "source": "training_free/SpargeAttn/inference_examples/README.md",
         "evidence_sources": ["training_free/SpargeAttn/inference_examples/wan_infer.py"],
     },
-    # SpargeAttn/inference_examples/hunyuan_infer.py defaults to --mode full.
+    # SpargeAttn/inference_examples/hunyuan_infer.py defaulted to dense/full.
+    # SparseVideo keeps dense baseline under method=dense and does not expose a SpargeAttn full mode.
     ("spargeattn", "hunyuan_video"): {
         "height": 320, "width": 512, "num_frames": 61, "num_inference_steps": 30,
         "fps": 8, "seed": 42, "cpu_offload": True, "cpu_offload_mode": "sequential",
         "vae_tiling": True, "vae_slicing": True, "vae_decoder_chunk_size": 1,
-        "method_config": {"mode": "full", "value": None},
         "source": "training_free/SpargeAttn/inference_examples/hunyuan_infer.py",
     },
     # radial-attention/wan_t2v_inference.py defaults to Wan2.1 T2V 14B.

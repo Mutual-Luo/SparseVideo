@@ -71,13 +71,24 @@ class STAMethod(SparseMethod):
         model_type = self.model_info.model_type
         mask_strategy = self._mask_strategy
         dense_warmup_layer_count = configured_dense_warmup_layer_count(self.config, total_layers)
-
         def attn_fn(query, key, value, attention_mask, **kwargs):
             step_idx = max(0, getattr(step_tracker, "step", 1) - 1)
             if self._sta_mode == "STA_searching":
-                reference = _sta_dense_attention(query, key, value, attention_mask)
                 text_len = kwargs.get("text_len", 0)
                 prompt_length = kwargs.get("prompt_length")
+                reference = _sta_attention(
+                    query, key, value,
+                    tile_size=tile_size,
+                    kernel_size=kernel_size,
+                    model_type=model_type,
+                    text_len=text_len,
+                    prompt_length=prompt_length,
+                    seq_shape=seq_shape,
+                    has_text=has_text,
+                    layer_idx=layer_idx,
+                    step_idx=step_idx,
+                    mask_strategy=None,
+                )
                 l1_loss = {}
                 l2_loss = {}
                 for candidate in self._mask_candidates:
@@ -106,7 +117,7 @@ class STAMethod(SparseMethod):
                 )
                 self.record_runtime_dispatch(
                     "search",
-                    backend="dense_reference_with_sta_candidates",
+                    backend="full_window_sta_reference_with_sta_candidates",
                     layer_idx=layer_idx,
                     step=getattr(step_tracker, "step", None),
                 )
@@ -117,6 +128,7 @@ class STAMethod(SparseMethod):
                     self.config,
                     runtime_num_inference_steps(step_tracker),
                     getattr(step_tracker, "step", None),
+                    notifier=self.warmup_notifier,
                 )
             ):
                 out = _sta_dense_attention(query, key, value, attention_mask)
@@ -173,11 +185,9 @@ def _sta_backend_name(query):
         capability = (0, 0)
     if query.is_cuda and ops.sta_fwd is not None and capability[0] >= 9:
         return "fastvideo_sta_h100"
-    if query.is_cuda and capability[0] == 8:
-        if os.environ.get("SPARSEVIDEO_STA_TRITON_AUTOTUNE", "a100").lower() in {"full", "1", "true", "yes"}:
-            return "fastvideo_sta_triton"
-        return "fastvideo_sta_a100_triton"
-    return "fastvideo_sta_triton"
+    if query.is_cuda and capability[0] == 8 and ops._can_use_a100_sta(query):
+        return "fastvideo_sta_a100_block_sparse_cuda"
+    return "sta_native_unavailable"
 
 
 def _sta_dense_backend_name(attention_mask):
@@ -266,8 +276,8 @@ def _sta_sparsevideo_fastvideo_path(query, key, value, B, N, H, D,
     """SparseVideo-owned port of FastVideo's sliding_tile_attention API.
 
     H100 C++ dispatch is used only if a SparseVideo-owned sta_h100 extension is
-    built. Otherwise this uses the SparseVideo-owned Triton port of FastVideo's
-    fallback kernel.
+    built. On A100 this uses SparseVideo's owned SM80 block-sparse CUDA
+    attention backend with the same STA tile-window mask.
     Input layout: [B, H, S, D] (BHSD), matching FastVideo STA.
     window_size: list of (t, h, w) per head — use kernel_size for all heads.
     """
@@ -330,7 +340,17 @@ def _sta_sparsevideo_fastvideo_path(query, key, value, B, N, H, D,
     else:
         q_in, k_in, v_in = q_vid, k_vid, v_vid
 
-    out = _sv_sta(q_in, k_in, v_in, window_size, fvk_text_len, has_text, seq_shape)
+    source_seq_shape = f"{T}x{spatial_h}x{spatial_w}"
+    out = _sv_sta(
+        q_in,
+        k_in,
+        v_in,
+        window_size,
+        fvk_text_len,
+        has_text,
+        seq_shape,
+        source_seq_shape=source_seq_shape,
+    )
 
     # out: [B, H, img_seq_len (+ text), D]
     out_vid_tiled = out[:, :, :img_seq_len, :]
@@ -338,18 +358,6 @@ def _sta_sparsevideo_fastvideo_path(query, key, value, B, N, H, D,
     out_vid_pad = out_vid_pad.view(B, H, T_pad, H_pad, W_pad, D)
     out_vid = out_vid_pad[:, :, :T, :spatial_h, :spatial_w, :].reshape(B, H, video_len, D)
     out_vid = out_vid.permute(0, 2, 1, 3)  # [B, video_len, H, D]
-    if T_pad != T or H_pad != spatial_h or W_pad != spatial_w:
-        out_vid = _sta_repair_padded_border_outputs(
-            query,
-            key,
-            value,
-            out_vid,
-            vid_start,
-            (T, spatial_h, spatial_w),
-            (T_pad, H_pad, W_pad),
-            tile_size,
-        )
-
     if model_type == "hunyuan_video":
         if text_len > 0:
             text_parts = []

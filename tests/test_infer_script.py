@@ -83,9 +83,10 @@ def _run_infer(tmp_path: Path, *args: str) -> subprocess.CompletedProcess[str]:
     )
 
 
-def test_print_run_summary_omits_full_config(capsys, tmp_path):
+def test_success_print_run_summary_only_outputs_video_path(capsys, tmp_path):
     infer = _load_infer_module()
     args = types.SimpleNamespace(metrics_file=tmp_path / "metrics.jsonl")
+    output_file = tmp_path / "sample.mp4"
     infer.print_run_summary(
         args,
         {
@@ -93,7 +94,7 @@ def test_print_run_summary_omits_full_config(capsys, tmp_path):
             "model": "wan21-t2v-1.3b",
             "method": "svg1",
             "method_config": {"num_sampled_rows": 64},
-            "output_file": str(tmp_path / "sample.mp4"),
+            "output_file": str(output_file),
             "timings": {"generate_sec": 12.3456, "total_sec": 14.5678},
             "seconds_per_frame": 0.1524,
             "cuda_peak_allocated_gb": 1.25,
@@ -102,10 +103,10 @@ def test_print_run_summary_omits_full_config(capsys, tmp_path):
     )
 
     stdout = capsys.readouterr().out
-    assert "status=ok" in stdout
-    assert f"output_file={tmp_path / 'sample.mp4'}" in stdout
-    assert f"metrics_file={tmp_path / 'metrics.jsonl'}" in stdout
-    assert "generate_sec=12.346" in stdout
+    assert stdout == f"{output_file}\n"
+    assert "status=ok" not in stdout
+    assert f"metrics_file={tmp_path / 'metrics.jsonl'}" not in stdout
+    assert "generate_sec=12.346" not in stdout
     assert "method_config" not in stdout
 
 
@@ -171,7 +172,6 @@ def _radial_runtime_ready() -> dict:
             "sparge_sage_qk_block_sizes": True,
             "radial_append_tail_blocks": True,
             "expand_attention_mask": True,
-            "radial_is_dense_layer_or_timestep": True,
             "radial_window_width": True,
             "build_bsr_from_mask": True,
             "variable_block_sparse_attn": True,
@@ -251,13 +251,24 @@ def test_infer_dry_run_resolves_wan_svoo_defaults(tmp_path):
     assert payload["fps"] == 16
     assert payload["wan_flow_shift"] == 5.0
     assert payload["vae_dtype"] == "fp32"
-    assert cfg["implementation"] == "native"
-    assert cfg["sparse_backend"] == "flashinfer"
+    assert "implementation" not in cfg
+    assert "sparse_backend" not in cfg
     assert cfg["num_q_centroids"] == 256
     assert cfg["num_k_centroids"] == 1024
     assert cfg["kmeans_iter_init"] == 2
     assert cfg["kmeans_iter_step"] == 2
     assert cfg["use_dynamic_min_kc_ratio"] is True
+    for removed_key in (
+        "use_global_constraints",
+        "lambda_schedule",
+        "diverse_top_p_k",
+        "use_fused_rope",
+        "context_length",
+        "prompt_length",
+        "implementation",
+        "sparse_backend",
+    ):
+        assert removed_key not in cfg
     assert cfg["sparsity_csv_path"].endswith("sparsity_wan_1.3B_t2v.csv")
     assert "optional_kernels" in payload["runtime"]
     assert "cuda_available" in payload["runtime"]["torch"]
@@ -265,7 +276,6 @@ def test_infer_dry_run_resolves_wan_svoo_defaults(tmp_path):
     assert "svg_svoo_fused_kernels" in payload["runtime"]["optional_kernels"]
     assert payload["runtime"]["optional_kernels"]["svg_svoo_fused_kernels"]["native_load_checked"] is True
     assert "svoo_kernels" in payload["runtime"]["optional_kernels"]
-    assert payload["runtime"]["optional_kernels"]["svoo_kernels"]["triton_kmeans"]["source_files"] is True
     assert payload["runtime"]["optional_kernels"]["svoo_kernels"]["triton_l2norm"]["source_files"] is True
     assert payload["runtime"]["optional_kernels"]["svoo_kernels"]["triton_layernorm"]["source_files"] is True
     assert payload["runtime"]["optional_kernels"]["svoo_kernels"]["triton_modulate"]["source_files"] is True
@@ -467,6 +477,25 @@ def test_infer_dry_run_allows_new_backbone_sta_sparse_processors(tmp_path, model
     assert payload["model"] == resolved
     assert payload["method"] == "sta"
     assert payload["runtime"]["preflight"]["errors"] == []
+
+
+def test_sta_preflight_rejects_wan21_t2v_13b_before_model_load():
+    infer = _load_infer_module()
+
+    messages = infer.sta_layout_preflight_messages(
+        infer.MODEL_SPECS["wan21-t2v-1.3b"],
+        720,
+        1280,
+        81,
+        {"STA_mode": "STA_inference"},
+    )
+
+    assert messages["warnings"] == []
+    assert messages["errors"] == [
+        "STA is temporarily unsupported for Wan2.1-T2V-1.3B. The current version "
+        "has not found suitable STA parameters that balance efficiency and quality "
+        "for this model."
+    ]
 
 
 def test_sta_strategy_shapes_cover_sparsevideo_backbones():
@@ -995,7 +1024,7 @@ def test_infer_dry_run_resolves_wan_svg2_upstream_defaults(tmp_path):
     assert cfg["min_kc_ratio"] == 0.10
     assert cfg["kmeans_iter_init"] == 50
     assert cfg["kmeans_iter_step"] == 2
-    assert cfg["allow_triton_fallback"] is False
+    assert "allow_triton_fallback" not in cfg
     assert "svg2_kernels" in payload["runtime"]["optional_kernels"]
     svg2_runtime = payload["runtime"]["optional_kernels"]["svg2_kernels"]["owned_triton_runtime"]
     assert svg2_runtime["load_checked"] is True
@@ -1233,8 +1262,8 @@ def test_infer_dry_run_resolves_radial_upstream_defaults(tmp_path):
     cfg = payload["method_config"]
 
     assert payload["strict_kernels"] is True
-    assert cfg["dense_layers"] == 1
-    assert cfg["dense_timesteps"] == 12
+    assert "dense_layers" not in cfg
+    assert "dense_timesteps" not in cfg
     assert cfg["decay_factor"] == 0.2
     assert cfg["block_size"] == 128
     assert cfg["allow_flex_fallback"] is False
@@ -1245,8 +1274,8 @@ def test_infer_dry_run_resolves_wan22_radial_upstream_defaults(tmp_path):
     payload = _run_infer_dry_run(tmp_path, "--model", "wan22", "--method", "radial")
     cfg = payload["method_config"]
 
-    assert cfg["dense_layers"] == 1
-    assert cfg["dense_timesteps"] == 11
+    assert "dense_layers" not in cfg
+    assert "dense_timesteps" not in cfg
     assert cfg["decay_factor"] == 0.8
     assert cfg["block_size"] == 64
 
@@ -1266,8 +1295,8 @@ def test_infer_dry_run_resolves_hunyuan_radial_upstream_defaults(tmp_path):
     payload = _run_infer_dry_run(tmp_path, "--model", "hunyuan", "--method", "radial")
     cfg = payload["method_config"]
 
-    assert cfg["dense_layers"] == 0
-    assert cfg["dense_timesteps"] == 12
+    assert "dense_layers" not in cfg
+    assert "dense_timesteps" not in cfg
     assert cfg["decay_factor"] == 0.95
     assert cfg["block_size"] == 128
     assert payload["runtime"]["preflight"]["errors"] == []
@@ -1826,8 +1855,10 @@ def test_infer_dry_run_resolves_hunyuan_svoo_defaults(tmp_path):
     assert payload["num_frames"] == 129
     assert payload["fps"] == 24
     assert cfg["top_p_kmeans"] == 0.88
-    assert cfg["start_reuse_step"] == 6
-    assert cfg["reuse_interval"] == 50
+    assert "start_reuse_step" not in cfg
+    assert "context_length" not in cfg
+    assert "prompt_length" not in cfg
+    assert cfg["reuse_interval"] == 20
     assert cfg["sparsity_csv_path"].endswith("sparsity_hunyuan10_13B_t2v.csv")
 
 
@@ -1852,7 +1883,7 @@ def test_svoo_wan13_upstream_profile_uses_reference_shell(tmp_path):
     assert payload["profile_overrides"]["vae_slicing"] is False
     assert cfg["num_q_centroids"] == 256
     assert cfg["num_k_centroids"] == 1024
-    assert cfg["start_reuse_step"] == 11
+    assert "start_reuse_step" not in cfg
     assert payload["profile_overrides"]["source"].endswith(
         "SVOO/scripts/inference/wan/wan_t2v_720p_svoo.sh"
     )
@@ -1914,7 +1945,7 @@ def test_svoo_wan22_upstream_profile_uses_a14b_steps(tmp_path):
     assert payload["profile_overrides"]["guidance_scale_2"] == 3.0
     assert payload["vae_tiling"] is False
     assert payload["vae_slicing"] is False
-    assert cfg["start_reuse_step"] == 9
+    assert "start_reuse_step" not in cfg
     assert cfg["sparsity_csv_path"].endswith("sparsity_wan22_A14B_t2v.csv")
 
 
@@ -1942,8 +1973,8 @@ def test_svoo_hunyuan_upstream_profile_uses_reference_shell(tmp_path):
     assert payload["profile_overrides"]["negative_prompt"].startswith("Aerial view, aerial view")
     assert payload["negative_prompt"].startswith("Aerial view, aerial view")
     assert cfg["top_p_kmeans"] == 0.88
-    assert cfg["start_reuse_step"] == 6
-    assert cfg["reuse_interval"] == 50
+    assert "start_reuse_step" not in cfg
+    assert cfg["reuse_interval"] == 20
     assert payload["profile_overrides"]["source"].endswith(
         "SVOO/scripts/inference/hunyuan10/hunyuan10_t2v_720p_svoo.sh"
     )
@@ -2082,12 +2113,14 @@ def test_prepare_pipeline_respects_separate_vae_tiling_and_slicing():
     assert calls == ["tiling", "to:cuda"]
 
 
-def test_infer_dry_run_flashomni_default_requires_explicit_sparse_info(tmp_path):
-    payload = _run_infer_dry_run_preflight_failure(tmp_path, "--model", "wan1.3b", "--method", "flashomni")
+def test_infer_dry_run_flashomni_wan_default_uses_paper_mmdit(tmp_path):
+    payload = _run_infer_dry_run(tmp_path, "--model", "wan1.3b", "--method", "flashomni")
     cfg = payload["method_config"]
 
+    assert payload["status"] == "dry_run"
     assert cfg["implementation"] == "upstream"
-    assert cfg["sparse_pattern"] == "explicit"
+    assert cfg["sparse_pattern"] == "paper_mmdit"
+    assert cfg["use_sparse_gemm"] is False
     assert cfg["backend"] == "auto"
     assert cfg["workspace_bytes"] == 268435456
     assert cfg["causal"] is False
@@ -2098,9 +2131,13 @@ def test_infer_dry_run_flashomni_default_requires_explicit_sparse_info(tmp_path)
     assert cfg["rope_scale"] is None
     assert cfg["rope_theta"] is None
     assert payload["runtime"]["optional_kernels"]["flashomni"]["methods"] == ["flashomni"]
-    assert any(
-        "sparse_pattern=explicit" in item and "Missing:" in item
+    assert not any(
+        "sparse_pattern=explicit" in item
         for item in payload["runtime"]["preflight"]["errors"]
+    )
+    assert not any(
+        "paper_mmdit" in warning
+        for warning in payload["runtime"]["preflight"]["warnings"]
     )
 
 
@@ -2136,7 +2173,7 @@ def test_infer_dry_run_flashomni_global_random_allows_debug_fallbacks(tmp_path):
     )
 
 
-def test_infer_dry_run_flashomni_paper_mmdit_warns_not_upstream_parity(tmp_path):
+def test_infer_dry_run_flashomni_paper_mmdit_keeps_hunyuan_config(tmp_path):
     payload = _run_infer_dry_run(
         tmp_path,
         "--model",
@@ -2174,17 +2211,8 @@ def test_infer_dry_run_flashomni_paper_mmdit_warns_not_upstream_parity(tmp_path)
         "sparse_pattern=explicit" in error
         for error in payload["runtime"]["preflight"]["errors"]
     )
-    assert any(
-        "paper_mmdit" in warning and "SparseVideo-owned FlashOmni attention" in warning
-        for warning in payload["runtime"]["preflight"]["warnings"]
-    )
-    assert any(
-        "GEMM-Q/GEMM-O" in warning
-        for warning in payload["runtime"]["preflight"]["warnings"]
-    )
-    assert any(
-        "anonymous FlashOmni Hunyuan sparse-symbol policy" in warning
-        and "forward/Taylor-cache patch" in warning
+    assert not any(
+        "paper_mmdit" in warning
         for warning in payload["runtime"]["preflight"]["warnings"]
     )
 
@@ -2206,8 +2234,8 @@ def test_infer_dry_run_flashomni_hunyuan_paper_mmdit_uses_quality_safe_defaults(
     assert cfg["max_order"] == 0
     assert cfg["D"] == 0
     assert cfg["use_sparse_gemm"] is False
-    assert any(
-        "quality-safe defaults" in warning and "max_order=0,use_sparse_gemm=false" in warning
+    assert not any(
+        "paper_mmdit" in warning
         for warning in payload["runtime"]["preflight"]["warnings"]
     )
 
@@ -2235,18 +2263,6 @@ def test_infer_flashomni_hunyuan_paper_mmdit_rejects_taylor_gemm_path(tmp_path):
     assert "use_sparse_gemm=false" in payload["error"]
     assert "Sparse GEMM projection" in payload["error"]
     assert "quality degradation and performance regression" in payload["error"]
-
-
-def test_infer_flashomni_default_explicit_fails_before_model_load(tmp_path):
-    result = _run_infer(tmp_path, "--model", "wan1.3b", "--method", "flashomni")
-    payload = json.loads(result.stdout)
-
-    assert result.returncode == 1
-    assert payload["status"] == "failed"
-    assert payload["failed_stage"] == "preflight"
-    assert "sparse_pattern=explicit" in payload["error"]
-    assert "Missing:" in payload["error"]
-    assert payload["timings"] == {}
 
 
 def test_infer_flashomni_global_random_fails_before_model_load_by_default(tmp_path):
@@ -2315,7 +2331,6 @@ def test_infer_dry_run_spargeattn_defaults_to_sparse_topk(tmp_path):
 
     assert payload["method_config"]["mode"] == "topk"
     assert payload["method_config"]["topk"] == 0.5
-    assert not any("mode=full runs dense attention" in item for item in payload["runtime"]["preflight"]["warnings"])
 
 
 def test_spargeattn_wan21_upstream_profile_uses_diffusers_example_shape(tmp_path):
@@ -2337,10 +2352,8 @@ def test_spargeattn_wan21_upstream_profile_uses_diffusers_example_shape(tmp_path
     assert payload["vae_slicing"] is True
     assert payload["vae_decoder_chunk_size"] == 1
     assert payload["profile_overrides"]["guidance_scale"] == 5.0
-    assert payload["method_config"]["mode"] == "full"
-    assert payload["method_config"]["value"] is None
-    assert payload["profile_overrides"]["method_config"] == {"mode": "full", "value": None}
-    assert any("mode=full runs dense attention" in item for item in payload["runtime"]["preflight"]["warnings"])
+    assert payload["method_config"]["mode"] == "topk"
+    assert "method_config" not in payload["profile_overrides"]
     assert payload["profile_overrides"]["source"].endswith(
         "SpargeAttn/inference_examples/wan_infer.py"
     )
@@ -2391,29 +2404,26 @@ def test_spargeattn_hunyuan_upstream_profile_uses_diffusers_example_shape(tmp_pa
     assert payload["vae_tiling"] is True
     assert payload["vae_slicing"] is True
     assert payload["vae_decoder_chunk_size"] == 1
-    assert payload["method_config"]["mode"] == "full"
-    assert payload["profile_overrides"]["method_config"] == {"mode": "full", "value": None}
+    assert payload["method_config"]["mode"] == "topk"
+    assert "method_config" not in payload["profile_overrides"]
     assert payload["method_config"]["l1"] == 0.07
     assert payload["method_config"]["pv_l1"] == 0.08
     assert payload["method_config"]["tune_pv"] is True
-    assert any("mode=full runs dense attention" in item for item in payload["runtime"]["preflight"]["warnings"])
+    assert payload["runtime"]["preflight"]["errors"] == []
     assert payload["profile_overrides"]["source"].endswith(
         "SpargeAttn/inference_examples/hunyuan_infer.py"
     )
 
 
-def test_spargeattn_hunyuan_sparse_mode_fails_preflight_before_model_load(tmp_path):
-    payload = _run_infer_dry_run_preflight_failure(
+def test_spargeattn_hunyuan_sparse_mode_passes_preflight_with_owned_forward_patch(tmp_path):
+    payload = _run_infer_dry_run(
         tmp_path,
         "--model", "hunyuan",
         "--method", "spargeattn",
         "--method-config", "mode=topk",
     )
 
-    assert any(
-        "HunyuanVideo" in error and "attention_mask" in error
-        for error in payload["runtime"]["preflight"]["errors"]
-    )
+    assert payload["runtime"]["preflight"]["errors"] == []
 
 
 def test_upstream_profile_cpu_offload_keeps_user_override(tmp_path):
@@ -2429,8 +2439,8 @@ def test_upstream_profile_cpu_offload_keeps_user_override(tmp_path):
     assert payload["profile_overrides"]["cpu_offload"] is True
 
 
-def test_infer_dry_run_warns_when_spargeattn_mode_is_explicit_dense(tmp_path):
-    payload = _run_infer_dry_run(
+def test_infer_dry_run_rejects_spargeattn_mode_full(tmp_path):
+    returncode, payload = _run_infer_dry_run_unchecked(
         tmp_path,
         "--model",
         "wan1.3b",
@@ -2440,7 +2450,9 @@ def test_infer_dry_run_warns_when_spargeattn_mode_is_explicit_dense(tmp_path):
         "mode=full",
     )
 
-    assert any("mode=full runs dense attention" in item for item in payload["runtime"]["preflight"]["warnings"])
+    assert returncode == 1
+    assert payload["status"] == "failed"
+    assert "mode must be cdfthreshd, topk, or block_sparse" in payload["error"]
 
 
 def test_validate_accepts_spargeattn_topk_upstream_default_value():
@@ -2488,8 +2500,11 @@ def test_preflight_rejects_spargeattn_training_free_runtime():
                 "training_free_runtime": True,
             },
             "sta_kernels": {
-                "sparsevideo_fastvideo_triton": {"source_files": True},
                 "sparsevideo_h100": {"native_extension": False, "source": {"source_files": True}},
+                "sparsevideo_a100_block_sparse": {
+                    "native_extension": True,
+                    "source": {"source_files": True},
+                },
             },
             "svg_svoo_fused_kernels": {"backend_env": "auto", "native_extension": True, "candidate_dirs": []},
         },
@@ -2523,8 +2538,11 @@ def test_preflight_rejects_spargeattn_environment_runtime_without_owned_root():
                 },
             },
             "sta_kernels": {
-                "sparsevideo_fastvideo_triton": {"source_files": True},
                 "sparsevideo_h100": {"native_extension": False, "source": {"source_files": True}},
+                "sparsevideo_a100_block_sparse": {
+                    "native_extension": True,
+                    "source": {"source_files": True},
+                },
             },
             "svg_svoo_fused_kernels": {"backend_env": "auto", "native_extension": True, "candidate_dirs": []},
         },
@@ -2629,7 +2647,7 @@ def test_preflight_uses_spas_sage_load_failure_for_spargeattn():
     assert any("undefined symbol" in error for error in preflight["errors"])
 
 
-def test_preflight_rejects_hunyuan_spargeattn_sparse_attention_mask_gap():
+def test_preflight_rejects_hunyuan_spargeattn_without_owned_forward_patch():
     infer = _load_infer_module()
     runtime = {
         "torch": {"cuda_available": True},
@@ -2658,9 +2676,45 @@ def test_preflight_rejects_hunyuan_spargeattn_sparse_attention_mask_gap():
     )
 
     assert any(
-        "HunyuanVideo" in error and "attention_mask" in error
+        "HunyuanVideo" in error and "Hunyuan forward patch" in error
         for error in preflight["errors"]
     )
+
+
+def test_preflight_allows_hunyuan_spargeattn_with_owned_forward_patch():
+    infer = _load_infer_module()
+    runtime = {
+        "torch": {"cuda_available": True},
+        "optional_kernels": {
+            "spas_sage_attn": {
+                "load_checked": True,
+                "imported": True,
+                "spas_sage2_attn_meansim_cuda": True,
+                "spas_sage2_attn_meansim_topk_cuda": True,
+                "sparsevideo_runtime": {
+                    "package": True,
+                    "qattn_extension": True,
+                    "fused_extension": True,
+                    "hunyuan_forward_patch": {"source_files": True},
+                },
+            },
+            "svg_svoo_fused_kernels": {
+                "backend_env": "auto",
+                "native_extension": True,
+                "candidate_dirs": [],
+            },
+        },
+    }
+
+    preflight = infer.preflight_runtime(
+        "spargeattn",
+        {"mode": "topk", "value": 0.5},
+        "cuda",
+        runtime,
+        model_family="hunyuan_video",
+    )
+
+    assert preflight == {"errors": [], "warnings": []}
 
 
 def test_preflight_rejects_spargeattn_invalid_env_root_even_when_owned_runtime_ready():
@@ -2746,7 +2800,7 @@ def test_preflight_uses_spas_sage_load_failure_for_radial_sage_path():
 
     preflight = infer.preflight_runtime(
         "radial",
-        {"use_sage_attention": True, "dense_timesteps": 0, "dense_layers": 0},
+        {"use_sage_attention": True, "dense_warmup_step_ratio": 0.0, "dense_warmup_layer_ratio": 0.0},
         "cuda",
         runtime,
     )
@@ -2787,7 +2841,7 @@ def test_preflight_uses_sageattention_load_failure_for_radial_dense_warmup():
 
     preflight = infer.preflight_runtime(
         "radial",
-        {"use_sage_attention": True, "dense_timesteps": 12, "dense_layers": 1},
+        {"use_sage_attention": True, "dense_warmup_step_ratio": 0.1, "dense_warmup_layer_ratio": 0.03},
         "cuda",
         runtime,
     )
@@ -2816,7 +2870,7 @@ def test_preflight_requires_radial_sage_load_checked_runtime():
 
     preflight = infer.preflight_runtime(
         "radial",
-        {"use_sage_attention": True, "dense_timesteps": 0, "dense_layers": 0},
+        {"use_sage_attention": True, "dense_warmup_step_ratio": 0.0, "dense_warmup_layer_ratio": 0.0},
         "cuda",
         runtime,
     )
@@ -2855,7 +2909,7 @@ def test_preflight_requires_radial_sageattention_load_checked_runtime():
 
     preflight = infer.preflight_runtime(
         "radial",
-        {"use_sage_attention": True, "dense_timesteps": 12, "dense_layers": 0},
+        {"use_sage_attention": True, "dense_warmup_step_ratio": 0.1, "dense_warmup_layer_ratio": 0.0},
         "cuda",
         runtime,
     )
@@ -3224,7 +3278,7 @@ def test_preflight_blocks_radial_sage_dense_warmup_until_owned_sageattention():
 
     preflight = infer.preflight_runtime(
         "radial",
-        {"use_sage_attention": True, "dense_timesteps": 12, "dense_layers": 0},
+        {"use_sage_attention": True, "dense_warmup_step_ratio": 0.1, "dense_warmup_layer_ratio": 0.0},
         "cuda",
         runtime,
     )
@@ -3273,7 +3327,7 @@ def test_preflight_accepts_radial_sage_dense_warmup_with_owned_sageattention():
 
     preflight = infer.preflight_runtime(
         "radial",
-        {"use_sage_attention": True, "dense_timesteps": 12, "dense_layers": 0},
+        {"use_sage_attention": True, "dense_warmup_step_ratio": 0.1, "dense_warmup_layer_ratio": 0.0},
         "cuda",
         runtime,
     )
@@ -3310,7 +3364,7 @@ def test_preflight_rejects_radial_sageattention_invalid_env_root_even_when_owned
 
     preflight = infer.preflight_runtime(
         "radial",
-        {"use_sage_attention": True, "dense_timesteps": 12, "dense_layers": 0},
+        {"use_sage_attention": True, "dense_warmup_step_ratio": 0.1, "dense_warmup_layer_ratio": 0.0},
         "cuda",
         runtime,
     )
@@ -3337,7 +3391,7 @@ def test_infer_dry_run_warns_for_sta_generalized_wan_shape(tmp_path):
     warnings = payload["runtime"]["preflight"]["warnings"]
 
     assert cfg["tile_size"] == [6, 8, 8]
-    assert cfg["window_size"] == [3, 6, 10]
+    assert cfg["window_size"] == [4, 6, 10]
     assert cfg["has_text"] is False
     assert cfg["STA_mode"] == "STA_inference"
     assert cfg["mask_strategy_file_path"].endswith("mask_strategy_wan21_t2v_1_3b.json")
@@ -3491,7 +3545,7 @@ def test_preflight_reports_required_flashomni_kernel_missing():
     assert any("flashomni implementation=upstream" in error for error in preflight["errors"])
 
 
-def test_preflight_flashomni_is_full_does_not_require_sparse_info():
+def test_preflight_flashomni_explicit_requires_sparse_info_without_dense_switch():
     infer = _load_infer_module()
     runtime = {
         "torch": {"cuda_available": True},
@@ -3525,13 +3579,12 @@ def test_preflight_flashomni_is_full_does_not_require_sparse_info():
 
     preflight = infer.preflight_runtime(
         "flashomni",
-        {"implementation": "upstream", "sparse_pattern": "explicit", "is_full": True},
+        {"implementation": "upstream", "sparse_pattern": "explicit"},
         "cuda",
         runtime,
     )
 
-    assert not any("sparse_pattern=explicit" in error for error in preflight["errors"])
-    assert any("is_full=true disables sparsity" in warning for warning in preflight["warnings"])
+    assert any("sparse_pattern=explicit" in error for error in preflight["errors"])
 
 
 def test_preflight_adacluster_uses_owned_triton_not_flashinfer():
@@ -3572,7 +3625,7 @@ def test_preflight_adacluster_uses_owned_triton_not_flashinfer():
     assert preflight == {"errors": [], "warnings": []}
 
 
-def test_preflight_requires_flash_attn_for_hunyuan_adacluster_dense_gates():
+def test_preflight_requires_flash_attn_for_hunyuan_adacluster_dense_warmup():
     infer = _load_infer_module()
     runtime = {
         "torch": {"cuda_available": True},
@@ -3601,10 +3654,10 @@ def test_preflight_requires_flash_attn_for_hunyuan_adacluster_dense_gates():
     }
 
     preflight = infer.preflight_runtime(
-        "adacluster", {}, "cuda", runtime, model_family="hunyuan_video",
+        "adacluster", {"dense_warmup_step_ratio": 0.1}, "cuda", runtime, model_family="hunyuan_video",
     )
 
-    assert any("Hunyuan dense gates require FlashAttention" in error for error in preflight["errors"])
+    assert any("Hunyuan dense warmup requires FlashAttention" in error for error in preflight["errors"])
     assert any("flash_attn_func" in error for error in preflight["errors"])
 
 
@@ -3731,9 +3784,9 @@ def test_preflight_requires_flash_attn_varlen_for_draft_dense_gates():
         },
     }
 
-    preflight = infer.preflight_runtime("draft", {}, "cuda", runtime, strict_kernels=True)
+    preflight = infer.preflight_runtime("draft", {"dense_warmup_step_ratio": 0.1}, "cuda", runtime, strict_kernels=True)
 
-    assert any("draft dense gates require FlashAttention varlen" in error for error in preflight["errors"])
+    assert any("draft dense warmup requires FlashAttention varlen" in error for error in preflight["errors"])
     assert any("flash_attn_varlen_func" in error for error in preflight["errors"])
 
 
@@ -3980,7 +4033,14 @@ def test_preflight_prefers_owned_flashomni_runtime_over_environment():
 
     preflight = infer.preflight_runtime(
         "flashomni",
-        {"implementation": "upstream", "sparse_pattern": "explicit", "is_full": True},
+        {
+            "implementation": "upstream",
+            "sparse_pattern": "explicit",
+            "sparse_info": "q",
+            "sparse_kv_info": "kv",
+            "sparse_info_indptr": "q_ptr",
+            "sparse_kv_info_indptr": "kv_ptr",
+        },
         "cuda",
         runtime,
         strict_kernels=True,
@@ -4015,7 +4075,7 @@ def test_preflight_requires_flashomni_load_checked_runtime():
 
     preflight = infer.preflight_runtime(
         "flashomni",
-        {"implementation": "upstream", "sparse_pattern": "explicit", "is_full": True},
+        {"implementation": "upstream", "sparse_pattern": "global_random"},
         "cuda",
         runtime,
         strict_kernels=True,
@@ -4053,7 +4113,7 @@ def test_preflight_uses_flashomni_load_failure_for_upstream_runtime():
 
     preflight = infer.preflight_runtime(
         "flashomni",
-        {"implementation": "upstream", "sparse_pattern": "explicit", "is_full": True},
+        {"implementation": "upstream", "sparse_pattern": "global_random"},
         "cuda",
         runtime,
         strict_kernels=True,
@@ -4097,7 +4157,7 @@ def test_preflight_requires_flashomni_loaded_upstream_apis():
 
     preflight = infer.preflight_runtime(
         "flashomni",
-        {"implementation": "upstream", "sparse_pattern": "explicit", "is_full": True},
+        {"implementation": "upstream", "sparse_pattern": "global_random"},
         "cuda",
         runtime,
         strict_kernels=True,
@@ -4128,7 +4188,7 @@ def test_preflight_rejects_flashomni_invalid_env_root_even_when_owned_runtime_re
 
     preflight = infer.preflight_runtime(
         "flashomni",
-        {"implementation": "upstream", "sparse_pattern": "explicit", "is_full": True},
+        {"implementation": "upstream", "sparse_pattern": "global_random"},
         "cuda",
         runtime,
         strict_kernels=True,
@@ -4163,7 +4223,7 @@ def test_preflight_rejects_flashomni_environment_runtime_without_owned_root():
 
     preflight = infer.preflight_runtime(
         "flashomni",
-        {"implementation": "upstream", "sparse_pattern": "explicit", "is_full": True},
+        {"implementation": "upstream", "sparse_pattern": "global_random"},
         "cuda",
         runtime,
         strict_kernels=True,
@@ -4185,8 +4245,7 @@ def test_validate_rejects_draft_dense_switch():
 def test_validate_accepts_spargeattn_tuning_options_before_model_load(tmp_path):
     infer = _load_infer_module()
     cfg = {
-        "mode": "full",
-        "value": None,
+        "mode": "topk",
         "tune": True,
         "parallel_tune": True,
         "sim_rule": "rmse",
@@ -4225,8 +4284,6 @@ def test_validate_accepts_svoo_sparsity_measurement_options(tmp_path):
     infer.validate_method_config(
         "svoo",
         {
-            "implementation": "native",
-            "sparse_backend": "flashinfer",
             "measure_attention_sparsity": True,
             "sparsity_output_file": str(tmp_path / "attention_sparsity.txt"),
             "sparsity_batch_size": 4,
@@ -4237,19 +4294,21 @@ def test_validate_accepts_svoo_sparsity_measurement_options(tmp_path):
     )
 
 
-def test_validate_accepts_svoo_global_constraint_options():
-    infer = _load_infer_module()
+def test_infer_rejects_removed_svoo_public_options():
+    import sparsevideo
 
-    infer.validate_method_config(
-        "svoo",
-        {
-            "implementation": "native",
-            "sparse_backend": "flashinfer",
-            "use_global_constraints": True,
-            "lambda_schedule": "cosine",
-            "diverse_top_p_k": 0.1,
-        },
-    )
+    for key, value in (
+        ("use_global_constraints", True),
+        ("lambda_schedule", "cosine"),
+        ("diverse_top_p_k", 0.1),
+        ("use_fused_rope", False),
+        ("context_length", 256),
+        ("prompt_length", 128),
+        ("implementation", "native"),
+        ("sparse_backend", "flashinfer"),
+    ):
+        with pytest.raises(ValueError, match=key):
+            sparsevideo.normalize_method_config("svoo", {key: value})
 
 
 def test_infer_dry_run_reports_preflight_failure_as_json(tmp_path):
@@ -4295,8 +4354,6 @@ def test_validate_rejects_svoo_missing_dynamic_sparsity_csv(tmp_path):
         infer.validate_method_config(
             "svoo",
             {
-                "implementation": "native",
-                "sparse_backend": "flashinfer",
                 "use_dynamic_min_kc_ratio": True,
                 "sparsity_csv_path": str(tmp_path / "missing.csv"),
             },
@@ -4310,8 +4367,6 @@ def test_validate_rejects_svoo_training_free_dynamic_sparsity_csv():
         infer.validate_method_config(
             "svoo",
             {
-                "implementation": "native",
-                "sparse_backend": "flashinfer",
                 "use_dynamic_min_kc_ratio": True,
                 "sparsity_csv_path": "training_free/SVOO/sparsity_profiles/sparsity_wan_1.3B_t2v.csv",
             },
@@ -4322,8 +4377,6 @@ def test_validate_resolves_svoo_dynamic_sparsity_csv_path():
     infer = _load_infer_module()
 
     config = {
-        "implementation": "native",
-        "sparse_backend": "flashinfer",
         "kmeans_iter_init": 2,
         "kmeans_iter_step": 2,
         "use_dynamic_min_kc_ratio": True,
@@ -4415,125 +4468,6 @@ def test_svoo_warmup_status_fails_strict_on_kernel_error():
         )
 
 
-def test_sparse_runtime_dispatch_accepts_observed_sparse_calls():
-    infer = _load_infer_module()
-
-    message = infer.validate_sparse_runtime_dispatch(
-        "svoo",
-        {},
-        {
-            "method_runtime": {
-                "total_calls": 8,
-                "dispatch_counts": {"dense": 2, "sparse": 6},
-                "backend_counts": {"svoo_flashinfer": 6, "torch_sdpa": 2},
-            },
-        },
-        strict_kernels=True,
-    )
-
-    assert message is None
-
-
-def test_sparse_runtime_dispatch_fails_strict_without_backend_evidence():
-    infer = _load_infer_module()
-
-    with pytest.raises(RuntimeError, match="expected sparse backend"):
-        infer.validate_sparse_runtime_dispatch(
-            "svoo",
-            {},
-            {"method_runtime": {"total_calls": 8, "dispatch_counts": {"sparse": 8}}},
-            strict_kernels=True,
-        )
-
-
-def test_sparse_runtime_dispatch_fails_strict_when_no_sparse_calls():
-    infer = _load_infer_module()
-
-    with pytest.raises(RuntimeError, match="did not dispatch sparse attention"):
-        infer.validate_sparse_runtime_dispatch(
-            "svg2",
-            {},
-            {"method_runtime": {"total_calls": 4, "dispatch_counts": {"dense": 4}}},
-            strict_kernels=True,
-        )
-
-
-def test_sparse_runtime_dispatch_accepts_sta_searching_calls():
-    infer = _load_infer_module()
-
-    message = infer.validate_sparse_runtime_dispatch(
-        "sta",
-        {"STA_mode": "STA_searching"},
-        {"method_runtime": {"total_calls": 4, "dispatch_counts": {"search": 4}}},
-        strict_kernels=True,
-    )
-
-    assert message is None
-
-
-def test_sparse_runtime_dispatch_warns_when_debug_fallbacks_allowed():
-    infer = _load_infer_module()
-
-    message = infer.validate_sparse_runtime_dispatch(
-        "draft",
-        {},
-        {"method_runtime": {"total_calls": 4, "dispatch_counts": {"dense": 4}}},
-        strict_kernels=False,
-    )
-
-    assert "draft did not dispatch sparse attention" in message
-
-
-def test_sparse_runtime_dispatch_fails_strict_on_debug_fallback_backend():
-    infer = _load_infer_module()
-
-    with pytest.raises(RuntimeError, match="debug fallback backend"):
-        infer.validate_sparse_runtime_dispatch(
-            "draft",
-            {},
-            {
-                "method_runtime": {
-                    "total_calls": 4,
-                    "dispatch_counts": {"sparse": 4},
-                    "backend_counts": {"triton_debug_fallback": 4},
-                },
-            },
-            strict_kernels=True,
-        )
-
-
-def test_sparse_runtime_dispatch_warns_on_debug_fallback_backend_when_allowed():
-    infer = _load_infer_module()
-
-    message = infer.validate_sparse_runtime_dispatch(
-        "flashomni",
-        {},
-        {
-            "method_runtime": {
-                "total_calls": 4,
-                "dispatch_counts": {"sparse": 4},
-                "backend_counts": {"flex_debug_fallback": 4},
-            },
-        },
-        strict_kernels=False,
-    )
-
-    assert "debug fallback backend" in message
-
-
-def test_sparse_runtime_dispatch_skips_explicit_dense_configurations():
-    infer = _load_infer_module()
-    summary = {"method_runtime": {"total_calls": 4, "dispatch_counts": {"dense": 4}}}
-
-    assert infer.validate_sparse_runtime_dispatch("dense", {}, summary, strict_kernels=True) is None
-    assert infer.validate_sparse_runtime_dispatch(
-        "spargeattn", {"mode": "full"}, summary, strict_kernels=True,
-    ) is None
-    assert infer.validate_sparse_runtime_dispatch(
-        "flashomni", {"is_full": True}, summary, strict_kernels=True,
-    ) is None
-
-
 def test_run_fails_svoo_strict_when_warmup_is_disabled(monkeypatch, tmp_path):
     infer = _load_infer_module()
     import sparsevideo
@@ -4575,24 +4509,19 @@ def test_run_fails_svoo_strict_when_warmup_is_disabled(monkeypatch, tmp_path):
             "--device",
             "cpu",
             "--method-config",
-            "sparse_backend=triton",
-            "--method-config",
             "use_dynamic_min_kc_ratio=false",
             "--metrics-file",
             str(tmp_path / "metrics.jsonl"),
         ]
     )
 
-    assert infer.run(args) == 1
+    with pytest.raises(RuntimeError, match="warmup is disabled"):
+        infer.run(args)
     assert restored["value"] is True
-    payload = json.loads((tmp_path / "metrics.jsonl").read_text(encoding="utf-8"))
-    assert payload["status"] == "failed"
-    assert payload["failed_stage"] == "svoo_kernel_warmup"
-    assert payload["svoo_kernel_warmup"]["reason"] == "disabled"
-    assert "warmup is disabled" in payload["error"]
+    assert not (tmp_path / "metrics.jsonl").exists()
 
 
-def test_run_fails_strict_when_sparse_method_dispatches_only_dense(monkeypatch, tmp_path):
+def test_run_does_not_post_validate_sparse_dispatch(monkeypatch, tmp_path):
     infer = _load_infer_module()
     import sparsevideo
     import sparsevideo._runtime as sparsevideo_runtime
@@ -4638,19 +4567,18 @@ def test_run_fails_strict_when_sparse_method_dispatches_only_dense(monkeypatch, 
             "svg1",
             "--device",
             "cpu",
+            "--skip-decode",
             "--metrics-file",
             str(tmp_path / "metrics.jsonl"),
         ]
     )
 
-    assert infer.run(args) == 1
+    assert infer.run(args) == 0
     assert restored["value"] is True
     payload = json.loads((tmp_path / "metrics.jsonl").read_text(encoding="utf-8"))
-    assert payload["status"] == "failed"
-    assert payload["failed_stage"] == "validate_sparse_dispatch"
-    assert "did not dispatch sparse attention" in payload["error"]
+    assert payload["status"] == "ok"
+    assert "generation_checks" not in payload["runtime"]
     assert payload["sparse_attention_handle"]["method_runtime"]["dispatch_counts"] == {"dense": 3}
-    assert payload["sparse_attention_handle_after_restore"]["restored"] is True
 
 
 def test_preflight_requires_flashinfer_sparse_for_svoo():
@@ -4683,7 +4611,7 @@ def test_preflight_requires_flashinfer_sparse_for_svoo():
     }
 
     preflight = infer.preflight_runtime(
-        "svoo", {"implementation": "native", "sparse_backend": "flashinfer"}, "cuda", runtime,
+        "svoo", {}, "cuda", runtime,
     )
 
     assert any("flashinfer.sparse" in error for error in preflight["errors"])
@@ -4715,7 +4643,7 @@ def test_preflight_requires_svoo_owned_triton_sources():
     }
 
     preflight = infer.preflight_runtime(
-        "svoo", {"implementation": "native", "sparse_backend": "flashinfer"}, "cuda", runtime,
+        "svoo", {}, "cuda", runtime,
     )
 
     assert any("co-clustering source" in error for error in preflight["errors"])
@@ -4746,7 +4674,7 @@ def test_preflight_requires_svoo_owned_triton_permute_source():
     }
 
     preflight = infer.preflight_runtime(
-        "svoo", {"implementation": "native", "sparse_backend": "flashinfer"}, "cuda", runtime,
+        "svoo", {}, "cuda", runtime,
     )
 
     assert any("Triton permutation source" in error for error in preflight["errors"])
@@ -4774,7 +4702,7 @@ def test_preflight_requires_svoo_owned_triton_l2norm_source():
     }
 
     preflight = infer.preflight_runtime(
-        "svoo", {"implementation": "native", "sparse_backend": "flashinfer"}, "cuda", runtime,
+        "svoo", {}, "cuda", runtime,
     )
 
     assert any("Triton L2 normalization source" in error for error in preflight["errors"])
@@ -4805,84 +4733,17 @@ def test_preflight_requires_cuda_toolkit_for_svoo_flashinfer_jit():
     }
 
     preflight = infer.preflight_runtime(
-        "svoo", {"implementation": "native", "sparse_backend": "flashinfer"}, "cuda", runtime,
+        "svoo", {}, "cuda", runtime,
     )
 
     assert any("CUDA toolkit with nvcc" in error for error in preflight["errors"])
 
 
-def test_preflight_rejects_hunyuan_svoo_triton_backend_as_non_upstream():
-    infer = _load_infer_module()
-    runtime = {
-        "torch": {"cuda_available": True},
-        "optional_kernels": {
-            "flashinfer": {"package": True, "sparse_module": True, "cuda_toolkit": {"available": True}},
-            "svg_svoo_fused_kernels": {"backend_env": "auto", "native_extension": True, "candidate_dirs": []},
-            "svoo_kernels": {
-                "triton_package": True,
-                "triton_l2norm": {"source_files": True},
-                "triton_layernorm": {"source_files": True},
-                "triton_modulate": {"source_files": True},
-                "hunyuan_sparse_forward_patch": {"source_files": True},
-                "co_cluster": {"source_files": True},
-                "dynamic_map": {"source_files": True},
-                "triton_permute": {"source_files": True},
-                "triton_block_sparse_attn": {"source_files": True},
-                "flashinfer_block_sparse": {"source_files": True},
-                "sparsity_counts": {"source_files": True},
-                "sparsity_profiler": {"source_files": True},
-            },
-        },
-    }
+def test_svoo_rejects_sparse_backend_public_option():
+    import sparsevideo
 
-    preflight = infer.preflight_runtime(
-        "svoo",
-        {"implementation": "native", "sparse_backend": "triton"},
-        "cuda",
-        runtime,
-        model_family="hunyuan_video",
-    )
-
-    assert any("not Hunyuan SVOO parity" in error for error in preflight["errors"])
-
-
-def test_preflight_requires_svoo_triton_kmeans_when_svoo_disabled():
-    infer = _load_infer_module()
-    runtime = {
-        "torch": {"cuda_available": True},
-        "optional_kernels": {
-            "flashinfer": {"package": True, "sparse_module": True, "cuda_toolkit": {"available": True}},
-            "svg_svoo_fused_kernels": {"backend_env": "auto", "native_extension": True, "candidate_dirs": []},
-            "svoo_kernels": {
-                "triton_package": True,
-                "triton_l2norm": {"source_files": True},
-                "triton_layernorm": {"source_files": True},
-                "triton_modulate": {"source_files": True},
-                "wan_fast_block_patch": {"source_files": True},
-                "triton_kmeans": {"source_files": False},
-                "co_cluster": {"source_files": True},
-                "dynamic_map": {"source_files": True},
-                "triton_permute": {"source_files": True},
-                "triton_block_sparse_attn": {"source_files": True},
-                "flashinfer_block_sparse": {"source_files": True},
-                "sparsity_counts": {"source_files": True},
-                "sparsity_profiler": {"source_files": True},
-            },
-        },
-    }
-
-    preflight = infer.preflight_runtime(
-        "svoo",
-        {
-            "implementation": "native",
-            "sparse_backend": "triton",
-            "use_svoo": False,
-        },
-        "cuda",
-        runtime,
-    )
-
-    assert any("Triton k-means source" in error for error in preflight["errors"])
+    with pytest.raises(ValueError, match="sparse_backend"):
+        sparsevideo.normalize_method_config("svoo", {"sparse_backend": "triton"})
 
 
 def test_preflight_requires_svoo_runtime_load_check_when_sources_exist():
@@ -4910,7 +4771,7 @@ def test_preflight_requires_svoo_runtime_load_check_when_sources_exist():
 
     preflight = infer.preflight_runtime(
         "svoo",
-        {"implementation": "native", "sparse_backend": "flashinfer"},
+        {},
         "cuda",
         runtime,
     )
@@ -4959,7 +4820,7 @@ def test_preflight_requires_svoo_loaded_runtime_apis():
 
     preflight = infer.preflight_runtime(
         "svoo",
-        {"implementation": "native", "sparse_backend": "flashinfer"},
+        {},
         "cuda",
         runtime,
     )
@@ -4979,7 +4840,6 @@ def test_preflight_requires_svg2_owned_triton_sources():
                 "triton_package": True,
                 "triton_kmeans": {"source_files": False},
                 "dynamic_map": {"source_files": True},
-                "triton_block_sparse_attn": {"source_files": True},
                 "flashinfer_block_sparse": {"source_files": True},
             },
         },
@@ -5001,7 +4861,6 @@ def test_preflight_requires_svg2_runtime_load_check_when_sources_exist():
                 "triton_package": True,
                 "triton_kmeans": {"source_files": True},
                 "dynamic_map": {"source_files": True},
-                "triton_block_sparse_attn": {"source_files": True},
                 "triton_permute": {"source_files": True},
                 "flashinfer_block_sparse": {"source_files": True},
             },
@@ -5025,7 +4884,6 @@ def test_preflight_requires_svg2_loaded_runtime_apis():
                 "load_checked": True,
                 "triton_kmeans": {"source_files": True},
                 "dynamic_map": {"source_files": True},
-                "triton_block_sparse_attn": {"source_files": True},
                 "triton_permute": {"source_files": True},
                 "flashinfer_block_sparse": {"source_files": True},
                 "owned_triton_runtime": {
@@ -5037,7 +4895,6 @@ def test_preflight_requires_svg2_loaded_runtime_apis():
                     "centroid_update_triton": True,
                     "identify_dynamic_map": False,
                     "identify_dynamic_map_global": True,
-                    "block_sparse_attention": True,
                     "permute_tensor_by_labels_triton": True,
                     "apply_inverse_permutation_triton": True,
                     "variable_block_sparse_attn": True,
@@ -5084,7 +4941,7 @@ def test_strict_preflight_fails_svoo_missing_native_fused_kernel():
 
     preflight = infer.preflight_runtime(
         "svoo",
-        {"implementation": "native", "sparse_backend": "flashinfer"},
+        {},
         "cuda",
         runtime,
         strict_kernels=True,
@@ -5133,7 +4990,7 @@ def test_strict_preflight_reports_svoo_native_fused_import_failure():
 
     preflight = infer.preflight_runtime(
         "svoo",
-        {"implementation": "native", "sparse_backend": "flashinfer"},
+        {},
         "cuda",
         runtime,
         strict_kernels=True,
@@ -5186,7 +5043,7 @@ def test_strict_preflight_reports_svoo_training_free_native_root():
 
     preflight = infer.preflight_runtime(
         "svoo",
-        {"implementation": "native", "sparse_backend": "flashinfer"},
+        {},
         "cuda",
         runtime,
         strict_kernels=True,
@@ -5248,7 +5105,7 @@ def test_strict_preflight_fails_sta_h100_missing_owned_extension():
     assert preflight["warnings"] == []
 
 
-def test_preflight_reports_sta_triton_load_failure():
+def test_preflight_reports_sta_a100_block_sparse_load_failure():
     infer = _load_infer_module()
     runtime = {
         "torch": {"cuda_available": True, "cuda_devices": [{"capability": [8, 0]}]},
@@ -5257,14 +5114,15 @@ def test_preflight_reports_sta_triton_load_failure():
             "flashomni": {"package": True, "aot_config": True},
             "spas_sage_attn": {"package": True, "qattn_extension": True, "fused_extension": True},
             "sta_kernels": {
-                "sparsevideo_fastvideo_triton": {"source_files": True},
-                "triton_load_checked": True,
-                "triton_import_error_type": "ImportError",
-                "triton_import_error": "bad triton abi",
                 "sparsevideo_h100": {"native_extension": True, "source": {"source_files": True}},
-                "h100_native_load_checked": True,
-                "h100_native_extension_imported": True,
-                "h100_sta_fwd": True,
+                "sparsevideo_a100_block_sparse": {
+                    "native_extension": True,
+                    "source": {"source_files": True},
+                },
+                "a100_block_sparse_load_checked": True,
+                "a100_block_sparse_ready": False,
+                "a100_import_error_type": "ImportError",
+                "a100_import_error": "bad block sparse abi",
             },
             "svg_svoo_fused_kernels": {"backend_env": "auto", "native_extension": True, "candidate_dirs": []},
         },
@@ -5274,8 +5132,8 @@ def test_preflight_reports_sta_triton_load_failure():
         "sta", {"seq_shape": "18x48x80"}, "cuda", runtime, strict_kernels=True,
     )
 
-    assert any("Triton fallback failed to import during preflight" in error for error in preflight["errors"])
-    assert any("bad triton abi" in error for error in preflight["errors"])
+    assert any("A100 block-sparse CUDA backend failed to load during preflight" in error for error in preflight["errors"])
+    assert any("bad block sparse abi" in error for error in preflight["errors"])
 
 
 def test_preflight_reports_sta_h100_load_failure():
@@ -5299,6 +5157,10 @@ def test_preflight_reports_sta_h100_load_failure():
                 "h100_sta_fwd": False,
                 "h100_import_error_type": "ImportError",
                 "h100_import_error": "undefined symbol: sta_fwd",
+                "sparsevideo_a100_block_sparse": {
+                    "native_extension": True,
+                    "source": {"source_files": True},
+                },
             },
             "svg_svoo_fused_kernels": {"backend_env": "auto", "native_extension": True, "candidate_dirs": []},
         },
@@ -5312,7 +5174,7 @@ def test_preflight_reports_sta_h100_load_failure():
     assert any("undefined symbol: sta_fwd" in error for error in preflight["errors"])
 
 
-def test_preflight_allows_fastvideo_sta_triton_fallback_on_a100():
+def test_preflight_allows_sta_a100_block_sparse_cuda_on_a100():
     infer = _load_infer_module()
     runtime = {
         "torch": {
@@ -5324,8 +5186,11 @@ def test_preflight_allows_fastvideo_sta_triton_fallback_on_a100():
             "flashomni": {"package": True, "aot_config": True},
             "spas_sage_attn": {"package": True, "qattn_extension": True, "fused_extension": True},
             "sta_kernels": {
-                "sparsevideo_fastvideo_triton": {"source_files": True},
                 "sparsevideo_h100": {"native_extension": True, "source": {"source_files": True}},
+                "sparsevideo_a100_block_sparse": {
+                    "native_extension": True,
+                    "source": {"source_files": True},
+                },
             },
             "svg_svoo_fused_kernels": {"backend_env": "auto", "native_extension": True, "candidate_dirs": []},
         },
@@ -5336,13 +5201,13 @@ def test_preflight_allows_fastvideo_sta_triton_fallback_on_a100():
     )
 
     assert preflight["errors"] == []
-    assert any("no Hopper GPU is visible" in warning for warning in preflight["warnings"])
+    assert preflight["warnings"] == []
 
     strict = infer.preflight_runtime(
         "sta", {"seq_shape": "18x48x80"}, "cuda", runtime, strict_kernels=True,
     )
     assert strict["errors"] == []
-    assert any("non-Hopper fallback path" in warning for warning in strict["warnings"])
+    assert strict["warnings"] == []
 
 
 def test_run_restores_sparse_attention_after_generation_failure(monkeypatch, tmp_path):
@@ -5376,19 +5241,10 @@ def test_run_restores_sparse_attention_after_generation_failure(monkeypatch, tmp
         ]
     )
 
-    assert infer.run(args) == 1
+    with pytest.raises(RuntimeError, match="generation failed"):
+        infer.run(args)
     assert restored["value"] is True
-    payload = json.loads((tmp_path / "metrics.jsonl").read_text(encoding="utf-8"))
-    assert payload["status"] == "failed"
-    assert payload["failed_stage"] == "generate"
-    assert payload["sparse_attention_handle"] == {
-        "type": "_Handle",
-        "summary_available": False,
-    }
-    assert payload["sparse_attention_handle_after_restore"] == {
-        "type": "_Handle",
-        "summary_available": False,
-    }
+    assert not (tmp_path / "metrics.jsonl").exists()
 
 
 def test_hunyuan_i2v_prompt_template_compat_overrides_missing_default_anchor():
@@ -5474,8 +5330,7 @@ def test_real_pipeline_inference_smoke(tmp_path):
         capture_output=True,
         text=True,
     )
-    assert f"output_file={output_file}" in result.stdout
-    assert f"metrics_file={metrics_file}" in result.stdout
+    assert result.stdout == f"{output_file}\n"
     assert "method_config" not in result.stdout
     assert metrics_file.exists()
     payload = json.loads(metrics_file.read_text(encoding="utf-8").strip().splitlines()[-1])

@@ -143,12 +143,17 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--vae-decoder-chunk-size", type=int, default=None)
     parser.add_argument("--output-dir", type=Path, default=REPO_ROOT / "result" / "inference")
     parser.add_argument("--output-file", type=Path, default=None)
-    parser.add_argument("--metrics-file", type=Path, default=REPO_ROOT / "result" / "inference" / "metrics.jsonl")
+    parser.add_argument(
+        "--metrics-file",
+        type=Path,
+        default=None,
+        help="Append JSON metrics payload to this file. Default: disabled.",
+    )
     parser.add_argument("--skip-existing", action="store_true")
     parser.add_argument(
         "--print-json",
         action="store_true",
-        help="Print the full metrics/config/runtime JSON to stdout. By default stdout is a concise summary.",
+        help="Print the full metrics/config/runtime JSON to stdout. By default successful video runs print only the saved video path.",
     )
     parser.add_argument(
         "--verbose-compile-logs",

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Iterator, List, Optional, Tuple
+from typing import Any, Dict, Iterator, List, Optional, Tuple
 
 
 @dataclass
@@ -13,6 +13,7 @@ class ModelInfo:
     unpatched_attention_paths: List[str] = field(default_factory=list)
     pipeline_notes: List[str] = field(default_factory=list)
     _self_attn_paths: List[Tuple[str, Any]] = field(default_factory=list)
+    _self_attn_layer_context: Dict[str, Tuple[int, int]] = field(default_factory=dict)
 
     @property
     def num_self_attn_layers(self) -> int:
@@ -26,6 +27,17 @@ class ModelInfo:
             if p == path:
                 return m
         raise KeyError(f"No attn module at path {path}")
+
+    def self_attn_layer_context(
+        self,
+        path: str,
+        fallback_layer_idx: int,
+        fallback_total_layers: int,
+    ) -> Tuple[int, int]:
+        return self._self_attn_layer_context.get(
+            path,
+            (fallback_layer_idx, fallback_total_layers),
+        )
 
 
 def discover_model(pipe) -> ModelInfo:

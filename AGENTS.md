@@ -126,8 +126,7 @@ Always keep `dense` as the baseline and fallback.
 
 ## Current Audit State
 
-Before reworking a method, run `scripts/audit_parity.py --format markdown` and read `PARITY_STATUS.md`. As of
-2026-05-20, the current A100 audit is complete for `dense`, `svg1`, `svg2`, `spargeattn`, `radial`, `draft`,
+As of 2026-05-20, the current A100 audit is complete for `dense`, `svg1`, `svg2`, `spargeattn`, `radial`, `draft`,
 `adacluster`, `svoo`, `flashomni`, and `sta` on A100. Do not repeatedly rewrite passed methods without new evidence.
 
 `flashomni` now has owned C++/CUDA runtime, attention adapter, GEMM-Q/GEMM-O path, paper/benchmark score-CDF policy,

@@ -43,11 +43,10 @@ as local asset paths.
 
 ## Common Dense Warmup
 
-All sparse methods accept `dense_warmup_step_ratio` and
-`dense_warmup_layer_ratio`. They are clearer ratio-only controls for keeping the
-first fraction of denoising steps or layers on dense attention. Defaults are
-0.1 and 0.03 for every sparse method and model context; set either value to 0
-to disable that common gate.
+All sparse methods use the same common dense warmup gates:
+`dense_warmup_step_ratio` for early denoising steps and
+`dense_warmup_layer_ratio` for earliest transformer layers. Method-local
+dense step/layer/timestep gates are not part of dispatch.
 
 Current status:
 
@@ -60,7 +59,7 @@ svg1        Adapter port. Uses upstream names/defaults; mask construction is
             layout plus Hunyuan varlen FlashAttention. The sparse path requires
             PyTorch FlexAttention and preflights flex_attention, BlockMask, and
             torch.compile before quality/speed runs; Hunyuan also preflights
-            flash_attn_varlen_func for upstream dense gates. Strict preflight
+            flash_attn_varlen_func when dense warmup is enabled. Strict preflight
             also imports the SparseVideo-owned SVG1 method and Triton placement
             modules, checking profiling, block-mask, head placement/restore,
             and placement-kernel APIs before quality/speed runs.
@@ -74,12 +73,12 @@ svg2        Adapter port. Uses upstream k-means/top-p names/defaults; executes
             needed by the sparse path before quality/speed runs.
             Hunyuan follows upstream SAP text handling by clustering video
             tokens only, then appending prompt and unused-prompt clusters to
-            the dynamic map. Hunyuan dense gates use the upstream FlashInfer
+            the dynamic map. Hunyuan dense warmup uses the upstream FlashInfer
             two-segment varlen path, not FlashAttention varlen.
 spargeattn  Kernel wrapper. Defaults to upstream's recommended plug-and-play
             spas_sage2_attn_meansim_topk_cuda path with topk=0.5. Wan2.1 and
-            Hunyuan --profile upstream follow the upstream example scripts and
-            set mode=full for their dense SpargeAttn baseline. Preserves
+            Hunyuan dense baselines use method=dense; SpargeAttn no longer
+            exposes a method-local full/dense mode. Preserves sparse
             upstream mode/value example-script API and direct kernel names:
             topk, cdfthreshd, simthreshd1, pvthreshd,
             attention_sink, smooth_k, scale, tensor_layout, output_dtype, and
@@ -94,9 +93,8 @@ spargeattn  Kernel wrapper. Defaults to upstream's recommended plug-and-play
             state with SparseVideo model paths. Defaults follow the upstream
             SparseAttentionMeansim/video wrapper values l1=0.07, pv_l1=0.08,
             tune_pv=true. Sparse modes reject unsupported runtime conditions
-            instead of silently returning dense attention; mode=full is the
-            explicit dense SpargeAttn baseline. Sparse/tuned modes preflight
-            loadability and required spas_sage_attn APIs from the owned runtime
+            instead of silently returning dense attention. Sparse/tuned modes
+            preflight loadability and required spas_sage_attn APIs from the owned runtime
             before model load; extension/source presence alone is not accepted.
             Wan full mode follows the
             upstream dispatch path, while Hunyuan full mode follows upstream
@@ -104,11 +102,10 @@ spargeattn  Kernel wrapper. Defaults to upstream's recommended plug-and-play
             QK norm/RoPE instead of the SVG/SVOO fused norm/RoPE kernels,
             because the upstream SpargeAttn video wrappers only replace the
             attention call.
-radial      Adapter port. Uses upstream dense_layers/dense_timesteps/
-            decay_factor/block_size names and model-aware inference-shell
-            defaults. dense_timesteps keeps the upstream meaning: scheduler
-            timestep threshold (`timestep < dense_timesteps`), not a count of
-            first denoising steps. FlashInfer path uses the upstream shrinkMaskStrict BSR
+radial      Adapter port. Uses upstream decay_factor/block_size names and
+            model-aware inference-shell defaults. Dense warmup is controlled
+            only by the common dense_warmup_* ratios. FlashInfer path uses the
+            upstream shrinkMaskStrict BSR
             mask construction. FlexAttention requires the explicit local
             allow_flex_fallback debug override and is not a benchmark-equivalent
             kernel path. use_sage_attention routes the sparse stage through
@@ -135,35 +132,35 @@ sta         Adapter port with SparseVideo-owned FastVideo STA wrapper. CPU
             fallback is disabled for fair benchmarking. FastVideo H100/TK
             source is copied under src/sparsevideo/kernels/native/sta_h100;
             the local H100 extension is only expected to build/run on Hopper
-            targets. Non-Hopper runs use the SparseVideo-owned copy of
-            FastVideo's upstream Triton STA fallback.
-            Strict preflight imports the owned Triton fallback and checks the
-            H100 sta_fwd C++ op when the local extension is present.
+            targets. A100 runs use the SparseVideo-owned SM80 block-sparse
+            CUDA backend under src/sparsevideo/kernels/native/draft_block_sparse
+            with FastVideo's STA tile-window mask.
+            Strict preflight checks H100 sta_fwd on Hopper and the A100
+            block-sparse CUDA backend on Ampere.
             FastVideo native shapes include 18x48x80, 30x48x80, and 36x48x48;
             other 720p layouts are rejected instead of silently using the
             non-upstream generalized STA kernel.
 draft       Adapter port with upstream reorg/restore indices, head-global
-            percentile mask semantics, hardcoded dense gates, and model-aware
+            percentile mask semantics, common dense warmup gates, and model-aware
             sparsity_ratio defaults. Upstream layout names latent_h, latent_w,
             visual_len, text_len, and batch_size are exposed and checked when
             set. block_sparse_attention=False disables the sparse path upstream,
             so SparseVideo rejects it; use dense for the baseline. Upstream
-            dense gates use Draft's flash_attn_varlen_func path when available.
+            dense warmup uses Draft's flash_attn_varlen_func path when available.
             Upstream sparse layouts are narrow: Wan supports 21x32x48 and
             21x48x80 latent layouts; Hunyuan supports 33x48x80. Other layouts
             are parity gaps, not successful upstream-equivalent runs. Strict
-            preflight requires flash_attn_varlen_func for the upstream dense
-            gates instead of silently falling back to SDPA, and imports the
+            preflight requires flash_attn_varlen_func for dense warmup
+            instead of silently falling back to SDPA, and imports the
             owned MIT Block-Sparse-Attention runtime to check block_sparse_attn_func
             plus block_sparse_attn_cuda fwd/bwd ops before benchmark runs.
 adacluster  Adapter port. Uses upstream topk_num/q_kernel_num/kv_kernel_num
             names; current clustering runs through SparseVideo-owned Triton
-            k-means and block-sparse attention kernels. Hunyuan follows
-            upstream dense gates for the first eight steps and layers
-            <=17/34/38/39, plus the upstream topk_from_qkv_minmax sparse mask
-            policy. Those dense gates use the upstream FlashAttention function
-            instead of a Diffusers dispatch fallback, and Hunyuan preflight
-            requires flash_attn_func. Hunyuan reinitializes Q and K centroids
+            k-means and block-sparse attention kernels. Hunyuan follows the
+            upstream topk_from_qkv_minmax sparse mask policy; the old
+            method-local first-eight-step/layer dense gates are disabled so
+            dense dispatch stays controlled by the common dense warmup ratios.
+            Hunyuan reinitializes Q and K centroids
             on later sparse calls, matching the upstream processor. Wan follows upstream
             thresholded_kmeans_loop defaults and keeps the fixed cluster-count
             path available with the original parameter names. Strict preflight
@@ -214,12 +211,14 @@ svoo        SparseVideo-owned native/Triton path by default. The old
             local Triton kernels, copied local sparsity profiles, and optional
             installed FlashInfer for block-sparse execution.
             Hunyuan text/padding clusters follow upstream when prompt_length is
-            supplied, and Hunyuan dense gates use the upstream FlashInfer
+            supplied, and Hunyuan dense warmup uses the upstream FlashInfer
             two-segment varlen path; scripts/infer.py computes prompt_length
             from the Hunyuan tokenizer.
             Wan follows upstream's split fast path: Triton QK norm is enabled,
             but RoPE stays on the stock PyTorch path rather than the Hunyuan
             native fused RoPE path.
+            Clustering reuse starts as soon as a matching clustering result is
+            cached; start_reuse_step is no longer exposed.
             SVOO_ENABLE_MEM_SAVE/enable_mem_save follows upstream's default
             early release of large sparse-attention intermediates. Measurement
             and global constraints are ported with owned SparseVideo code/kernels.

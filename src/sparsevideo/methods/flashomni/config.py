@@ -1,9 +1,10 @@
-from .._config import copy_config_defaults, load_method_config_yaml
+from .._config import apply_model_defaults, copy_config_defaults, load_method_config_yaml
 
 
 _YAML_CONFIG = load_method_config_yaml(__file__)
 
 CONFIG_DEFAULTS = _YAML_CONFIG["defaults"]
+MODEL_DEFAULTS = _YAML_CONFIG["model_defaults"]
 CONFIG_ALIASES = _YAML_CONFIG["aliases"]
 
 SPARSE_INFO_KEYS = (
@@ -15,4 +16,6 @@ SPARSE_INFO_KEYS = (
 
 
 def default_config(**context):
-    return copy_config_defaults(CONFIG_DEFAULTS)
+    config = copy_config_defaults(CONFIG_DEFAULTS)
+    apply_model_defaults(config, MODEL_DEFAULTS, context)
+    return config

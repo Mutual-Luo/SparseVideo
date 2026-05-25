@@ -364,57 +364,19 @@ def test_svoo_measure_attention_sparsity_logs_with_upstream_format(monkeypatch, 
     assert "Head  1: Sparsity=" in text
 
 
-def test_svoo_global_constraint_dynamic_map_is_owned_and_configurable():
+def test_svoo_rejects_removed_global_constraint_options():
     from types import SimpleNamespace
 
-    from sparsevideo.kernels.dynamic_map import compute_lambda_schedule, identify_dynamic_map_global
     from sparsevideo.methods.svoo import SVOOMethod
-    from sparsevideo.methods.svoo.ops import _svoo_frame_layout
 
-    method = SVOOMethod(
-        config={
-            "use_global_constraints": True,
-            "lambda_schedule": "cosine",
-            "diverse_top_p_k": 0.1,
-        },
-        model_info=SimpleNamespace(model_type="wan", transformers=[object()]),
-    )
-    assert method.config["use_global_constraints"] is True
-    assert method.config["lambda_schedule"] == "cosine"
-    assert method.config["diverse_top_p_k"] == 0.1
-    assert compute_lambda_schedule(500, 2, 10, "constant") == 0.5
-
-    torch.manual_seed(0)
-    q_centroids = torch.randn(1, 2, 2, 4)
-    k_centroids = torch.randn(1, 2, 3, 4)
-    q_sizes = torch.tensor([[[3, 3], [2, 4]]])
-    k_sizes = torch.tensor([[[2, 2, 2], [1, 3, 2]]])
-    key_tokens = torch.randn(1, 2, 6, 4)
-    k_labels = torch.tensor([[0, 1, 2, 0, 1, 2], [0, 1, 1, 1, 2, 2]])
-
-    dynamic_map = identify_dynamic_map_global(
-        q_centroids,
-        k_centroids,
-        q_sizes,
-        k_sizes,
-        0.9,
-        0.34,
-        key_tokens=key_tokens,
-        k_labels=k_labels,
-        num_frame=2,
-        frame_size=3,
-        timestep=500,
-        layer_idx=2,
-        num_layers=10,
-        lambda_schedule="cosine",
-        diverse_top_p_k=0.1,
-    )
-
-    assert dynamic_map.shape == (1, 2, 2, 3)
-    assert dynamic_map.dtype == torch.bool
-    assert dynamic_map.any(dim=-1).all()
-    assert _svoo_frame_layout(21 * 45 * 80, "wan") == (21, 45 * 80)
-    assert _svoo_frame_layout(33 * 45 * 80, "hunyuan_video") == (33, 45 * 80)
+    model_info = SimpleNamespace(model_type="wan", transformers=[object()])
+    for key, value in (
+        ("use_global_constraints", True),
+        ("lambda_schedule", "cosine"),
+        ("diverse_top_p_k", 0.1),
+    ):
+        with pytest.raises(ValueError, match=key):
+            SVOOMethod(config={key: value}, model_info=model_info)
 
 
 def test_svoo_flashinfer_env_names_follow_upstream(monkeypatch):
@@ -460,7 +422,6 @@ def test_svoo_dense_warmup_step_ratio_routes_to_dense(monkeypatch):
         config={
             "dense_warmup_step_ratio": 0.5,
             "dense_warmup_layer_ratio": 0.0,
-            "num_inference_steps": 50,
             "use_dynamic_min_kc_ratio": False,
         },
         model_info=SimpleNamespace(model_type="wan", model_key="wan21-t2v-1.3b", transformers=[object()]),
@@ -469,7 +430,7 @@ def test_svoo_dense_warmup_step_ratio_routes_to_dense(monkeypatch):
         layer_idx=3,
         total_layers=8,
         original_processor=None,
-        step_tracker=SimpleNamespace(step=20, timestep=926),
+        step_tracker=SimpleNamespace(step=20, timestep=926, num_inference_steps=lambda: 50),
     )
     query = torch.randn(1, 4, 2, 4)
 
@@ -478,7 +439,7 @@ def test_svoo_dense_warmup_step_ratio_routes_to_dense(monkeypatch):
     assert calls == {"dense": 1, "sparse": 0}
 
 
-def test_svoo_wan_processor_matches_upstream_qk_norm_rope_split():
+def test_svoo_wan_processor_enables_qk_norm_without_method_rope_option():
     from types import SimpleNamespace
 
     from sparsevideo.methods.svoo import SVOOMethod
@@ -496,7 +457,7 @@ def test_svoo_wan_processor_matches_upstream_qk_norm_rope_split():
     )
 
     assert processor.use_fused_qk_norm is True
-    assert processor.use_fused_rope is True
+    assert "use_fused_rope" not in method.config
 
 
 def test_svoo_dense_warmup_step_ratio_allows_sparse_after_boundary(monkeypatch):
@@ -512,7 +473,7 @@ def test_svoo_dense_warmup_step_ratio_allows_sparse_after_boundary(monkeypatch):
 
     def fake_svoo_attention(query, key, value, cfg, state, **kwargs):
         calls["sparse"] += 1
-        assert kwargs["scheduler_timestep"] == 925
+        assert kwargs["current_step"] == 26
         return torch.empty_like(query)
 
     monkeypatch.setattr(torch.Tensor, "is_cuda", property(lambda self: True))
@@ -527,7 +488,6 @@ def test_svoo_dense_warmup_step_ratio_allows_sparse_after_boundary(monkeypatch):
         config={
             "dense_warmup_step_ratio": 0.5,
             "dense_warmup_layer_ratio": 0.0,
-            "num_inference_steps": 50,
             "use_dynamic_min_kc_ratio": False,
         },
         model_info=SimpleNamespace(model_type="wan", model_key="wan21-t2v-1.3b", transformers=[object()]),
@@ -536,7 +496,7 @@ def test_svoo_dense_warmup_step_ratio_allows_sparse_after_boundary(monkeypatch):
         layer_idx=3,
         total_layers=8,
         original_processor=None,
-        step_tracker=SimpleNamespace(step=26, timestep=925),
+        step_tracker=SimpleNamespace(step=26, timestep=925, num_inference_steps=lambda: 50),
     )
     query = torch.randn(1, 4, 2, 4)
 
@@ -561,7 +521,6 @@ def test_svoo_dense_warmup_ratio_uses_first_step_count(monkeypatch):
 
     method = svoo_method.SVOOMethod(
         config={
-            "num_inference_steps": 50,
             "dense_warmup_step_ratio": 0.2,
             "dense_warmup_layer_ratio": 0.0,
             "use_dynamic_min_kc_ratio": False,
@@ -572,7 +531,7 @@ def test_svoo_dense_warmup_ratio_uses_first_step_count(monkeypatch):
         layer_idx=3,
         total_layers=8,
         original_processor=None,
-        step_tracker=SimpleNamespace(step=10, timestep=100),
+        step_tracker=SimpleNamespace(step=10, timestep=100, num_inference_steps=lambda: 50),
     )
     query = torch.randn(1, 4, 2, 4)
 
@@ -663,18 +622,6 @@ def test_svoo_hunyuan_flashinfer_varlen_uses_upstream_two_segment_mask(monkeypat
     assert calls["plan"]["num_qo_heads"] == 2
     assert calls["plan"]["num_kv_heads"] == 2
     assert out.shape == q.shape
-
-
-def test_svoo_rejects_hunyuan_triton_sparse_backend_as_non_upstream():
-    from types import SimpleNamespace
-
-    from sparsevideo.methods.svoo import SVOOMethod
-
-    with pytest.raises(ValueError, match="Hunyuan upstream path uses FlashInfer"):
-        SVOOMethod(
-            config={"sparse_backend": "triton"},
-            model_info=SimpleNamespace(model_type="hunyuan_video", transformers=[object()]),
-        )
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
@@ -910,7 +857,7 @@ def test_svoo_owned_triton_modulate_matches_pytorch_on_cuda():
 
 def test_svoo_sparse_path_uses_owned_triton_permutation(monkeypatch):
     from sparsevideo.methods.svoo import ops as svoo_ops
-    from sparsevideo.kernels import block_sparse_attn, co_cluster
+    from sparsevideo.kernels import co_cluster, flashinfer_block_sparse
 
     calls = {"permute": 0, "inverse": 0}
 
@@ -959,23 +906,23 @@ def test_svoo_sparse_path_uses_owned_triton_permutation(monkeypatch):
     monkeypatch.setattr(svoo_ops, "identify_dynamic_map", fake_identify_dynamic_map)
     monkeypatch.setattr(svoo_ops, "permute_tensor_by_labels_triton", fake_permute)
     monkeypatch.setattr(svoo_ops, "apply_inverse_permutation_triton", fake_inverse)
-    monkeypatch.setattr(block_sparse_attn, "block_sparse_attention", lambda q, k, v, q_sizes, k_sizes, dynamic_map, scale: q)
+    monkeypatch.setattr(flashinfer_block_sparse, "HAS_FLASHINFER", True)
+    monkeypatch.setattr(
+        flashinfer_block_sparse,
+        "variable_block_sparse_attn",
+        lambda q, k, v, dynamic_map, q_sizes, k_sizes: q,
+    )
 
     cfg = {
-        "implementation": "native",
-        "sparse_backend": "triton",
         "num_q_centroids": 2,
         "num_k_centroids": 2,
         "top_p_kmeans": 0.9,
         "min_kc_ratio": 0.0,
         "use_dynamic_min_kc_ratio": False,
         "sparsity_csv_path": "",
-        "start_reuse_step": None,
         "reuse_interval": 1,
         "kmeans_iter_init": 1,
         "kmeans_iter_step": 1,
-        "use_svoo": True,
-        "use_global_constraints": False,
     }
     state = {"centroids_init": False, "cached_clustering": None}
     query = torch.arange(1 * 4 * 2 * 3, dtype=torch.float32).reshape(1, 4, 2, 3)
@@ -993,6 +940,19 @@ def test_svoo_sparse_path_uses_owned_triton_permutation(monkeypatch):
 
     assert out.shape == query.shape
     assert calls == {"permute": 3, "inverse": 1}
+
+
+def test_svoo_reuse_starts_from_cached_clustering():
+    from sparsevideo.methods.svoo.ops import should_recluster
+
+    cache_key = ("shape", "cuda:0")
+    cached = {"cache_key": cache_key, "step": 6}
+
+    assert should_recluster(None, cache_key, current_step=6, reuse_interval=20)
+    assert should_recluster({"cache_key": ("other",), "step": 6}, cache_key, current_step=7, reuse_interval=20)
+    assert not should_recluster(cached, cache_key, current_step=7, reuse_interval=20)
+    assert not should_recluster(cached, cache_key, current_step=25, reuse_interval=20)
+    assert should_recluster(cached, cache_key, current_step=26, reuse_interval=20)
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA/Triton")
@@ -1064,7 +1024,7 @@ def test_svoo_permute_round_trips_non_power_of_two_head_dim_on_cuda():
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA/FlashInfer")
-def test_svoo_flashinfer_sparse_backend_smoke_on_cuda():
+def test_svoo_flashinfer_sparse_path_smoke_on_cuda():
     pytest.importorskip("flashinfer.sparse")
 
     from sparsevideo._runtime import _cuda_toolkit_status
@@ -1085,9 +1045,7 @@ def test_svoo_flashinfer_sparse_backend_smoke_on_cuda():
             "kmeans_iter_init": 1,
             "kmeans_iter_step": 1,
             "use_dynamic_min_kc_ratio": False,
-            "start_reuse_step": None,
             "reuse_interval": 1,
-            "sparse_backend": "flashinfer",
         }
     )
     state = {
@@ -1113,7 +1071,6 @@ def test_svoo_flashinfer_sparse_backend_smoke_on_cuda():
         current_step=1,
         layer_idx=0,
         model_type="wan",
-        total_layers=1,
     )
 
     torch.cuda.synchronize()
@@ -1216,9 +1173,7 @@ def test_svoo_flashinfer_attention_matches_upstream_manual_wan_cuda():
             "kmeans_iter_init": max_iters,
             "kmeans_iter_step": max_iters,
             "use_dynamic_min_kc_ratio": False,
-            "start_reuse_step": None,
             "reuse_interval": 1,
-            "sparse_backend": "flashinfer",
             "enable_mem_save": False,
         }
     )
@@ -1234,7 +1189,6 @@ def test_svoo_flashinfer_attention_matches_upstream_manual_wan_cuda():
         current_step=1,
         layer_idx=0,
         model_type="wan",
-        total_layers=1,
     )
 
     torch.cuda.synchronize()

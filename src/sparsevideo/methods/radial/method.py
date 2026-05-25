@@ -4,7 +4,7 @@ import torch
 
 from .._base import SparseMethod
 from .._layout import infer_video_frame_shape, infer_video_token_layout
-from .._schedule import _scalar_timestep, configured_dense_warmup_layer_count, configured_dense_warmup_requires_dense, runtime_num_inference_steps
+from .._schedule import configured_dense_warmup_layer_count, configured_dense_warmup_requires_dense, runtime_num_inference_steps
 from ...processors.allegro import SparseAllegroAttnProcessor
 from ...processors.cogvideox import SparseCogVideoXAttnProcessor
 from ...processors.easyanimate import SparseEasyAnimateAttnProcessor
@@ -55,29 +55,25 @@ class RadialMethod(SparseMethod):
             raise NotImplementedError(f"radial not yet supported for {self.model_info.model_type}")
 
         decay_factor = self.config["decay_factor"]
-        dense_timesteps = self.config["dense_timesteps"]
-        dense_layers = self.config["dense_layers"]
         block_size = self.config["block_size"]
         use_sage_attention = self.config["use_sage_attention"]
         allow_flex_fallback = self.config["allow_flex_fallback"]
-        dense_warmup_layer_count = configured_dense_warmup_layer_count(self.config, total_layers)
         block_sparse_sage2_attn_fn = self._block_sparse_sage2_attn_fn
         sageattn_fn = self._sageattn_fn
+        dense_warmup_layer_count = configured_dense_warmup_layer_count(self.config, total_layers)
 
         block_mask_cache = {}
         model_type = self.model_info.model_type
 
         def attn_fn(query, key, value, attention_mask, **kwargs):
-            full_attention = _radial_is_dense_layer_or_timestep(
-                model_type,
-                layer_idx,
-                dense_layers,
-                dense_timesteps,
-                getattr(step_tracker, "timestep", None),
-            ) or layer_idx < dense_warmup_layer_count or configured_dense_warmup_requires_dense(
-                self.config,
-                runtime_num_inference_steps(step_tracker),
-                getattr(step_tracker, "step", None),
+            full_attention = (
+                layer_idx < dense_warmup_layer_count
+                or configured_dense_warmup_requires_dense(
+                    self.config,
+                    runtime_num_inference_steps(step_tracker),
+                    getattr(step_tracker, "step", None),
+                    notifier=self.warmup_notifier,
+                )
             )
             if full_attention:
                 text_len = kwargs.get("text_len", 0)
@@ -193,15 +189,6 @@ def _radial_backend_name(
     if allow_flex_fallback:
         return "flex_attention_debug_fallback"
     return "flashinfer"
-
-
-def _radial_is_dense_layer_or_timestep(model_type, layer_idx, dense_layers, dense_timesteps, timestep):
-    if layer_idx < int(dense_layers):
-        return True
-    timestep_value = _scalar_timestep(timestep)
-    if timestep_value is None:
-        return model_type == "hunyuan_video"
-    return timestep_value < float(dense_timesteps)
 
 
 def _radial_attention(query, key, value, decay_factor, block_mask_cache, block_size=128,

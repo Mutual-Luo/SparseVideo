@@ -188,6 +188,9 @@ def test_runtime_status_uses_sparsevideo_owned_paths_not_training_free():
     assert sparge["sparsevideo_runtime"]["block_sparse_sage2_attn_cuda"] is True
     assert sparge["sparsevideo_runtime"]["autotune"] is True
     assert sparge["sparsevideo_runtime"]["gpu_process_pool"] is True
+    assert "training_free" not in sparge["sparsevideo_runtime"]["hunyuan_forward_patch"]["path"]
+    assert "src/sparsevideo/methods/spargeattn" in sparge["sparsevideo_runtime"]["hunyuan_forward_patch"]["path"]
+    assert sparge["sparsevideo_runtime"]["hunyuan_forward_patch"]["source_files"] is True
     if sparge["sparsevideo_runtime"].get("ready"):
         assert sparge["selected_runtime"] == "sparsevideo"
         assert sparge["training_free_runtime"] is False
@@ -201,6 +204,9 @@ def test_runtime_status_uses_sparsevideo_owned_paths_not_training_free():
     assert "training_free" not in sta["sparsevideo_h100"]["source"]["path"]
     assert "src/sparsevideo/kernels/native/sta_h100" in sta["sparsevideo_h100"]["source"]["path"]
     assert sta["sparsevideo_h100"]["source"]["source_files"] is True
+    assert "training_free" not in sta["sparsevideo_a100_block_sparse"]["source"]["path"]
+    assert "src/sparsevideo/kernels/native/draft_block_sparse" in sta["sparsevideo_a100_block_sparse"]["source"]["path"]
+    assert sta["sparsevideo_a100_block_sparse"]["source"]["source_files"] is True
 
     assert status["flashomni"]["methods"] == ["flashomni"]
     assert "native_extension" in status["flashomni"]

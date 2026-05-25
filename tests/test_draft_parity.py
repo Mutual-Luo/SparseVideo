@@ -15,7 +15,6 @@ from sparsevideo.methods.draft.method import (
     _draft_attention,
     _draft_cu_seqlens,
     _draft_dense_attention,
-    _draft_is_dense_layer_or_timestep,
     _draft_mit_path,
     _draft_triton_path,
     _crop_draft_video_canvas,
@@ -187,14 +186,35 @@ def test_draft_percentile_mask_is_head_global_like_upstream():
     assert mask.tolist() == [[[[False, True], [True, True]]]]
 
 
-def test_draft_dense_gate_matches_upstream_hardcoded_policy():
-    assert _draft_is_dense_layer_or_timestep("wan", layer_idx=0, timestep=100)
-    assert _draft_is_dense_layer_or_timestep("wan", layer_idx=5, timestep=926)
-    assert not _draft_is_dense_layer_or_timestep("wan", layer_idx=1, timestep=925)
+def test_draft_dense_warmup_ratio_is_only_step_gate(monkeypatch):
+    calls = []
 
-    assert _draft_is_dense_layer_or_timestep("hunyuan_video", layer_idx=1, timestep=100)
-    assert _draft_is_dense_layer_or_timestep("hunyuan_video", layer_idx=4, timestep=946)
-    assert not _draft_is_dense_layer_or_timestep("hunyuan_video", layer_idx=2, timestep=945)
+    def fake_dense(query, key, value, **kwargs):
+        calls.append("dense")
+        return query
+
+    def fake_sparse(query, key, value, **kwargs):
+        calls.append("sparse")
+        return query
+
+    monkeypatch.setattr("sparsevideo.methods.draft.method._draft_dense_attention", fake_dense)
+    monkeypatch.setattr("sparsevideo.methods.draft.method._draft_attention", fake_sparse)
+
+    method = DraftMethod(
+        config={"dense_warmup_step_ratio": 0.0, "dense_warmup_layer_ratio": 0.0},
+        model_info=SimpleNamespace(model_type="wan", model_key=None),
+    )
+    processor = method.create_processor(
+        layer_idx=5,
+        total_layers=30,
+        original_processor=None,
+        step_tracker=SimpleNamespace(step=20, timestep=999),
+    )
+    query = torch.randn(1, 128, 2, 64)
+
+    processor.attn_fn(query, query, query, None)
+
+    assert calls == ["sparse"]
 
 
 def test_draft_runtime_layout_gate_rejects_non_upstream_hunyuan_shapes():

@@ -31,6 +31,21 @@ def _install_sparse_videogen_cuvs_stub(monkeypatch):
     monkeypatch.setitem(sys.modules, "cuvs.cluster.kmeans", kmeans)
 
 
+def _patch_flashinfer_sparse_identity(monkeypatch, captured=None):
+    import sparsevideo.kernels.flashinfer_block_sparse as flashinfer_module
+
+    def fake_variable_block_sparse_attn(q, k, v, dynamic_map, q_sizes, k_sizes):
+        if captured is not None:
+            captured["q"] = q.detach().clone()
+            captured["q_sizes"] = q_sizes.detach().clone()
+            captured["k_sizes"] = k_sizes.detach().clone()
+            captured["dynamic_map"] = dynamic_map.detach().clone()
+        return q
+
+    monkeypatch.setattr(flashinfer_module, "HAS_FLASHINFER", True)
+    monkeypatch.setattr(flashinfer_module, "variable_block_sparse_attn", fake_variable_block_sparse_attn)
+
+
 def test_svg2_uses_shared_sparse_videogen_dynamic_map():
     from sparsevideo.kernels.dynamic_map import identify_dynamic_map
     from sparsevideo.methods.svg2 import method as svg2_method
@@ -106,7 +121,6 @@ def test_svg2_folds_classifier_free_batch_into_batch_head_slots(monkeypatch):
         kmeans_iter_step=1,
         state=state,
         initialize_only=True,
-        allow_triton_fallback=True,
     )
 
     assert out is None
@@ -262,11 +276,10 @@ def test_svg2_method_uses_dense_warmup_step_ratio(monkeypatch):
         {
             "dense_warmup_step_ratio": 0.5,
             "dense_warmup_layer_ratio": 0.0,
-            "num_inference_steps": 50,
         },
         SimpleNamespace(model_type="wan", model_key=None),
     )
-    step_tracker = SimpleNamespace(step=20, timestep=0)
+    step_tracker = SimpleNamespace(step=20, timestep=0, num_inference_steps=lambda: 50)
     processor = method.create_processor(0, 2, None, step_tracker)
     query = torch.zeros(1, 8, 1, 4)
 
@@ -349,8 +362,6 @@ def test_svg2_hunyuan_flashinfer_varlen_uses_upstream_two_segment_mask(monkeypat
 
 def test_svg2_hunyuan_appends_prompt_and_fake_text_clusters_like_upstream(monkeypatch):
     from sparsevideo.methods.svg2 import method as svg2_method
-    import sparsevideo.kernels.block_sparse_attn as block_sparse_module
-    import sparsevideo.kernels.flashinfer_block_sparse as flashinfer_module
     import sparsevideo.methods.svg2.kmeans as kmeans_module
 
     captured = {}
@@ -375,17 +386,9 @@ def test_svg2_hunyuan_appends_prompt_and_fake_text_clusters_like_upstream(monkey
         out[..., 0] = True
         return out
 
-    def fake_block_sparse_attention(q, k, v, q_sizes, k_sizes, dynamic_map, scale):
-        captured["q"] = q.detach().clone()
-        captured["q_sizes"] = q_sizes.detach().clone()
-        captured["k_sizes"] = k_sizes.detach().clone()
-        captured["dynamic_map"] = dynamic_map.detach().clone()
-        return q
-
     monkeypatch.setattr(kmeans_module, "triton_kmeans", fake_kmeans)
     monkeypatch.setattr(svg2_method, "identify_dynamic_map", fake_dynamic_map)
-    monkeypatch.setattr(flashinfer_module, "HAS_FLASHINFER", False)
-    monkeypatch.setattr(block_sparse_module, "block_sparse_attention", fake_block_sparse_attention)
+    _patch_flashinfer_sparse_identity(monkeypatch, captured)
 
     query = torch.arange(1 * 12 * 1 * 1, dtype=torch.float32).reshape(1, 12, 1, 1)
     state = {"centroids_init": False, "prev_q_centroids": None, "prev_k_centroids": None}
@@ -401,7 +404,6 @@ def test_svg2_hunyuan_appends_prompt_and_fake_text_clusters_like_upstream(monkey
         kmeans_iter_init=1,
         kmeans_iter_step=1,
         state=state,
-        allow_triton_fallback=True,
         model_type="hunyuan_video",
         text_len=4,
         prompt_length=3,
@@ -440,7 +442,6 @@ def test_svg2_hunyuan_rejects_context_length_mismatch_like_upstream_assertion():
             kmeans_iter_init=1,
             kmeans_iter_step=1,
             state=state,
-            allow_triton_fallback=True,
             model_type="hunyuan_video",
             text_len=4,
             prompt_length=3,
@@ -450,8 +451,6 @@ def test_svg2_hunyuan_rejects_context_length_mismatch_like_upstream_assertion():
 
 def test_svg2_kmeans_uses_upstream_no_final_reassign(monkeypatch):
     from sparsevideo.methods.svg2 import method as svg2_method
-    import sparsevideo.kernels.block_sparse_attn as block_sparse_module
-    import sparsevideo.kernels.flashinfer_block_sparse as flashinfer_module
     import sparsevideo.methods.svg2.kmeans as kmeans_module
 
     final_reassign_values = []
@@ -477,12 +476,7 @@ def test_svg2_kmeans_uses_upstream_no_final_reassign(monkeypatch):
             device=query_centroids.device,
         ),
     )
-    monkeypatch.setattr(flashinfer_module, "HAS_FLASHINFER", False)
-    monkeypatch.setattr(
-        block_sparse_module,
-        "block_sparse_attention",
-        lambda q, k, v, q_sizes, k_sizes, dynamic_map, scale: q,
-    )
+    _patch_flashinfer_sparse_identity(monkeypatch)
 
     query = torch.arange(1 * 8 * 1 * 1, dtype=torch.float32).reshape(1, 8, 1, 1)
     state = {"centroids_init": False, "prev_q_centroids": None, "prev_k_centroids": None}
@@ -498,7 +492,6 @@ def test_svg2_kmeans_uses_upstream_no_final_reassign(monkeypatch):
         kmeans_iter_init=1,
         kmeans_iter_step=1,
         state=state,
-        allow_triton_fallback=True,
         model_type="wan",
     )
 
@@ -508,8 +501,6 @@ def test_svg2_kmeans_uses_upstream_no_final_reassign(monkeypatch):
 
 def test_svg2_kmeans_inputs_are_contiguous_like_upstream(monkeypatch):
     from sparsevideo.methods.svg2 import method as svg2_method
-    import sparsevideo.kernels.block_sparse_attn as block_sparse_module
-    import sparsevideo.kernels.flashinfer_block_sparse as flashinfer_module
     import sparsevideo.methods.svg2.kmeans as kmeans_module
 
     seen = []
@@ -535,12 +526,7 @@ def test_svg2_kmeans_inputs_are_contiguous_like_upstream(monkeypatch):
             device=query_centroids.device,
         ),
     )
-    monkeypatch.setattr(flashinfer_module, "HAS_FLASHINFER", False)
-    monkeypatch.setattr(
-        block_sparse_module,
-        "block_sparse_attention",
-        lambda q, k, v, q_sizes, k_sizes, dynamic_map, scale: q,
-    )
+    _patch_flashinfer_sparse_identity(monkeypatch)
 
     query = torch.arange(1 * 8 * 2 * 4, dtype=torch.float32).reshape(1, 8, 2, 4)
     state = {"centroids_init": False, "prev_q_centroids": None, "prev_k_centroids": None}
@@ -556,7 +542,6 @@ def test_svg2_kmeans_inputs_are_contiguous_like_upstream(monkeypatch):
         kmeans_iter_init=1,
         kmeans_iter_step=1,
         state=state,
-        allow_triton_fallback=True,
         model_type="wan",
     )
 
@@ -566,8 +551,6 @@ def test_svg2_kmeans_inputs_are_contiguous_like_upstream(monkeypatch):
 
 def test_svg2_cuda_path_dispatches_owned_triton_permutation(monkeypatch):
     from sparsevideo.methods.svg2 import method as svg2_method
-    import sparsevideo.kernels.block_sparse_attn as block_sparse_module
-    import sparsevideo.kernels.flashinfer_block_sparse as flashinfer_module
     import sparsevideo.methods.svg2.kmeans as kmeans_module
     import sparsevideo.kernels.permute as permute_module
 
@@ -619,12 +602,7 @@ def test_svg2_cuda_path_dispatches_owned_triton_permutation(monkeypatch):
             device=query_centroids.device,
         ),
     )
-    monkeypatch.setattr(flashinfer_module, "HAS_FLASHINFER", False)
-    monkeypatch.setattr(
-        block_sparse_module,
-        "block_sparse_attention",
-        lambda q, k, v, q_sizes, k_sizes, dynamic_map, scale: q,
-    )
+    _patch_flashinfer_sparse_identity(monkeypatch)
     monkeypatch.setattr(permute_module, "permute_tensor_by_labels_triton", fake_permute)
     monkeypatch.setattr(permute_module, "apply_inverse_permutation_triton", fake_inverse)
 
@@ -642,7 +620,6 @@ def test_svg2_cuda_path_dispatches_owned_triton_permutation(monkeypatch):
         kmeans_iter_init=1,
         kmeans_iter_step=1,
         state=state,
-        allow_triton_fallback=True,
         model_type="wan",
     )
 
@@ -733,7 +710,6 @@ def test_svg2_wan_sparse_attention_matches_upstream_kmeans_permutation_cuda(monk
         max_iters,
         max_iters,
         state,
-        allow_triton_fallback=False,
         model_type="wan",
     )
 

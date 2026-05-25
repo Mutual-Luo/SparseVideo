@@ -48,6 +48,7 @@ class SparseMethod(ABC):
         return config
 
     def __init__(self, config: Dict[str, Any], model_info: "ModelInfo"):
+        from ._schedule import WarmupNotifier
         normalized_config = self.normalize_config(config)
         self.model_info = model_info
         self.config = {
@@ -58,6 +59,7 @@ class SparseMethod(ABC):
             **normalized_config,
         }
         self._ensure_runtime_stats()
+        self.warmup_notifier = WarmupNotifier(self.__class__.__name__.replace("Method", "").lower())
 
     def _ensure_runtime_stats(self) -> Dict[str, Any]:
         if not hasattr(self, "_runtime_stats"):

@@ -93,7 +93,8 @@ def _block_sparse_attn_forward(
     exact_streaming,
     return_softmax,
     window_size_left,
-    window_size_right
+    window_size_right,
+    key_valid_mask=None,
 ):
     out, q, k, v, out_padded, softmax_lse, S_dmask, rng_state = block_sparse_attn_cuda.fwd_block(
         q, k, v,
@@ -110,6 +111,7 @@ def _block_sparse_attn_forward(
         return_softmax,
         window_size_left,
         window_size_right, 
+        key_valid_mask,
         None
     )
     return out, q, k, v, out_padded, softmax_lse, S_dmask, rng_state
@@ -176,7 +178,9 @@ class BlockSparseAttnFun(torch.autograd.Function):
                 exact_streaming,
                 return_softmax,
                 window_size_left,
-                window_size_right, deterministic=False):
+                window_size_right,
+                key_valid_mask=None,
+                deterministic=False):
         # Save rng_state because the backward pass will regenerate the dropout mask
         if softmax_scale is None:
             softmax_scale = q.shape[-1] ** (-0.5)
@@ -203,7 +207,8 @@ class BlockSparseAttnFun(torch.autograd.Function):
             exact_streaming,
             return_softmax=False,
             window_size_left=window_size_left,
-            window_size_right=window_size_right
+            window_size_right=window_size_right,
+            key_valid_mask=key_valid_mask,
         )
         ctx.save_for_backward(q, k, v,
                               out, S_dmask, softmax_lse,
@@ -259,7 +264,7 @@ class BlockSparseAttnFun(torch.autograd.Function):
             ctx.deterministic,
             rng_state=rng_state
         )
-        return dq, dk, dv, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None
+        return dq, dk, dv, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None
 
 
 # We duplicate code to return both the output and the softmax for testing
@@ -281,6 +286,7 @@ class BlockSparseAttnFunWithS(torch.autograd.Function):
                 return_softmax,
                 window_size_left,
                 window_size_right,
+                key_valid_mask=None,
                 deterministic=False):
         # Save rng_state because the backward pass will regenerate the dropout mask
         if softmax_scale is None:
@@ -310,6 +316,7 @@ class BlockSparseAttnFunWithS(torch.autograd.Function):
             return_softmax=return_softmax and p_dropout > 0,
             window_size_left=window_size_left,
             window_size_right=window_size_right,
+            key_valid_mask=key_valid_mask,
         )
         
         ctx.save_for_backward(q, k, v,
@@ -372,7 +379,7 @@ class BlockSparseAttnFunWithS(torch.autograd.Function):
         dk = dk[..., : dout.shape[-1]]
         dv = dv[..., : dout.shape[-1]]
         
-        return dq, dk, dv, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None
+        return dq, dk, dv, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None
 
 
 def block_sparse_attn_func(
@@ -388,6 +395,7 @@ def block_sparse_attn_func(
     is_causal=False,
     exact_streaming=False,
     return_attn_probs=False,
+    key_valid_mask=None,
 ):
     head_mask_type, blocksparse_head_num = replace_ones_with_count(head_mask_type)
     if base_blockmask is not None:
@@ -410,6 +418,7 @@ def block_sparse_attn_func(
                 exact_streaming,
                 return_attn_probs,
                 -1, -1,
+                key_valid_mask,
                 deterministic
                 )
     
@@ -441,6 +450,7 @@ def token_streaming_attn_func(
                 True,
                 return_attn_probs,
                 -1, -1,
+                None,
                 deterministic
                 )
     
@@ -473,5 +483,6 @@ def block_streaming_attn_func(
                 False,
                 return_attn_probs,
                 -1, -1,
+                None,
                 deterministic
                 )

@@ -531,7 +531,6 @@ def svg2_runtime_load_status() -> Dict[str, Any]:
         (
             "sparsevideo.methods.svg2.kmeans",
             "sparsevideo.kernels.dynamic_map",
-            "sparsevideo.kernels.block_sparse_attn",
             "sparsevideo.kernels.permute",
             "sparsevideo.kernels.flashinfer_block_sparse",
         ),
@@ -546,8 +545,6 @@ def svg2_runtime_load_status() -> Dict[str, Any]:
             "centroid_update_kernel": ("sparsevideo.methods.svg2.kmeans", "_centroid_update_chunk_kernel"),
             "identify_dynamic_map": ("sparsevideo.kernels.dynamic_map", "identify_dynamic_map"),
             "identify_dynamic_map_global": ("sparsevideo.kernels.dynamic_map", "identify_dynamic_map_global"),
-            "block_sparse_attention": ("sparsevideo.kernels.block_sparse_attn", "block_sparse_attention"),
-            "block_sparse_fwd_kernel": ("sparsevideo.kernels.block_sparse_attn", "_block_sparse_fwd_kernel"),
             "permute_tensor_by_labels_triton": ("sparsevideo.kernels.permute", "permute_tensor_by_labels_triton"),
             "apply_inverse_permutation_triton": ("sparsevideo.kernels.permute", "apply_inverse_permutation_triton"),
             "permute_kernel": ("sparsevideo.kernels.permute", "_permute_kernel"),
@@ -597,10 +594,6 @@ def radial_runtime_load_status() -> Dict[str, Any]:
                 "_radial_append_tail_blocks",
             ),
             "expand_attention_mask": ("sparsevideo.methods.radial.method", "_expand_attention_mask"),
-            "radial_is_dense_layer_or_timestep": (
-                "sparsevideo.methods.radial.method",
-                "_radial_is_dense_layer_or_timestep",
-            ),
             "radial_window_width": ("sparsevideo.methods.radial.method", "_radial_window_width"),
             "build_bsr_from_mask": (
                 "sparsevideo.kernels.flashinfer_block_sparse",
@@ -622,22 +615,17 @@ def radial_runtime_load_status() -> Dict[str, Any]:
 def svoo_runtime_load_status() -> Dict[str, Any]:
     return _owned_sparsevideo_module_load_status(
         (
-            "sparsevideo.kernels.kmeans",
             "sparsevideo.kernels.l2norm",
             "sparsevideo.kernels.layernorm",
             "sparsevideo.kernels.modulate",
             "sparsevideo.kernels.co_cluster",
             "sparsevideo.kernels.dynamic_map",
             "sparsevideo.kernels.permute",
-            "sparsevideo.kernels.block_sparse_attn",
             "sparsevideo.kernels.flashinfer_block_sparse",
             "sparsevideo.kernels.sparsity",
             "sparsevideo.methods.svoo.sparsity",
         ),
         api_checks={
-            "triton_kmeans": ("sparsevideo.kernels.kmeans", "triton_kmeans"),
-            "kmeans_assign_kernel": ("sparsevideo.kernels.kmeans", "_assign_kernel"),
-            "kmeans_update_kernel": ("sparsevideo.kernels.kmeans", "_update_centroids_kernel"),
             "triton_l2norm_forward": ("sparsevideo.kernels.l2norm", "triton_l2norm_forward"),
             "l2norm_kernel": ("sparsevideo.kernels.l2norm", "_l2_norm_fwd_fused"),
             "triton_layernorm_forward": ("sparsevideo.kernels.layernorm", "triton_layernorm_forward"),
@@ -671,8 +659,6 @@ def svoo_runtime_load_status() -> Dict[str, Any]:
             "identify_dynamic_map_global": ("sparsevideo.kernels.dynamic_map", "identify_dynamic_map_global"),
             "permute_tensor_by_labels_triton": ("sparsevideo.kernels.permute", "permute_tensor_by_labels_triton"),
             "apply_inverse_permutation_triton": ("sparsevideo.kernels.permute", "apply_inverse_permutation_triton"),
-            "block_sparse_attention": ("sparsevideo.kernels.block_sparse_attn", "block_sparse_attention"),
-            "block_sparse_fwd_kernel": ("sparsevideo.kernels.block_sparse_attn", "_block_sparse_fwd_kernel"),
             "variable_block_sparse_attn": (
                 "sparsevideo.kernels.flashinfer_block_sparse",
                 "variable_block_sparse_attn",
@@ -883,7 +869,7 @@ def flashomni_load_status() -> Dict[str, Any]:
 def sta_load_status() -> Dict[str, Any]:
     status: Dict[str, Any] = {
         "load_checked": True,
-        "triton_load_checked": True,
+        "triton_load_checked": False,
         "triton_imported": False,
         "triton_sliding_tile_attention_triton": False,
         "triton_module_file": None,
@@ -897,89 +883,97 @@ def sta_load_status() -> Dict[str, Any]:
         "h100_candidate_files": [],
         "h100_import_error_type": None,
         "h100_import_error": None,
+        "a100_block_sparse_load_checked": True,
+        "a100_block_sparse_ready": False,
+        "a100_block_sparse": {},
+        "a100_import_error_type": None,
+        "a100_import_error": None,
         "training_free_runtime_detected": False,
     }
-
-    try:
-        sta_ops = importlib.import_module("sparsevideo.methods.sta.ops")
-        triton_fn = sta_ops._owned_fastvideo_sta_triton()
-    except Exception as exc:
-        status["triton_import_error_type"] = type(exc).__name__
-        status["triton_import_error"] = str(exc)
-    else:
-        status["triton_imported"] = True
-        status["triton_sliding_tile_attention_triton"] = callable(triton_fn)
-        code = getattr(triton_fn, "__code__", None)
-        status["triton_module_file"] = getattr(code, "co_filename", None)
-        triton_path = status["triton_module_file"]
-        if triton_path and "training_free" in Path(triton_path).resolve().parts:
-            status["training_free_runtime_detected"] = True
-            status["triton_import_error_type"] = "ImportError"
-            status["triton_import_error"] = (
-                "STA Triton fallback resolved from training_free/, which is reference-only."
-            )
 
     try:
         h100_module = importlib.import_module("sparsevideo.kernels.native.sta_h100")
     except Exception as exc:
         status["h100_import_error_type"] = type(exc).__name__
         status["h100_import_error"] = str(exc)
-        return status
-
-    status["h100_package_imported"] = True
-    h100_module_file = getattr(h100_module, "__file__", None)
-    status["h100_module_file"] = h100_module_file
-    if h100_module_file is not None:
-        h100_root = Path(h100_module_file).resolve().parent
-        if "training_free" in h100_root.parts:
-            status["training_free_runtime_detected"] = True
-            status["h100_import_error_type"] = "ImportError"
-            status["h100_import_error"] = (
-                "STA H100 runtime resolved from training_free/, which is reference-only."
-            )
-            return status
-        candidate_files = _glob_any_existing(
-            [h100_root],
-            ("fastvideo_kernel_ops*.so", "_C/fastvideo_kernel_ops*.so", "build/**/fastvideo_kernel_ops*.so"),
-        )
-        status["h100_candidate_files"] = candidate_files
     else:
-        candidate_files = []
+        status["h100_package_imported"] = True
+        h100_module_file = getattr(h100_module, "__file__", None)
+        status["h100_module_file"] = h100_module_file
+        if h100_module_file is not None:
+            h100_root = Path(h100_module_file).resolve().parent
+            if "training_free" in h100_root.parts:
+                status["training_free_runtime_detected"] = True
+                status["h100_import_error_type"] = "ImportError"
+                status["h100_import_error"] = (
+                    "STA H100 runtime resolved from training_free/, which is reference-only."
+                )
+                candidate_files = []
+            else:
+                candidate_files = _glob_any_existing(
+                    [h100_root],
+                    ("fastvideo_kernel_ops*.so", "_C/fastvideo_kernel_ops*.so", "build/**/fastvideo_kernel_ops*.so"),
+                )
+                status["h100_candidate_files"] = candidate_files
+        else:
+            candidate_files = []
 
-    sta_fwd = getattr(h100_module, "sta_fwd", None)
-    status["h100_sta_fwd"] = callable(sta_fwd)
-    status["h100_native_extension_imported"] = callable(sta_fwd)
-    if status["h100_native_extension_imported"]:
-        return status
-
-    if not candidate_files:
-        status["h100_import_error_type"] = "ImportError"
-        status["h100_import_error"] = "No SparseVideo-owned sta_h100 native extension file was found."
-        return status
-
-    import_errors = []
-    for candidate in candidate_files:
-        spec = importlib.util.spec_from_file_location("fastvideo_kernel_ops", candidate)
-        if spec is None or spec.loader is None:
-            import_errors.append(f"{candidate}: missing import spec")
-            continue
-        try:
-            module = importlib.util.module_from_spec(spec)
-            spec.loader.exec_module(module)
-        except Exception as exc:
-            import_errors.append(f"{candidate}: {type(exc).__name__}: {exc}")
-            continue
-        sta_fwd = getattr(module, "sta_fwd", None)
-        if callable(sta_fwd):
-            status["h100_native_extension_imported"] = True
-            status["h100_sta_fwd"] = True
+        sta_fwd = getattr(h100_module, "sta_fwd", None)
+        status["h100_sta_fwd"] = callable(sta_fwd)
+        status["h100_native_extension_imported"] = callable(sta_fwd)
+        if status["h100_native_extension_imported"]:
             status["h100_import_error_type"] = None
             status["h100_import_error"] = None
-            return status
-        import_errors.append(f"{candidate}: missing sta_fwd")
 
-    status["h100_import_error_type"] = "ImportError"
-    status["h100_import_error"] = "; ".join(import_errors) or "sta_fwd is not available."
+        if not candidate_files and not status["h100_native_extension_imported"]:
+            status["h100_import_error_type"] = "ImportError"
+            status["h100_import_error"] = "No SparseVideo-owned sta_h100 native extension file was found."
+        elif candidate_files:
+            import_errors = []
+            for candidate in candidate_files:
+                spec = importlib.util.spec_from_file_location("fastvideo_kernel_ops", candidate)
+                if spec is None or spec.loader is None:
+                    import_errors.append(f"{candidate}: missing import spec")
+                    continue
+                try:
+                    module = importlib.util.module_from_spec(spec)
+                    spec.loader.exec_module(module)
+                except Exception as exc:
+                    import_errors.append(f"{candidate}: {type(exc).__name__}: {exc}")
+                    continue
+                sta_fwd = getattr(module, "sta_fwd", None)
+                if callable(sta_fwd):
+                    status["h100_native_extension_imported"] = True
+                    status["h100_sta_fwd"] = True
+                    status["h100_import_error_type"] = None
+                    status["h100_import_error"] = None
+                    break
+                import_errors.append(f"{candidate}: missing sta_fwd")
+
+            if not status["h100_native_extension_imported"]:
+                status["h100_import_error_type"] = "ImportError"
+                status["h100_import_error"] = "; ".join(import_errors) or "sta_fwd is not available."
+
+    try:
+        a100_status = draft_block_sparse_load_status()
+    except Exception as exc:
+        status["a100_import_error_type"] = type(exc).__name__
+        status["a100_import_error"] = str(exc)
+        return status
+
+    status["a100_block_sparse"] = a100_status
+    status["a100_block_sparse_ready"] = bool(
+        a100_status.get("imported")
+        and a100_status.get("cuda_extension_imported")
+        and a100_status.get("block_sparse_attn_func")
+        and a100_status.get("cuda_fwd_block")
+    )
+    if not status["a100_block_sparse_ready"]:
+        status["a100_import_error_type"] = a100_status.get("import_error_type") or "ImportError"
+        status["a100_import_error"] = (
+            a100_status.get("import_error")
+            or "SparseVideo-owned block-sparse CUDA backend is not ready for STA A100."
+        )
     return status
 
 
@@ -1308,10 +1302,6 @@ def optional_kernel_status() -> Dict[str, Any]:
                 repo_root / "src" / "sparsevideo" / "kernels",
                 ("dynamic_map.py",),
             ),
-            "triton_block_sparse_attn": _source_dir_status(
-                repo_root / "src" / "sparsevideo" / "kernels",
-                ("block_sparse_attn.py",),
-            ),
             "triton_permute": _source_dir_status(
                 repo_root / "src" / "sparsevideo" / "kernels",
                 ("permute.py",),
@@ -1336,10 +1326,6 @@ def optional_kernel_status() -> Dict[str, Any]:
         "flex_attention": _torch_flex_attention_status(),
         "svoo_kernels": {
             "triton_package": bool(_package_locations("triton")),
-            "triton_kmeans": _source_dir_status(
-                repo_root / "src" / "sparsevideo" / "kernels",
-                ("kmeans.py",),
-            ),
             "triton_l2norm": _source_dir_status(
                 repo_root / "src" / "sparsevideo" / "kernels",
                 ("l2norm.py",),
@@ -1363,10 +1349,6 @@ def optional_kernel_status() -> Dict[str, Any]:
             "triton_permute": _source_dir_status(
                 repo_root / "src" / "sparsevideo" / "kernels",
                 ("permute.py",),
-            ),
-            "triton_block_sparse_attn": _source_dir_status(
-                repo_root / "src" / "sparsevideo" / "kernels",
-                ("block_sparse_attn.py",),
             ),
             "flashinfer_block_sparse": _source_dir_status(
                 repo_root / "src" / "sparsevideo" / "kernels",
@@ -1419,6 +1401,10 @@ def optional_kernel_status() -> Dict[str, Any]:
                 "block_sparse_sage2_attn_cuda": spargeattn_local_block_sparse,
                 "autotune": (spargeattn_package_root / "autotune.py").exists(),
                 "gpu_process_pool": (spargeattn_source_root / "tools" / "gpu_process.py").exists(),
+                "hunyuan_forward_patch": _source_dir_status(
+                    repo_root / "src" / "sparsevideo" / "methods" / "spargeattn",
+                    ("hunyuan_forward.py",),
+                ),
                 "ready": spargeattn_local_ready,
             },
             "env_root": _owned_runtime_env_status("SPARSEVIDEO_SPARGEATTN_ROOT", spargeattn_source_root),
@@ -1468,6 +1454,11 @@ def optional_kernel_status() -> Dict[str, Any]:
                     sta_h100_source_root,
                     ("**/*.cu", "**/*.cpp", "**/*.cuh", "**/*.h", "**/CMakeLists.txt"),
                 ),
+            },
+            "sparsevideo_a100_block_sparse": {
+                "native_extension": bool(draft_mit_extension_files),
+                "files": draft_mit_extension_files,
+                "source": draft_mit_source,
             },
             "external_fastvideo_kernel": {
                 "package": bool(fastvideo_locations),

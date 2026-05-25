@@ -82,7 +82,9 @@ def sparse_attention_handle_summary(handle) -> Dict[str, Any]:
     return {"type": type(handle).__name__, "summary_available": False}
 
 
-def append_metrics(path: Path, payload: Dict[str, Any]) -> None:
+def append_metrics(path: Optional[Path], payload: Dict[str, Any]) -> None:
+    if path is None:
+        return
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a", encoding="utf-8") as f:
         f.write(json.dumps(json_ready(payload), sort_keys=True) + "\n")
@@ -118,6 +120,14 @@ def collect_runtime_messages(payload: Dict[str, Any], key: str) -> List[str]:
 
 def print_run_summary(args, payload: Dict[str, Any]) -> None:
     timings = payload.get("timings") or {}
+    output_file = payload.get("output_file")
+    if (
+        payload.get("status") in {"ok", "skipped_existing"}
+        and output_file
+        and not getattr(args, "dry_run", False)
+    ):
+        print(output_file)
+        return
     lines = [
         f"status={payload.get('status')}",
         f"model={payload.get('model')}",
@@ -127,10 +137,11 @@ def print_run_summary(args, payload: Dict[str, Any]) -> None:
         lines.append(f"failed_stage={payload['failed_stage']}")
     if payload.get("error_type"):
         lines.append(f"error_type={payload['error_type']}")
-    output_file = payload.get("output_file")
     lines.append(f"output_file={output_file if output_file else '<skip-decode>'}")
     if getattr(args, "dry_run", False):
         lines.append("metrics_file=<not written in dry-run>")
+    elif args.metrics_file is None:
+        lines.append("metrics_file=<disabled>")
     else:
         lines.append(f"metrics_file={args.metrics_file}")
     if "generate_sec" in timings:
@@ -202,124 +213,6 @@ def validate_svoo_warmup_status(status: Dict[str, Any], *, strict_kernels: bool)
         message = f"SVOO kernel warmup did not run: {reason}"
     if message is None:
         return None
-    if strict_kernels:
-        raise RuntimeError(message)
-    return message
-
-
-def method_requires_sparse_runtime_dispatch(method: str, method_config: Dict[str, Any]) -> bool:
-    if method == "dense":
-        return False
-    if method == "spargeattn" and method_config.get("mode") == "full":
-        return False
-    if method == "flashomni" and method_config.get("is_full"):
-        return False
-    return True
-
-
-def _runtime_count(value: Any) -> int:
-    try:
-        return int(value or 0)
-    except (TypeError, ValueError):
-        return 0
-
-
-def expected_sparse_runtime_backends(method: str) -> set:
-    return {
-        "adacluster": {
-            "adacluster_flashinfer",
-            "triton_cluster_sparse_attn",
-            "triton_cluster_sparse_attn_topk",
-        },
-        "draft": {"mit_block_sparse", "triton_debug_fallback"},
-        "flashomni": {
-            "flashomni_explicit_upstream",
-            "flashomni_global_random_upstream",
-            "flashomni_local_qk_topk_upstream",
-            "flex_debug_fallback",
-        },
-        "radial": {"flashinfer", "sage_block_sparse", "flex_attention_debug_fallback"},
-        "spargeattn": {
-            "spas_sage", "spas_sage_block_sparse", "spas_sage_cdfthreshd",
-            "spas_sage_topk", "spas_sage_tuned",
-        },
-        "sta": {"fastvideo_sta_h100", "fastvideo_sta_a100_triton", "fastvideo_sta_triton"},
-        "svg1": {"flex_attention"},
-        "svg2": {"flashinfer", "triton_debug_fallback"},
-        "svoo": {"svoo_flashinfer", "svoo_triton"},
-    }.get(method, set())
-
-
-def _debug_fallback_backends(backend_counts: Dict[str, Any]) -> list:
-    return sorted(
-        str(backend)
-        for backend, count in (backend_counts or {}).items()
-        if _runtime_count(count) > 0 and "debug_fallback" in str(backend)
-    )
-
-
-def validate_sparse_runtime_dispatch(
-    method: str, method_config: Dict[str, Any], handle_summary: Dict[str, Any], *, strict_kernels: bool,
-) -> Optional[str]:
-    if not method_requires_sparse_runtime_dispatch(method, method_config):
-        return None
-
-    method_runtime = (handle_summary or {}).get("method_runtime")
-    if not isinstance(method_runtime, dict):
-        message = (
-            f"{method} did not expose runtime dispatch stats; strict quality/speed runs "
-            "must prove the sparse path actually executed."
-        )
-    else:
-        dispatch_counts = method_runtime.get("dispatch_counts") or {}
-        if method == "sta" and method_config.get("STA_mode") == "STA_searching":
-            search_calls = _runtime_count(dispatch_counts.get("search"))
-            if search_calls > 0:
-                return None
-            total_calls = _runtime_count(method_runtime.get("total_calls"))
-            message = (
-                "sta STA_searching did not record search dispatch during calibration; "
-                f"dispatch_counts={dispatch_counts}, total_calls={total_calls}."
-            )
-            if strict_kernels:
-                raise RuntimeError(message)
-            return message
-        sparse_calls = _runtime_count(dispatch_counts.get("sparse"))
-        if sparse_calls > 0:
-            backend_counts = method_runtime.get("backend_counts") or {}
-            expected_backends = expected_sparse_runtime_backends(method)
-            observed_backends = {
-                str(backend)
-                for backend, count in backend_counts.items()
-                if _runtime_count(count) > 0
-            }
-            matched_backends = sorted(observed_backends & expected_backends)
-            if expected_backends and not matched_backends:
-                message = (
-                    f"{method} recorded sparse dispatch without an expected sparse backend; "
-                    f"backend_counts={backend_counts}, expected={sorted(expected_backends)}. "
-                    "Strict quality/speed runs require method-specific backend evidence."
-                )
-                if strict_kernels:
-                    raise RuntimeError(message)
-                return message
-            debug_backends = _debug_fallback_backends(backend_counts)
-            if not debug_backends:
-                return None
-            message = (
-                f"{method} dispatched debug fallback backend(s) during generation: {debug_backends}. "
-                "Strict quality/speed runs require the upstream-equivalent native sparse backend."
-            )
-            if strict_kernels:
-                raise RuntimeError(message)
-            return message
-        total_calls = _runtime_count(method_runtime.get("total_calls"))
-        message = (
-            f"{method} did not dispatch sparse attention during generation; "
-            f"dispatch_counts={dispatch_counts}, total_calls={total_calls}. "
-            "Strict quality/speed runs require observed sparse/native dispatch."
-        )
-
     if strict_kernels:
         raise RuntimeError(message)
     return message

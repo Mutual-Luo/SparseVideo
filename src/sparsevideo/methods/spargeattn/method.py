@@ -44,8 +44,8 @@ class SpargeAttnMethod(SparseMethod):
 
     def __init__(self, config, model_info):
         super().__init__(config, model_info)
-        if self.config["mode"] not in ("full", "cdfthreshd", "topk", "block_sparse"):
-            raise ValueError("spargeattn mode must be one of: full, cdfthreshd, topk, block_sparse")
+        if self.config["mode"] not in ("cdfthreshd", "topk", "block_sparse"):
+            raise ValueError("spargeattn mode must be one of: cdfthreshd, topk, block_sparse")
         if self.config["tensor_layout"] != "HND":
             raise ValueError("spargeattn SparseVideo processor uses tensor_layout='HND'")
         if self.config["return_sparsity"]:
@@ -65,12 +65,13 @@ class SpargeAttnMethod(SparseMethod):
         self._SparseAttentionMeansim = None
         self._loaded_tuned_state = None
         self._tuned_attentions = {}
+        self._processor_state_index = 0
         self._use_tuned_path = bool(self.config["tune"] or self.config["model_out_path"])
         if self._use_tuned_path:
             self._SparseAttentionMeansim = load_sparse_attention_meansim_class()
             if not self.config["tune"]:
                 self._loaded_tuned_state = _load_tuned_state_dict(self.config["model_out_path"])
-        elif self.config["mode"] != "full":
+        else:
             try:
                 self._sparge_cdf_fn, self._sparge_topk_fn = _load_spas_sage_attn_functions()
                 if self.config["mode"] == "block_sparse":
@@ -101,16 +102,19 @@ class SpargeAttnMethod(SparseMethod):
         block_sparse_kwargs = _sparge_kernel_kwargs(self.config, include_is_causal=False)
         tune = bool(self.config["tune"])
         parallel_tune = bool(self.config["parallel_tune"])
-        tuned_attention = self._create_tuned_attention(layer_idx) if self._use_tuned_path else None
+        state_layer_idx = self._processor_state_index
+        self._processor_state_index += 1
+        tuned_attention = self._create_tuned_attention(state_layer_idx) if self._use_tuned_path else None
         dense_warmup_layer_count = configured_dense_warmup_layer_count(self.config, total_layers)
-
         def attn_fn(query, key, value, attention_mask, **kwargs):
             use_dense_mode = (
-                mode == "full" and tuned_attention is None
-            ) or layer_idx < dense_warmup_layer_count or configured_dense_warmup_requires_dense(
-                self.config,
-                runtime_num_inference_steps(step_tracker),
-                getattr(step_tracker, "step", None),
+                layer_idx < dense_warmup_layer_count
+                or configured_dense_warmup_requires_dense(
+                    self.config,
+                    runtime_num_inference_steps(step_tracker),
+                    getattr(step_tracker, "step", None),
+                    notifier=self.warmup_notifier,
+                )
             )
             if use_dense_mode:
                 out = _sparge_dense_attention(
@@ -128,7 +132,7 @@ class SpargeAttnMethod(SparseMethod):
             if rejection_reason is not None:
                 raise RuntimeError(
                     "spargeattn sparse path requires the upstream spas_sage_attn CUDA kernels; "
-                    f"{rejection_reason}. Use mode=full for the dense baseline."
+                    f"{rejection_reason}. Use method=dense for the dense baseline."
                 )
 
             # Diffusers layout: [B, N, H, D] → SpargeAttn layout: [B, H, N, D]
@@ -212,6 +216,16 @@ class SpargeAttnMethod(SparseMethod):
             attn_fn=attn_fn, layer_idx=layer_idx, step_tracker=step_tracker,
             use_fused_qk_norm_rope=fused,
         )
+
+    def install_model_patches(self, model_info):
+        if model_info.model_type == "hunyuan_video":
+            from .hunyuan_forward import install_spargeattn_hunyuan_forward_patch
+
+            return [
+                install_spargeattn_hunyuan_forward_patch(model_info),
+                *super().install_model_patches(model_info),
+            ]
+        return super().install_model_patches(model_info)
 
     def _create_tuned_attention(self, layer_idx: int):
         tuned_attention = self._SparseAttentionMeansim(

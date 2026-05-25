@@ -4,7 +4,7 @@ import torch
 import torch.nn.functional as F
 
 from .._base import SparseMethod
-from .._schedule import configured_dense_warmup_layer_count, configured_dense_warmup_requires_dense, runtime_num_inference_steps, scheduler_timestep_from_tracker
+from .._schedule import WarmupNotifier, configured_dense_warmup_layer_count, configured_dense_warmup_requires_dense, runtime_num_inference_steps, scheduler_timestep_from_tracker
 from ...processors.allegro import SparseAllegroAttnProcessor
 from ...processors.cogvideox import SparseCogVideoXAttnProcessor
 from ...processors.easyanimate import SparseEasyAnimateAttnProcessor
@@ -37,23 +37,12 @@ class SVOOMethod(SparseMethod):
             **normalized_config,
         }
         self.model_info = model_info
+        self._ensure_runtime_stats()
+        self.warmup_notifier = WarmupNotifier("svoo")
 
-        if self.config["implementation"] != "native":
-            raise NotImplementedError(
-                "SVOO implementation='upstream' is not a SparseVideo-owned runtime path. "
-                "Port the needed code into src/sparsevideo before enabling it."
-            )
-        if self.config["sparse_backend"] not in ("flashinfer", "triton"):
-            raise ValueError("svoo sparse_backend must be 'flashinfer' or 'triton'")
-        if self.config.get("use_svoo", True):
-            for key in ("kmeans_iter_init", "kmeans_iter_step"):
-                if int(self.config.get(key, 0)) <= 0:
-                    raise ValueError(f"svoo use_svoo=true requires {key} > 0")
-        if model_info.model_type == "hunyuan_video" and self.config["sparse_backend"] != "flashinfer":
-            raise ValueError(
-                "svoo Hunyuan upstream path uses FlashInfer for varlen dense gates and sparse attention; "
-                "sparse_backend='triton' is only available for the Wan fallback path."
-            )
+        for key in ("kmeans_iter_init", "kmeans_iter_step"):
+            if int(self.config.get(key, 0)) <= 0:
+                raise ValueError(f"svoo requires {key} > 0")
         if self.config.get("use_dynamic_min_kc_ratio"):
             sparsity_csv_path = self.config.get("sparsity_csv_path")
             if not sparsity_csv_path:
@@ -77,15 +66,12 @@ class SVOOMethod(SparseMethod):
 
         cfg = self.config
         first_layer_count = configured_dense_warmup_layer_count(cfg, total_layers)
-
         state = _new_runtime_state()
 
         def attn_fn(query, key, value, attention_mask, **kwargs):
             scheduler_timestep = scheduler_timestep_from_tracker(step_tracker, kwargs)
             runtime_state = _state_for_cache_suffix(state, kwargs.get("cache_key_suffix"))
             prompt_length = kwargs.get("prompt_length")
-            if prompt_length is None:
-                prompt_length = cfg.get("prompt_length")
             text_len = kwargs.get("text_len", 0)
             full_attention = (
                 layer_idx < first_layer_count
@@ -94,6 +80,7 @@ class SVOOMethod(SparseMethod):
                     runtime_num_inference_steps(step_tracker),
                     step_tracker.step,
                     scheduler_timestep,
+                    notifier=self.warmup_notifier,
                 )
             )
             log_attention_sparsity(
@@ -119,12 +106,10 @@ class SVOOMethod(SparseMethod):
                         text_len=text_len,
                         prompt_length=prompt_length,
                         model_type=self.model_info.model_type,
-                        scheduler_timestep=scheduler_timestep,
-                        total_layers=total_layers,
                     )
                     self.record_runtime_dispatch(
                         "initialize_only",
-                        backend=f"svoo_{cfg['sparse_backend']}",
+                        backend="svoo_flashinfer",
                         layer_idx=layer_idx,
                         step=getattr(step_tracker, "step", None),
                     )
@@ -153,12 +138,10 @@ class SVOOMethod(SparseMethod):
                 text_len=text_len,
                 prompt_length=prompt_length,
                 model_type=self.model_info.model_type,
-                scheduler_timestep=scheduler_timestep,
-                total_layers=total_layers,
             )
             self.record_runtime_dispatch(
                 "sparse",
-                backend=f"svoo_{cfg['sparse_backend']}",
+                backend="svoo_flashinfer",
                 layer_idx=layer_idx,
                 step=getattr(step_tracker, "step", None),
             )
@@ -168,7 +151,6 @@ class SVOOMethod(SparseMethod):
             return SparseWanAttnProcessor(
                 attn_fn=attn_fn, layer_idx=layer_idx, step_tracker=step_tracker,
                 use_fused_qk_norm=True,
-                use_fused_rope=self.config.get("use_fused_rope", True),
             )
         if self.model_info.model_type == "cogvideox":
             return SparseCogVideoXAttnProcessor(

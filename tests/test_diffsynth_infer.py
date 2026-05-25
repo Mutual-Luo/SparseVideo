@@ -2459,7 +2459,7 @@ def test_infer_diffsynth_apply_only_records_method_config_timing_and_cuda(monkey
     assert payload["mode"] == "apply_only"
     assert payload["method_config"]["num_q_centroids"] == 3
     assert payload["method_config"]["dense_warmup_step_ratio"] == 0
-    assert payload["method_config"]["allow_triton_fallback"] is False
+    assert "allow_triton_fallback" not in payload["method_config"]
     assert payload["strict_kernels"] is True
     assert payload["allow_debug_fallbacks"] is False
     assert payload["sparse_attention_handle"] == payload["apply_summary"]
@@ -2469,7 +2469,7 @@ def test_infer_diffsynth_apply_only_records_method_config_timing_and_cuda(monkey
     assert payload["restore_summary"]["restored"] is True
 
 
-def test_infer_diffsynth_allow_debug_fallbacks_marks_config_non_strict():
+def test_infer_diffsynth_allow_debug_fallbacks_does_not_modify_svg2_config():
     infer = _load_infer_module()
     args = infer.build_parser().parse_args(
         [
@@ -2482,7 +2482,7 @@ def test_infer_diffsynth_allow_debug_fallbacks_marks_config_non_strict():
 
     method_config = infer._build_method_config(args, spec, strict_kernels=False)
 
-    assert method_config["allow_triton_fallback"] is True
+    assert "allow_triton_fallback" not in method_config
 
 
 def test_infer_diffsynth_generation_uses_pipeline_audio_sample_rate(monkeypatch, tmp_path):
@@ -2924,4 +2924,3 @@ def test_infer_diffsynth_deferred_model_fails_as_json_without_traceback():
     assert payload["status"] == "failed"
     assert payload["error_type"] == "ValueError"
     assert "deferred/local-only as 'wan22-dancer-14b'" in payload["error"]
-

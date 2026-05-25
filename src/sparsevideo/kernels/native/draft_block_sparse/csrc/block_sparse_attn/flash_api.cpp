@@ -1487,6 +1487,7 @@ mha_fwd_block(const at::Tensor &q,
               const bool return_softmax,
               int window_size_left,
               int window_size_right,
+              c10::optional<at::Tensor> &key_valid_mask_,
               c10::optional<at::Generator> gen_)
 {
     auto dprops = at::cuda::getCurrentDeviceProperties();
@@ -1495,12 +1496,16 @@ mha_fwd_block(const at::Tensor &q,
     bool is_sm90 = dprops->major == 9 && dprops->minor == 0;
     const bool has_blockmask = row_blockmask_.has_value();
     const bool has_streaming_info = streaming_info_.has_value();
-    at::Tensor row_blockmask, streaming_info;
+    const bool has_key_valid_mask = key_valid_mask_.has_value();
+    at::Tensor row_blockmask, streaming_info, key_valid_mask;
     if (has_blockmask){
         row_blockmask = row_blockmask_.value();
     }
     if (has_streaming_info){
         streaming_info = streaming_info_.value();
+    }
+    if (has_key_valid_mask){
+        key_valid_mask = key_valid_mask_.value();
     }
     TORCH_CHECK(is_sm90 || is_sm8x, "FlashAttention only supports Ampere GPUs or newer.");
 
@@ -1527,6 +1532,9 @@ mha_fwd_block(const at::Tensor &q,
         TORCH_CHECK(m_block_dim % SPARSE_SIZE == 0, "m_block_dim must be a multiple of 128");
         TORCH_CHECK(n_block_dim % SPARSE_SIZE == 0, "n_block_dim must be a multiple of 128");
     }
+    if(has_key_valid_mask){
+        TORCH_CHECK(key_valid_mask.dtype() == torch::kUInt8, "key_valid_mask must have dtype uint8");
+    }
 
 
     CHECK_DEVICE(q); CHECK_DEVICE(k); CHECK_DEVICE(v);
@@ -1538,6 +1546,9 @@ mha_fwd_block(const at::Tensor &q,
     }
     if(has_streaming_info){
         CHECK_DEVICE(streaming_info);
+    }
+    if(has_key_valid_mask){
+        CHECK_DEVICE(key_valid_mask);
     }
 
     TORCH_CHECK(q.stride(-1) == 1, "Input tensor must have contiguous last dimension");
@@ -1551,6 +1562,9 @@ mha_fwd_block(const at::Tensor &q,
     }
     if(has_streaming_info){
         CHECK_CONTIGUOUS(streaming_info);
+    }
+    if(has_key_valid_mask){
+        CHECK_CONTIGUOUS(key_valid_mask);
     }
 
     const auto sizes = q.sizes();
@@ -1573,6 +1587,9 @@ mha_fwd_block(const at::Tensor &q,
     CHECK_SHAPE(v, total_k, num_heads_k, head_size_og);
     CHECK_SHAPE(cu_seqlens_q, batch_size + 1);
     CHECK_SHAPE(cu_seqlens_k, batch_size + 1);
+    if(has_key_valid_mask){
+        CHECK_SHAPE(key_valid_mask, batch_size, max_seqlen_k_);
+    }
 
     at::Tensor q_padded, k_padded, v_padded;
     if (head_size_og % 8 != 0) {
@@ -1659,6 +1676,7 @@ mha_fwd_block(const at::Tensor &q,
         params.streaming_info = nullptr;
         params.is_exact_streaming = false;
     }
+    params.key_valid_mask = has_key_valid_mask ? static_cast<uint8_t *>(key_valid_mask.data_ptr()) : nullptr;
 
 
     // number of times random will be generated per thread, to offset philox counter in thc random

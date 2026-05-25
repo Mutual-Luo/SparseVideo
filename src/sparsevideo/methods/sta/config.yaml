@@ -34,8 +34,8 @@ model_defaults:
     - 6
     - 8
     - 8
-    window_size:
-    - 3
+    window_size:  # 720p/81f full-window fallback; dense_warmup controls early dense steps.
+    - 4
     - 6
     - 10
     seq_shape: null

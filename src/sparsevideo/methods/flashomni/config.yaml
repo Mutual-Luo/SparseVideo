@@ -14,7 +14,7 @@ defaults:
   sm_scale: null # Optional explicit softmax scale.
   rope_scale: null # Optional RoPE scale forwarded to the native wrapper.
   rope_theta: null # Optional RoPE theta forwarded to the native wrapper.
-  sparse_pattern: explicit # Sparse pattern policy: explicit, global_random, paper_mmdit, or local_qk_topk.
+  sparse_pattern: paper_mmdit # Sparse pattern policy: explicit, global_random, paper_mmdit, or local_qk_topk.
   sparse_size: 128 # Sparse block size used by global_random and related benchmark policies.
   spq_Q: 0.0 # Query sparsity probability used by the upstream global_random benchmark.
   spq_KV: 0.8 # Key/value sparsity probability used by the upstream global_random benchmark.
@@ -35,9 +35,8 @@ defaults:
   N: 6 # Cache refresh interval alias used by FlashOmni paper notation.
   D: 1 # Cache order alias used by FlashOmni paper notation.
   S_q: 0.3 # Cache threshold alias used by FlashOmni paper notation.
-  use_sparse_gemm: true # Enable owned sparse GEMM Q/O projection hooks where supported.
-  is_full: false # Force full attention inside FlashOmni instead of sparse planning.
-  taylor_cache_device: cuda # Device used to store Taylor-cache tensors.
+  use_sparse_gemm: false # Enable owned sparse GEMM Q/O projection hooks where supported.
+  taylor_cache_device: cpu # Device used to store Taylor-cache tensors.
   debug_memory: false # Enable detailed FlashOmni memory debugging.
   debug_memory_max_events: 4000 # Maximum memory-debug events kept in the runtime log.
   sparse_info: null # Explicit query sparse-info tensor or path.
@@ -67,7 +66,7 @@ model_defaults:
     sm_scale: null
     rope_scale: null
     rope_theta: null
-    sparse_pattern: explicit
+    sparse_pattern: paper_mmdit
     sparse_size: 128
     spq_Q: 0.0
     spq_KV: 0.8
@@ -88,9 +87,8 @@ model_defaults:
     N: 6
     D: 1
     S_q: 0.3
-    use_sparse_gemm: true
-    is_full: false
-    taylor_cache_device: cuda
+    use_sparse_gemm: false
+    taylor_cache_device: cpu
     debug_memory: false
     debug_memory_max_events: 4000
     sparse_info: null
@@ -111,7 +109,7 @@ model_defaults:
     sm_scale: null
     rope_scale: null
     rope_theta: null
-    sparse_pattern: explicit
+    sparse_pattern: paper_mmdit
     sparse_size: 128
     spq_Q: 0.0
     spq_KV: 0.8
@@ -132,9 +130,8 @@ model_defaults:
     N: 6
     D: 1
     S_q: 0.3
-    use_sparse_gemm: true
-    is_full: false
-    taylor_cache_device: cuda
+    use_sparse_gemm: false
+    taylor_cache_device: cpu
     debug_memory: false
     debug_memory_max_events: 4000
     sparse_info: null
@@ -155,7 +152,7 @@ model_defaults:
     sm_scale: null
     rope_scale: null
     rope_theta: null
-    sparse_pattern: explicit
+    sparse_pattern: paper_mmdit
     sparse_size: 128
     spq_Q: 0.0
     spq_KV: 0.8
@@ -176,9 +173,8 @@ model_defaults:
     N: 6
     D: 1
     S_q: 0.3
-    use_sparse_gemm: true
-    is_full: false
-    taylor_cache_device: cuda
+    use_sparse_gemm: false
+    taylor_cache_device: cpu
     debug_memory: false
     debug_memory_max_events: 4000
     sparse_info: null
@@ -199,7 +195,7 @@ model_defaults:
     sm_scale: null
     rope_scale: null
     rope_theta: null
-    sparse_pattern: explicit
+    sparse_pattern: paper_mmdit
     sparse_size: 128
     spq_Q: 0.0
     spq_KV: 0.8
@@ -220,9 +216,8 @@ model_defaults:
     N: 6
     D: 1
     S_q: 0.3
-    use_sparse_gemm: true
-    is_full: false
-    taylor_cache_device: cuda
+    use_sparse_gemm: false
+    taylor_cache_device: cpu
     debug_memory: false
     debug_memory_max_events: 4000
     sparse_info: null
@@ -243,7 +238,7 @@ model_defaults:
     sm_scale: null
     rope_scale: null
     rope_theta: null
-    sparse_pattern: explicit
+    sparse_pattern: paper_mmdit
     sparse_size: 128
     spq_Q: 0.0
     spq_KV: 0.8
@@ -264,9 +259,8 @@ model_defaults:
     N: 6
     D: 1
     S_q: 0.3
-    use_sparse_gemm: true
-    is_full: false
-    taylor_cache_device: cuda
+    use_sparse_gemm: false
+    taylor_cache_device: cpu
     debug_memory: false
     debug_memory_max_events: 4000
     sparse_info: null
@@ -287,7 +281,7 @@ model_defaults:
     sm_scale: null
     rope_scale: null
     rope_theta: null
-    sparse_pattern: explicit
+    sparse_pattern: paper_mmdit
     sparse_size: 128
     spq_Q: 0.0
     spq_KV: 0.8
@@ -308,9 +302,8 @@ model_defaults:
     N: 6
     D: 1
     S_q: 0.3
-    use_sparse_gemm: true
-    is_full: false
-    taylor_cache_device: cuda
+    use_sparse_gemm: false
+    taylor_cache_device: cpu
     debug_memory: false
     debug_memory_max_events: 4000
     sparse_info: null
@@ -331,7 +324,7 @@ model_defaults:
     sm_scale: null
     rope_scale: null
     rope_theta: null
-    sparse_pattern: explicit
+    sparse_pattern: paper_mmdit
     sparse_size: 128
     spq_Q: 0.0
     spq_KV: 0.8
@@ -352,9 +345,8 @@ model_defaults:
     N: 6
     D: 1
     S_q: 0.3
-    use_sparse_gemm: true
-    is_full: false
-    taylor_cache_device: cuda
+    use_sparse_gemm: false
+    taylor_cache_device: cpu
     debug_memory: false
     debug_memory_max_events: 4000
     sparse_info: null
@@ -375,7 +367,7 @@ model_defaults:
     sm_scale: null
     rope_scale: null
     rope_theta: null
-    sparse_pattern: explicit
+    sparse_pattern: paper_mmdit
     sparse_size: 128
     spq_Q: 0.0
     spq_KV: 0.8
@@ -396,9 +388,8 @@ model_defaults:
     N: 6
     D: 1
     S_q: 0.3
-    use_sparse_gemm: true
-    is_full: false
-    taylor_cache_device: cuda
+    use_sparse_gemm: false
+    taylor_cache_device: cpu
     debug_memory: false
     debug_memory_max_events: 4000
     sparse_info: null
@@ -419,7 +410,7 @@ model_defaults:
     sm_scale: null
     rope_scale: null
     rope_theta: null
-    sparse_pattern: explicit
+    sparse_pattern: paper_mmdit
     sparse_size: 128
     spq_Q: 0.0
     spq_KV: 0.8
@@ -440,9 +431,8 @@ model_defaults:
     N: 6
     D: 1
     S_q: 0.3
-    use_sparse_gemm: true
-    is_full: false
-    taylor_cache_device: cuda
+    use_sparse_gemm: false
+    taylor_cache_device: cpu
     debug_memory: false
     debug_memory_max_events: 4000
     sparse_info: null
@@ -463,7 +453,7 @@ model_defaults:
     sm_scale: null
     rope_scale: null
     rope_theta: null
-    sparse_pattern: explicit
+    sparse_pattern: paper_mmdit
     sparse_size: 128
     spq_Q: 0.0
     spq_KV: 0.8
@@ -484,9 +474,8 @@ model_defaults:
     N: 6
     D: 1
     S_q: 0.3
-    use_sparse_gemm: true
-    is_full: false
-    taylor_cache_device: cuda
+    use_sparse_gemm: false
+    taylor_cache_device: cpu
     debug_memory: false
     debug_memory_max_events: 4000
     sparse_info: null
@@ -507,7 +496,7 @@ model_defaults:
     sm_scale: null
     rope_scale: null
     rope_theta: null
-    sparse_pattern: explicit
+    sparse_pattern: paper_mmdit
     sparse_size: 128
     spq_Q: 0.0
     spq_KV: 0.8
@@ -528,9 +517,8 @@ model_defaults:
     N: 6
     D: 1
     S_q: 0.3
-    use_sparse_gemm: true
-    is_full: false
-    taylor_cache_device: cuda
+    use_sparse_gemm: false
+    taylor_cache_device: cpu
     debug_memory: false
     debug_memory_max_events: 4000
     sparse_info: null
@@ -551,7 +539,7 @@ model_defaults:
     sm_scale: null
     rope_scale: null
     rope_theta: null
-    sparse_pattern: explicit
+    sparse_pattern: paper_mmdit
     sparse_size: 128
     spq_Q: 0.0
     spq_KV: 0.8
@@ -572,9 +560,8 @@ model_defaults:
     N: 6
     D: 1
     S_q: 0.3
-    use_sparse_gemm: true
-    is_full: false
-    taylor_cache_device: cuda
+    use_sparse_gemm: false
+    taylor_cache_device: cpu
     debug_memory: false
     debug_memory_max_events: 4000
     sparse_info: null
@@ -595,7 +582,7 @@ model_defaults:
     sm_scale: null
     rope_scale: null
     rope_theta: null
-    sparse_pattern: explicit
+    sparse_pattern: paper_mmdit
     sparse_size: 128
     spq_Q: 0.0
     spq_KV: 0.8
@@ -616,9 +603,8 @@ model_defaults:
     N: 6
     D: 1
     S_q: 0.3
-    use_sparse_gemm: true
-    is_full: false
-    taylor_cache_device: cuda
+    use_sparse_gemm: false
+    taylor_cache_device: cpu
     debug_memory: false
     debug_memory_max_events: 4000
     sparse_info: null
@@ -639,7 +625,7 @@ model_defaults:
     sm_scale: null
     rope_scale: null
     rope_theta: null
-    sparse_pattern: explicit
+    sparse_pattern: paper_mmdit
     sparse_size: 128
     spq_Q: 0.0
     spq_KV: 0.8
@@ -660,9 +646,8 @@ model_defaults:
     N: 6
     D: 1
     S_q: 0.3
-    use_sparse_gemm: true
-    is_full: false
-    taylor_cache_device: cuda
+    use_sparse_gemm: false
+    taylor_cache_device: cpu
     debug_memory: false
     debug_memory_max_events: 4000
     sparse_info: null
@@ -683,7 +668,7 @@ model_defaults:
     sm_scale: null
     rope_scale: null
     rope_theta: null
-    sparse_pattern: explicit
+    sparse_pattern: paper_mmdit
     sparse_size: 128
     spq_Q: 0.0
     spq_KV: 0.8
@@ -704,9 +689,8 @@ model_defaults:
     N: 6
     D: 1
     S_q: 0.3
-    use_sparse_gemm: true
-    is_full: false
-    taylor_cache_device: cuda
+    use_sparse_gemm: false
+    taylor_cache_device: cpu
     debug_memory: false
     debug_memory_max_events: 4000
     sparse_info: null
@@ -727,7 +711,7 @@ model_defaults:
     sm_scale: null
     rope_scale: null
     rope_theta: null
-    sparse_pattern: explicit
+    sparse_pattern: paper_mmdit
     sparse_size: 128
     spq_Q: 0.0
     spq_KV: 0.8
@@ -748,9 +732,8 @@ model_defaults:
     N: 6
     D: 1
     S_q: 0.3
-    use_sparse_gemm: true
-    is_full: false
-    taylor_cache_device: cuda
+    use_sparse_gemm: false
+    taylor_cache_device: cpu
     debug_memory: false
     debug_memory_max_events: 4000
     sparse_info: null
@@ -771,7 +754,7 @@ model_defaults:
     sm_scale: null
     rope_scale: null
     rope_theta: null
-    sparse_pattern: explicit
+    sparse_pattern: paper_mmdit
     sparse_size: 128
     spq_Q: 0.0
     spq_KV: 0.8
@@ -792,9 +775,8 @@ model_defaults:
     N: 6
     D: 1
     S_q: 0.3
-    use_sparse_gemm: true
-    is_full: false
-    taylor_cache_device: cuda
+    use_sparse_gemm: false
+    taylor_cache_device: cpu
     debug_memory: false
     debug_memory_max_events: 4000
     sparse_info: null
@@ -815,7 +797,7 @@ model_defaults:
     sm_scale: null
     rope_scale: null
     rope_theta: null
-    sparse_pattern: explicit
+    sparse_pattern: paper_mmdit
     sparse_size: 128
     spq_Q: 0.0
     spq_KV: 0.8
@@ -836,9 +818,8 @@ model_defaults:
     N: 6
     D: 1
     S_q: 0.3
-    use_sparse_gemm: true
-    is_full: false
-    taylor_cache_device: cuda
+    use_sparse_gemm: false
+    taylor_cache_device: cpu
     debug_memory: false
     debug_memory_max_events: 4000
     sparse_info: null
@@ -859,7 +840,7 @@ model_defaults:
     sm_scale: null
     rope_scale: null
     rope_theta: null
-    sparse_pattern: explicit
+    sparse_pattern: paper_mmdit
     sparse_size: 128
     spq_Q: 0.0
     spq_KV: 0.8
@@ -880,9 +861,8 @@ model_defaults:
     N: 6
     D: 1
     S_q: 0.3
-    use_sparse_gemm: true
-    is_full: false
-    taylor_cache_device: cuda
+    use_sparse_gemm: false
+    taylor_cache_device: cpu
     debug_memory: false
     debug_memory_max_events: 4000
     sparse_info: null

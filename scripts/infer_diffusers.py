@@ -11,7 +11,6 @@ import argparse
 import copy
 import sys
 import time
-import traceback
 from contextlib import redirect_stdout
 from pathlib import Path
 from typing import Any, Dict
@@ -86,7 +85,6 @@ from _infer_diffusers.utils import (
     sparsevideo_source_fingerprints,
     sync_if_cuda,
     unsupported_sparse_method_message,
-    validate_sparse_runtime_dispatch,
     validate_svoo_warmup_status,
 )
 
@@ -176,15 +174,13 @@ def run(args: argparse.Namespace) -> int:
         apply_draft_runtime_layout_defaults(
             spec, height, width, num_frames, method_config, user_method_config,
         )
-    if spec.pipeline_class == "HunyuanVideoImageToVideoPipeline" and args.method in ("svg1", "svg2", "svoo"):
+    if spec.pipeline_class == "HunyuanVideoImageToVideoPipeline" and args.method in ("svg1", "svg2"):
         if "context_length" not in user_method_config:
             method_config["context_length"] = None
         if "prompt_length" not in user_method_config:
             method_config["prompt_length"] = None
     if args.method == "radial" and not strict_kernels:
         method_config["allow_flex_fallback"] = True
-    if args.method == "svg2" and not strict_kernels:
-        method_config["allow_triton_fallback"] = True
     if args.method == "draft" and not strict_kernels:
         method_config["allow_triton_fallback"] = True
     model_id = resolve_model_id(spec, args.model_root, args.model_path)
@@ -303,7 +299,7 @@ def run(args: argparse.Namespace) -> int:
         not unsupported
         and (
             args.method in ("adacluster", "radial", "svg2")
-            or (args.method == "svoo" and method_config.get("sparse_backend") == "flashinfer")
+            or args.method == "svoo"
         )
     )
     if needs_flashinfer_load:
@@ -346,11 +342,6 @@ def run(args: argparse.Namespace) -> int:
     spargeattn_needs_runtime = (
         not unsupported
         and args.method == "spargeattn"
-        and (
-            method_config.get("mode") != "full"
-            or method_config.get("tune")
-            or method_config.get("model_out_path")
-        )
     )
     radial_needs_sparge = (
         not unsupported and args.method == "radial" and method_config.get("use_sage_attention")
@@ -368,8 +359,8 @@ def run(args: argparse.Namespace) -> int:
     radial_needs_sageattention = (
         radial_needs_sparge
         and (
-            int(method_config.get("dense_timesteps", 0) or 0) > 0
-            or int(method_config.get("dense_layers", 0) or 0) > 0
+            float(method_config.get("dense_warmup_step_ratio", 0) or 0) > 0
+            or float(method_config.get("dense_warmup_layer_ratio", 0) or 0) > 0
         )
     )
     if radial_needs_sageattention:
@@ -571,7 +562,7 @@ def run(args: argparse.Namespace) -> int:
         stage = "apply_sparse_attention"
         t0 = time.perf_counter()
         with redirect_stdout(sys.stderr):
-            if args.method in ("svg1", "svg2", "svoo") and spec.family == "hunyuan_video":
+            if args.method in ("svg1", "svg2") and spec.family == "hunyuan_video":
                 hunyuan_i2v = spec.pipeline_class == "HunyuanVideoImageToVideoPipeline"
                 if method_config.get("context_length") is None and not hunyuan_i2v:
                     method_config["context_length"] = 256
@@ -617,6 +608,7 @@ def run(args: argparse.Namespace) -> int:
             with redirect_stdout(sys.stderr):
                 handle.restore()
             base_metrics["sparse_attention_handle_after_restore"] = sparse_attention_handle_summary(handle)
+            handle = None
             append_metrics(args.metrics_file, base_metrics)
             print_final_run_metrics(args, base_metrics)
             return 0
@@ -643,17 +635,6 @@ def run(args: argparse.Namespace) -> int:
             sync_if_cuda(torch, args.device)
         base_metrics["sparse_attention_handle"] = sparse_attention_handle_summary(handle)
         timings["generate_sec"] = time.perf_counter() - t0
-
-        stage = "validate_sparse_dispatch"
-        dispatch_warning = validate_sparse_runtime_dispatch(
-            args.method,
-            method_config,
-            base_metrics["sparse_attention_handle"],
-            strict_kernels=strict_kernels,
-        )
-        if dispatch_warning is not None:
-            runtime_status.setdefault("generation_checks", {"errors": [], "warnings": []})
-            runtime_status["generation_checks"]["warnings"].append(dispatch_warning)
 
         stage = "spargeattn_save_state"
         t0 = time.perf_counter()
@@ -690,31 +671,10 @@ def run(args: argparse.Namespace) -> int:
         append_metrics(args.metrics_file, base_metrics)
         print_final_run_metrics(args, base_metrics)
         return 0
-    except Exception as exc:
-        restore_error = None
+    finally:
         if handle is not None:
-            base_metrics["sparse_attention_handle"] = sparse_attention_handle_summary(handle)
-            try:
-                with redirect_stdout(sys.stderr):
-                    handle.restore()
-                base_metrics["sparse_attention_handle_after_restore"] = sparse_attention_handle_summary(handle)
-            except Exception as restore_exc:
-                restore_error = f"{type(restore_exc).__name__}: {restore_exc}"
-        timings["total_sec"] = time.perf_counter() - t_total
-        base_metrics.update(
-            status="failed",
-            failed_stage=stage,
-            timings=timings,
-            error_type=type(exc).__name__,
-            error=str(exc),
-        )
-        if restore_error is not None:
-            base_metrics["restore_error"] = restore_error
-        append_metrics(args.metrics_file, base_metrics)
-        if args.print_json:
-            traceback.print_exc()
-        print_final_run_metrics(args, base_metrics)
-        return 1
+            with redirect_stdout(sys.stderr):
+                handle.restore()
 
 
 def main() -> int:

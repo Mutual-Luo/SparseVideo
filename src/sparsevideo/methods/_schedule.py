@@ -9,6 +9,23 @@ DENSE_WARMUP_CONFIG_DEFAULTS = {
 }
 
 
+class WarmupNotifier:
+    """Prints a one-time message when warmup begins and when sparse stage begins."""
+
+    def __init__(self, method_name: str):
+        self._method_name = method_name
+        self._warmup_announced = False
+        self._sparse_announced = False
+
+    def notify(self, is_warmup: bool, step, num_inference_steps, warmup_steps: int) -> None:
+        if is_warmup and not self._warmup_announced:
+            self._warmup_announced = True
+            print(f"[sparsevideo:{self._method_name}] Dense warmup: steps 1-{warmup_steps}/{num_inference_steps} ({warmup_steps / num_inference_steps:.0%})")
+        elif not is_warmup and not self._sparse_announced:
+            self._sparse_announced = True
+            print(f"[sparsevideo:{self._method_name}] Sparse attention active from step {step}/{num_inference_steps}")
+
+
 def configured_dense_warmup_layer_count(config, total_layers):
     if config.get("dense_warmup_layer_ratio") is not None:
         ratio = _validate_ratio("dense_warmup_layer_ratio", config["dense_warmup_layer_ratio"])
@@ -18,14 +35,20 @@ def configured_dense_warmup_layer_count(config, total_layers):
     return 0
 
 
-def configured_dense_warmup_requires_dense(config, num_inference_steps, step, timestep=None):
+def configured_dense_warmup_requires_dense(config, num_inference_steps, step, timestep=None, notifier=None):
     if config.get("dense_warmup_step_ratio") is not None:
         ratio = _validate_ratio("dense_warmup_step_ratio", config["dense_warmup_step_ratio"])
         if ratio >= 1.0:
+            if notifier is not None and num_inference_steps is not None:
+                notifier.notify(True, step, num_inference_steps, int(num_inference_steps))
             return True
         if step is None or num_inference_steps is None:
             return False
-        return int(step) <= int(floor(ratio * int(num_inference_steps)))
+        warmup_steps = int(floor(ratio * int(num_inference_steps)))
+        is_warmup = int(step) <= warmup_steps
+        if notifier is not None:
+            notifier.notify(is_warmup, step, int(num_inference_steps), warmup_steps)
+        return is_warmup
     return False
 
 

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -30,8 +31,12 @@ from sparsevideo.methods.sta.search import (
 )
 from sparsevideo.methods.sta.ops import (
     STA_SUPPORTED_SEQ_SHAPES,
+    STA_TILE_SIZE,
+    _can_use_a100_sta,
     _sta_triton_head_dim,
     _can_use_h100_sta,
+    _sta_a100_block_mask_cpu,
+    _sta_a100_image_valid_mask_cpu,
     _owned_fastvideo_sta_triton,
     _patch_a100_triton_autotune,
     _sliding_tile_attention_triton,
@@ -121,21 +126,23 @@ def test_sta_owned_fastvideo_runtime_sources_match_upstream_references():
         assert token in owned_triton
 
 
-def test_sta_dispatches_to_owned_triton_when_h100_is_unavailable(monkeypatch):
+def test_sta_dispatches_to_a100_block_sparse_when_h100_is_unavailable(monkeypatch):
     calls = {}
 
     def fake_validate(q, k, v, window_size, has_text, seq_shape):
         return "18x48x80"
 
-    def fake_triton(q, k, v, window_size, text_length, has_text, seq_shape):
-        calls["path"] = "triton"
+    def fake_a100(q, k, v, window_size, text_length, has_text, seq_shape, source_seq_shape=None):
+        calls["path"] = "a100_block_sparse"
         calls["seq_shape"] = seq_shape
+        calls["source_seq_shape"] = source_seq_shape
         return q
 
     monkeypatch.setattr(torch.Tensor, "is_cuda", property(lambda self: True))
     monkeypatch.setattr(sta_ops, "_validate_fastvideo_sta_inputs", fake_validate)
     monkeypatch.setattr(sta_ops, "_can_use_h100_sta", lambda q: False)
-    monkeypatch.setattr(sta_ops, "_sliding_tile_attention_triton", fake_triton)
+    monkeypatch.setattr(sta_ops, "_can_use_a100_sta", lambda q: True)
+    monkeypatch.setattr(sta_ops, "_sliding_tile_attention_a100", fake_a100)
 
     q = torch.randn(1, 1, 8, 4)
 
@@ -150,25 +157,27 @@ def test_sta_dispatches_to_owned_triton_when_h100_is_unavailable(monkeypatch):
     )
 
     assert out is q
-    assert calls == {"path": "triton", "seq_shape": "18x48x80"}
+    assert calls == {"path": "a100_block_sparse", "seq_shape": "18x48x80", "source_seq_shape": None}
 
 
-def test_sta_backend_name_marks_a100_triton_path(monkeypatch):
+def test_sta_backend_name_marks_a100_block_sparse_cuda_path(monkeypatch):
     monkeypatch.setattr(torch.Tensor, "is_cuda", property(lambda self: True))
     monkeypatch.setattr(torch.cuda, "get_device_capability", lambda device=None: (8, 0))
     monkeypatch.setattr(sta_ops, "sta_fwd", object())
+    monkeypatch.setattr(sta_ops, "_can_use_a100_sta", lambda q: True)
     monkeypatch.delenv("SPARSEVIDEO_STA_TRITON_AUTOTUNE", raising=False)
 
-    assert _sta_backend_name(torch.empty(1)) == "fastvideo_sta_a100_triton"
+    assert _sta_backend_name(torch.empty(1)) == "fastvideo_sta_a100_block_sparse_cuda"
 
 
-def test_sta_backend_name_marks_full_autotune_as_legacy_triton(monkeypatch):
+def test_sta_backend_name_does_not_use_triton_autotune_env(monkeypatch):
     monkeypatch.setattr(torch.Tensor, "is_cuda", property(lambda self: True))
     monkeypatch.setattr(torch.cuda, "get_device_capability", lambda device=None: (8, 0))
     monkeypatch.setattr(sta_ops, "sta_fwd", object())
+    monkeypatch.setattr(sta_ops, "_can_use_a100_sta", lambda q: True)
     monkeypatch.setenv("SPARSEVIDEO_STA_TRITON_AUTOTUNE", "full")
 
-    assert _sta_backend_name(torch.empty(1)) == "fastvideo_sta_triton"
+    assert _sta_backend_name(torch.empty(1)) == "fastvideo_sta_a100_block_sparse_cuda"
 
 
 def test_sta_wan_generalized_shape_reaches_owned_path(monkeypatch):
@@ -346,6 +355,203 @@ def test_sta_current_a100_does_not_claim_h100_native_path():
 
     assert sta_h100.sta_fwd is not None
     assert _can_use_h100_sta(q) is False
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="STA A100 CUDA correctness requires CUDA")
+def test_sta_a100_block_sparse_matches_masked_dense_small_shape():
+    major, _minor = torch.cuda.get_device_capability()
+    if major != 8:
+        pytest.skip("STA A100 block-sparse CUDA path is for Ampere/A100")
+    if not _can_use_a100_sta(torch.empty(1, device="cuda")):
+        pytest.skip("SparseVideo-owned block-sparse CUDA backend is not available")
+
+    def explicit_mask(shape, window, text_length):
+        canvas_t, canvas_h, canvas_w = shape
+        tile_t, tile_h, tile_w = STA_TILE_SIZE
+        kernel_t, kernel_h, kernel_w = window
+        total_tile = math.prod(STA_TILE_SIZE)
+        img_len = canvas_t * canvas_h * canvas_w
+        seq_len = img_len + text_length
+        tile_h_count = canvas_h // tile_h
+        tile_w_count = canvas_w // tile_w
+        tile_t_count = canvas_t // tile_t
+        q_idx = torch.arange(seq_len, device="cuda")[:, None]
+        kv_idx = torch.arange(seq_len, device="cuda")[None, :]
+
+        def coords(idx):
+            tile_id = idx // total_tile
+            return (
+                tile_id // (tile_h_count * tile_w_count),
+                (tile_id % (tile_h_count * tile_w_count)) // tile_w_count,
+                tile_id % tile_w_count,
+            )
+
+        q_t, q_h, q_w = coords(q_idx.clamp(max=img_len - 1))
+        kv_t, kv_h, kv_w = coords(kv_idx.clamp(max=img_len - 1))
+        center_t = q_t.clamp(kernel_t // 2, (tile_t_count - 1) - kernel_t // 2)
+        center_h = q_h.clamp(kernel_h // 2, (tile_h_count - 1) - kernel_h // 2)
+        center_w = q_w.clamp(kernel_w // 2, (tile_w_count - 1) - kernel_w // 2)
+        image = (
+            (q_idx < img_len)
+            & (kv_idx < img_len)
+            & ((center_t - kv_t).abs() <= kernel_t // 2)
+            & ((center_h - kv_h).abs() <= kernel_h // 2)
+            & ((center_w - kv_w).abs() <= kernel_w // 2)
+        )
+        image_to_text = (q_idx < img_len) & (kv_idx >= img_len) & (kv_idx < img_len + text_length)
+        text_to_all = (q_idx >= img_len) & (kv_idx < img_len + text_length)
+        return image | image_to_text | text_to_all
+
+    batch, heads, head_dim = 1, 2, 32
+    shape = (6, 8, 16)
+    text_length = 17
+    seq_len = math.prod(shape) + text_length
+    windows = [(1, 1, 1), (1, 1, 2)]
+    torch.manual_seed(0)
+    q = torch.randn(batch, heads, seq_len, head_dim, device="cuda", dtype=torch.bfloat16)
+    k = torch.randn_like(q)
+    v = torch.randn_like(q)
+
+    actual = sliding_tile_attention(q, k, v, windows, text_length, True, "6x8x16")
+    expected = []
+    for head_idx, window in enumerate(windows):
+        mask = explicit_mask(shape, window, text_length)
+        scores = (q[:, head_idx].float() @ k[:, head_idx].float().transpose(-1, -2)) * (head_dim ** -0.5)
+        scores = scores.masked_fill(~mask[None], float("-inf"))
+        expected.append((torch.softmax(scores, dim=-1) @ v[:, head_idx].float()).to(actual.dtype))
+    expected = torch.stack(expected, dim=1)
+
+    torch.testing.assert_close(actual.float(), expected.float(), atol=2.5e-2, rtol=2.5e-2)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="STA A100 CUDA correctness requires CUDA")
+def test_sta_a100_block_sparse_masks_partial_border_keys():
+    major, _minor = torch.cuda.get_device_capability()
+    if major != 8:
+        pytest.skip("STA A100 block-sparse CUDA path is for Ampere/A100")
+    if not _can_use_a100_sta(torch.empty(1, device="cuda")):
+        pytest.skip("SparseVideo-owned block-sparse CUDA backend is not available")
+
+    def explicit_mask(shape, window):
+        canvas_t, canvas_h, canvas_w = shape
+        tile_t, tile_h, tile_w = STA_TILE_SIZE
+        kernel_t, kernel_h, kernel_w = window
+        total_tile = math.prod(STA_TILE_SIZE)
+        img_len = canvas_t * canvas_h * canvas_w
+        tile_h_count = canvas_h // tile_h
+        tile_w_count = canvas_w // tile_w
+        tile_t_count = canvas_t // tile_t
+        q_idx = torch.arange(img_len, device="cuda")[:, None]
+        kv_idx = torch.arange(img_len, device="cuda")[None, :]
+
+        def coords(idx):
+            tile_id = idx // total_tile
+            return (
+                tile_id // (tile_h_count * tile_w_count),
+                (tile_id % (tile_h_count * tile_w_count)) // tile_w_count,
+                tile_id % tile_w_count,
+            )
+
+        q_t, q_h, q_w = coords(q_idx)
+        kv_t, kv_h, kv_w = coords(kv_idx)
+        center_t = q_t.clamp(kernel_t // 2, (tile_t_count - 1) - kernel_t // 2)
+        center_h = q_h.clamp(kernel_h // 2, (tile_h_count - 1) - kernel_h // 2)
+        center_w = q_w.clamp(kernel_w // 2, (tile_w_count - 1) - kernel_w // 2)
+        return (
+            ((center_t - kv_t).abs() <= kernel_t // 2)
+            & ((center_h - kv_h).abs() <= kernel_h // 2)
+            & ((center_w - kv_w).abs() <= kernel_w // 2)
+        )
+
+    batch, heads, head_dim = 1, 2, 32
+    padded_shape = (6, 8, 16)
+    source_shape = (5, 7, 15)
+    seq_len = math.prod(padded_shape)
+    windows = [(1, 1, 1), (1, 1, 2)]
+    valid = _sta_a100_image_valid_mask_cpu("6x8x16", "5x7x15").bool().to("cuda")
+    torch.manual_seed(1)
+    q = torch.randn(batch, heads, seq_len, head_dim, device="cuda", dtype=torch.bfloat16)
+    k = (0.1 * torch.randn_like(q.float())).to(torch.bfloat16)
+    v = torch.randn_like(q)
+    k[:, :, ~valid, :] = 8.0
+    v[:, :, ~valid, :] = 32.0
+
+    actual = sliding_tile_attention(
+        q,
+        k,
+        v,
+        windows,
+        text_length=0,
+        has_text=False,
+        seq_shape="6x8x16",
+        source_seq_shape="5x7x15",
+    )
+    expected = []
+    for head_idx, window in enumerate(windows):
+        mask = explicit_mask(padded_shape, window) & valid[None, :]
+        scores = (q[:, head_idx].float() @ k[:, head_idx].float().transpose(-1, -2)) * (head_dim ** -0.5)
+        scores = scores.masked_fill(~mask[None], float("-inf"))
+        expected.append((torch.softmax(scores, dim=-1) @ v[:, head_idx].float()).to(actual.dtype))
+    expected = torch.stack(expected, dim=1)
+
+    torch.testing.assert_close(
+        actual[:, :, valid, :].float(),
+        expected[:, :, valid, :].float(),
+        atol=3.0e-2,
+        rtol=3.0e-2,
+    )
+
+
+def test_sta_partial_border_path_passes_source_shape_and_skips_repair(monkeypatch):
+    calls = []
+
+    def fake_sliding_tile_attention(q, k, v, window_size, text_length, has_text, seq_shape, source_seq_shape=None):
+        calls.append(
+            {
+                "shape": tuple(q.shape),
+                "seq_shape": seq_shape,
+                "source_seq_shape": source_seq_shape,
+            }
+        )
+        return q
+
+    def fail_repair(*args, **kwargs):
+        raise AssertionError("partial-border A100 path should not call dense repair")
+
+    monkeypatch.setattr(sta_ops, "sliding_tile_attention", fake_sliding_tile_attention)
+    monkeypatch.setattr("sparsevideo.methods.sta.method._sta_repair_padded_border_outputs", fail_repair)
+
+    query = torch.arange(1 * (2 * 3 * 3) * 1 * 2, dtype=torch.float32).reshape(1, 18, 1, 2)
+    out = _sta_sparsevideo_fastvideo_path(
+        query,
+        query,
+        query,
+        B=1,
+        N=18,
+        H=1,
+        D=2,
+        vid_start=0,
+        video_len=18,
+        text_len=0,
+        context_len=0,
+        T=2,
+        spatial_h=3,
+        spatial_w=3,
+        T_pad=2,
+        H_pad=4,
+        W_pad=4,
+        tile_size=(1, 2, 2),
+        kernel_size=(1, 1, 1),
+        model_type="wan",
+        seq_shape_override="2x3x3",
+        has_text_config=False,
+        layer_idx=0,
+        step_idx=0,
+        mask_strategy=None,
+    )
+
+    assert calls == [{"shape": (1, 1, 32, 2), "seq_shape": "2x4x4", "source_seq_shape": "2x3x3"}]
+    assert torch.equal(out, query)
 
 
 def test_sta_wan_mask_strategy_matches_archive_branch_shape():
@@ -554,12 +760,12 @@ def test_sta_searching_mode_records_candidate_losses(monkeypatch, tmp_path):
     records = list(tmp_path.glob("mask_search_unit_*.jsonl"))
     payload = json.loads(records[0].read_text(encoding="utf-8").strip())
 
-    assert torch.equal(out, torch.zeros_like(query))
+    assert torch.equal(out, torch.zeros_like(query) + 3)
     assert payload["step"] == 0
     assert payload["layer"] == 0
     assert set(payload["L2_loss"]) == {"1,1,1", "2,1,1"}
-    assert payload["L2_loss"]["1,1,1"] == [1.0, 1.0]
-    assert payload["L2_loss"]["2,1,1"] == [4.0, 4.0]
+    assert payload["L2_loss"]["1,1,1"] == [4.0, 4.0]
+    assert payload["L2_loss"]["2,1,1"] == [1.0, 1.0]
 
 
 def test_sta_hunyuan_processor_passes_prompt_length_to_kernel_path(monkeypatch):
@@ -593,13 +799,14 @@ def test_sta_hunyuan_processor_passes_prompt_length_to_kernel_path(monkeypatch):
 def test_sta_hunyuan_kernel_uses_prompt_length_not_text_tail_length(monkeypatch):
     calls = []
 
-    def fake_sliding_tile_attention(q, k, v, window_size, text_length, has_text, seq_shape):
+    def fake_sliding_tile_attention(q, k, v, window_size, text_length, has_text, seq_shape, source_seq_shape=None):
         calls.append(
             {
                 "shape": tuple(q.shape),
                 "text_length": text_length,
                 "has_text": has_text,
                 "seq_shape": seq_shape,
+                "source_seq_shape": source_seq_shape,
             }
         )
         return q
@@ -642,6 +849,7 @@ def test_sta_hunyuan_kernel_uses_prompt_length_not_text_tail_length(monkeypatch)
             "text_length": 2,
             "has_text": True,
             "seq_shape": "1x2x4",
+            "source_seq_shape": "1x2x4",
         }
     ]
     assert torch.equal(out, query)
@@ -650,13 +858,14 @@ def test_sta_hunyuan_kernel_uses_prompt_length_not_text_tail_length(monkeypatch)
 def test_sta_hunyuan_text_tail_over_kernel_capacity_uses_dense_tail(monkeypatch):
     calls = []
 
-    def fake_sliding_tile_attention(q, k, v, window_size, text_length, has_text, seq_shape):
+    def fake_sliding_tile_attention(q, k, v, window_size, text_length, has_text, seq_shape, source_seq_shape=None):
         calls.append(
             {
                 "shape": tuple(q.shape),
                 "text_length": text_length,
                 "has_text": has_text,
                 "seq_shape": seq_shape,
+                "source_seq_shape": source_seq_shape,
             }
         )
         return q
@@ -699,6 +908,7 @@ def test_sta_hunyuan_text_tail_over_kernel_capacity_uses_dense_tail(monkeypatch)
             "text_length": 1,
             "has_text": True,
             "seq_shape": "1x2x4",
+            "source_seq_shape": "1x2x4",
         }
     ]
     assert out.shape == query.shape

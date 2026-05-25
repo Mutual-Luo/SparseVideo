@@ -57,20 +57,14 @@ class DraftMethod(SparseMethod):
 
         model_type = self.model_info.model_type
         dense_warmup_layer_count = configured_dense_warmup_layer_count(cfg, total_layers)
-
         def attn_fn(query, key, value, attention_mask, **kwargs):
             full_attention = (
-                query.shape[1] != key.shape[1]
-                or layer_idx < dense_warmup_layer_count
+                layer_idx < dense_warmup_layer_count
                 or configured_dense_warmup_requires_dense(
                     cfg,
                     runtime_num_inference_steps(step_tracker),
                     getattr(step_tracker, "step", None),
-                )
-                or _draft_is_dense_layer_or_timestep(
-                    model_type=model_type,
-                    layer_idx=layer_idx,
-                    timestep=step_tracker.timestep,
+                    notifier=self.warmup_notifier,
                 )
             )
             if full_attention:
@@ -89,6 +83,11 @@ class DraftMethod(SparseMethod):
                     step=getattr(step_tracker, "step", None),
                 )
                 return out
+            if query.shape[1] != key.shape[1]:
+                raise RuntimeError(
+                    "draft sparse path requires self-attention with matching query/key lengths; "
+                    "dense fallback is controlled only by the common dense warmup ratios"
+                )
             if attention_mask is not None and model_type != "hunyuan_video":
                 raise RuntimeError("draft sparse path requires self-attention without an attention mask")
             backend_trace = []
@@ -510,14 +509,6 @@ def _draft_triton_path(query, key, value, B, N, H, D, scale,
 
     out_reorg = out_sorted.reshape(B, H, N, D).permute(0, 2, 1, 3)
     return out_reorg.index_select(1, restore_idx)
-
-
-def _draft_is_dense_layer_or_timestep(model_type, layer_idx, timestep):
-    if model_type == "wan":
-        return layer_idx < 1 or timestep > 925
-    if model_type == "hunyuan_video":
-        return layer_idx < 2 or timestep > 945
-    return False
 
 
 def _draft_mit_head_dim(head_dim):

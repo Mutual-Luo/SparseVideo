@@ -62,7 +62,7 @@ def test_svoo_warmup_dimensions_match_hunyuan_upstream_layout():
         height=720,
         width=1280,
         num_frames=129,
-        config={"context_length": 256},
+        config={},
     )
 
     assert dims["model_name"] == "HunyuanVideo 1.0"
@@ -270,7 +270,6 @@ def test_svoo_warmup_runs_owned_triton_kernels_on_cuda(monkeypatch):
         width=64,
         num_frames=1,
         config={
-            "sparse_backend": "triton",
             "num_q_centroids": 1,
             "num_k_centroids": 1,
         },
@@ -284,4 +283,4 @@ def test_svoo_warmup_runs_owned_triton_kernels_on_cuda(monkeypatch):
     assert status["error"] is None
     assert status["seq_len"] == 16
     assert status["warmup_seq_len"] == 16
-    assert status["sparse_backend"] == "triton"
+    assert status["backend"] == "flashinfer"

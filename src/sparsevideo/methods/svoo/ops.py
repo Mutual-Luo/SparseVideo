@@ -5,9 +5,8 @@ from pathlib import Path
 
 import torch
 
-from ...kernels.dynamic_map import identify_dynamic_map, identify_dynamic_map_global, weighted_softmax
+from ...kernels.dynamic_map import identify_dynamic_map
 from ...kernels.permute import apply_inverse_permutation_triton, permute_tensor_by_labels_triton
-from .._layout import infer_video_frame_shape
 from .text import pad_text_clusters
 
 
@@ -27,13 +26,18 @@ def resolve_sparsity_csv_path(csv_path, base_dir=None):
     return resolved
 
 
-def should_recluster(current_step, start_reuse_step, reuse_interval):
-    if current_step is None or start_reuse_step is None or start_reuse_step <= 0:
+def should_recluster(cached_clustering, cache_key, current_step=None, reuse_interval=None):
+    if cached_clustering is None or cached_clustering.get("cache_key") != cache_key:
         return True
-    if current_step < start_reuse_step:
-        return True
-    interval = max(1, int(reuse_interval or 1))
-    return (current_step - start_reuse_step) % interval == 0
+    if reuse_interval is None:
+        return False
+    interval = int(reuse_interval)
+    if interval <= 0:
+        return False
+    cached_step = cached_clustering.get("step")
+    if current_step is None or cached_step is None:
+        return False
+    return int(current_step) - int(cached_step) >= interval
 
 
 def load_sparsity_lookup(csv_path):
@@ -91,29 +95,18 @@ def svoo_attention(
     text_len=0,
     prompt_length=None,
     model_type="wan",
-    scheduler_timestep=None,
-    total_layers=0,
 ):
     """SVOO: Co-clustering + dynamic block-sparse attention.
 
     query/key/value: [B, N, H, D]
     """
-    implementation = cfg.get("implementation", "native")
-    if implementation != "native":
-        raise NotImplementedError(
-            "SVOO implementation must be 'native'. Reference-repo bridges are not used by SparseVideo."
-        )
-
     if not query.is_cuda:
         raise RuntimeError("svoo sparse path requires CUDA")
 
-    from ...kernels.kmeans import triton_kmeans
-    from ...kernels.block_sparse_attn import block_sparse_attention
     from ...kernels.co_cluster import co_cluster_tokens
     from ...kernels.flashinfer_block_sparse import HAS_FLASHINFER, variable_block_sparse_attn
 
     B, N, H, D = query.shape
-    scale = D ** -0.5
     text_len = max(0, min(int(text_len or 0), N))
     video_N = N - text_len
     if video_N <= 0:
@@ -138,7 +131,7 @@ def svoo_attention(
     cache_key = (B * H, video_N, text_len, D, nqc, nkc, str(q_flat.device))
     cached = state.get("cached_clustering")
     do_recluster = should_recluster(
-        current_step, cfg["start_reuse_step"], cfg["reuse_interval"],
+        cached, cache_key, current_step, cfg.get("reuse_interval"),
     )
     if not do_recluster and cached is not None and cached.get("cache_key") == cache_key:
         q_labels = cached["q_labels"]
@@ -151,38 +144,25 @@ def svoo_attention(
         kmeans_iters = (
             cfg["kmeans_iter_step"] if state["centroids_init"] else cfg["kmeans_iter_init"]
         )
-        if cfg["use_svoo"]:
-            (
-                q_labels,
-                q_centroids_token,
-                q_sizes,
-                k_labels,
-                k_centroids,
-                k_sizes,
-            ) = co_cluster_tokens(
-                q_video,
-                k_video,
-                nqc,
-                nkc,
-                max_iters=kmeans_iters,
-            )
-        else:
-            q_labels, q_centroids_token, q_sizes = triton_kmeans(
-                q_video, nqc, kmeans_iters,
-                init_centroids=state.get("prev_q_centroids"),
-                final_reassign=False,
-            )
-            k_labels, k_centroids, k_sizes = triton_kmeans(
-                k_video, nkc, kmeans_iters,
-                init_centroids=state.get("prev_k_centroids"),
-                final_reassign=False,
-            )
-            state["prev_q_centroids"] = q_centroids_token.detach()
-            state["prev_k_centroids"] = k_centroids.detach()
+        (
+            q_labels,
+            q_centroids_token,
+            q_sizes,
+            k_labels,
+            k_centroids,
+            k_sizes,
+        ) = co_cluster_tokens(
+            q_video,
+            k_video,
+            nqc,
+            nkc,
+            max_iters=kmeans_iters,
+        )
 
         state["centroids_init"] = True
         state["cached_clustering"] = {
             "cache_key": cache_key,
+            "step": current_step,
             "q_labels": q_labels.detach(),
             "q_centroids": q_centroids_token.detach(),
             "q_sizes": q_sizes.detach(),
@@ -195,35 +175,14 @@ def svoo_attention(
         return None
 
     min_ratio = dynamic_min_kc_ratio(cfg, state, current_step, layer_idx, B, H, q_flat.device)
-    if cfg.get("use_global_constraints"):
-        num_frames, frame_size = _svoo_frame_layout(video_N, model_type=model_type)
-        dynamic_map = identify_dynamic_map_global(
-            q_centroids_token.view(B, H, q_centroids_token.shape[1], D),
-            k_centroids.view(B, H, k_centroids.shape[1], D),
-            q_sizes.view(B, H, q_sizes.shape[1]),
-            k_sizes.view(B, H, k_sizes.shape[1]),
-            cfg["top_p_kmeans"],
-            min_ratio,
-            key_tokens=k_video.view(B, H, video_N, D),
-            k_labels=k_labels,
-            num_frame=num_frames,
-            frame_size=frame_size,
-            context_length=0,
-            timestep=scheduler_timestep if scheduler_timestep is not None else 0,
-            layer_idx=layer_idx,
-            num_layers=total_layers,
-            lambda_schedule=cfg["lambda_schedule"],
-            diverse_top_p_k=cfg["diverse_top_p_k"],
-        ).view(B * H, q_centroids_token.shape[1], k_centroids.shape[1])
-    else:
-        dynamic_map = identify_dynamic_map(
-            q_centroids_token,
-            k_centroids,
-            q_sizes,
-            k_sizes,
-            cfg["top_p_kmeans"],
-            min_ratio,
-        )
+    dynamic_map = identify_dynamic_map(
+        q_centroids_token,
+        k_centroids,
+        q_sizes,
+        k_sizes,
+        cfg["top_p_kmeans"],
+        min_ratio,
+    )
 
     q_sorted_idx = q_labels.argsort(dim=-1)
     k_sorted_idx = k_labels.long().argsort(dim=-1)
@@ -234,7 +193,7 @@ def svoo_attention(
             k_sizes.unsqueeze(1),
             q_sorted_idx,
             text_len=text_len,
-            prompt_length=prompt_length if prompt_length is not None else cfg.get("prompt_length"),
+            prompt_length=prompt_length,
         )
         dynamic_map = dynamic_map_4d.squeeze(1)
         q_sizes = q_sizes_4d.squeeze(1)
@@ -261,23 +220,14 @@ def svoo_attention(
         del q_bhsd, k_bhsd, v_bhsd
         del q_sorted_bhsd, k_sorted_bhsd, v_sorted_bhsd
 
-    sparse_backend = cfg.get("sparse_backend", "flashinfer")
     q_sizes_i32 = q_sizes.to(torch.int32)
     k_sizes_i32 = k_sizes.to(torch.int32)
-    if sparse_backend == "flashinfer":
-        if not HAS_FLASHINFER:
-            raise RuntimeError("svoo sparse_backend=flashinfer requires flashinfer.sparse")
-        out_sorted = variable_block_sparse_attn(
-            q_sorted, k_sorted, v_sorted,
-            dynamic_map, q_sizes_i32, k_sizes_i32,
-        )
-    elif sparse_backend == "triton":
-        out_sorted = block_sparse_attention(
-            q_sorted, k_sorted, v_sorted,
-            q_sizes, k_sizes, dynamic_map, scale,
-        )
-    else:
-        raise ValueError("svoo sparse_backend must be 'flashinfer' or 'triton'")
+    if not HAS_FLASHINFER:
+        raise RuntimeError("svoo sparse path requires flashinfer.sparse")
+    out_sorted = variable_block_sparse_attn(
+        q_sorted, k_sorted, v_sorted,
+        dynamic_map, q_sizes_i32, k_sizes_i32,
+    )
     if cfg.get("enable_mem_save", True):
         del q_sorted, k_sorted, v_sorted
 
@@ -287,9 +237,3 @@ def svoo_attention(
         del out_sorted
 
     return out_bhsd.permute(0, 2, 1, 3)
-
-
-def _svoo_frame_layout(video_len, model_type):
-    num_frames, frame_h, frame_w = infer_video_frame_shape(video_len, model_type=model_type)
-    return num_frames, frame_h * frame_w
-

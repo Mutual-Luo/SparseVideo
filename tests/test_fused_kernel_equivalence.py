@@ -218,6 +218,22 @@ def test_triton_modulate_shift_matches_pytorch():
 
 
 @skip_no_cuda
+def test_triton_modulate_shift_matches_wan_broadcast_shape():
+    from sparsevideo.kernels.modulate import triton_modulate_shift_forward
+
+    torch.manual_seed(56)
+    B, S, D = 2, 64, 128
+    x = torch.randn(B, S, D, device="cuda", dtype=torch.float32)
+    scale = torch.randn(B, 1, D, device="cuda", dtype=torch.float32)
+    shift = torch.randn(B, 1, D, device="cuda", dtype=torch.float32)
+
+    expected = (x * (1 + scale) + shift).to(torch.bfloat16)
+    actual = triton_modulate_shift_forward(x, scale, shift, output_dtype=torch.bfloat16)
+
+    torch.testing.assert_close(actual, expected, atol=1e-2, rtol=1e-2)
+
+
+@skip_no_cuda
 def test_triton_modulate_gate_residual_matches_pytorch():
     from sparsevideo.kernels.modulate import triton_modulate_gate_residual_forward
 
@@ -229,6 +245,22 @@ def test_triton_modulate_gate_residual_matches_pytorch():
 
     expected = (residual.float() + x.float() * gate.unsqueeze(1).float()).to(torch.float16)
     actual = triton_modulate_gate_residual_forward(residual, x, gate, output_dtype=torch.float16)
+
+    torch.testing.assert_close(actual, expected, atol=1e-2, rtol=1e-2)
+
+
+@skip_no_cuda
+def test_triton_modulate_gate_residual_matches_wan_broadcast_shape():
+    from sparsevideo.kernels.modulate import triton_modulate_gate_residual_forward
+
+    torch.manual_seed(67)
+    B, S, D = 2, 64, 128
+    residual = torch.randn(B, S, D, device="cuda", dtype=torch.bfloat16)
+    x = torch.randn(B, S, D, device="cuda", dtype=torch.bfloat16)
+    gate = torch.randn(B, 1, D, device="cuda", dtype=torch.float32)
+
+    expected = (residual.float() + x.float() * gate).to(torch.bfloat16)
+    actual = triton_modulate_gate_residual_forward(residual, x, gate, output_dtype=torch.bfloat16)
 
     torch.testing.assert_close(actual, expected, atol=1e-2, rtol=1e-2)
 

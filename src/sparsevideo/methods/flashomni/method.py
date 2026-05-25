@@ -185,17 +185,12 @@ class FlashOmniMethod(SparseMethod):
             raise ValueError("flashomni taylor_cache_device must be 'cuda' or 'cpu'")
         if int(self.config["debug_memory_max_events"]) < 1:
             raise ValueError("flashomni debug_memory_max_events must be >= 1")
-        if self.config["is_full"] and self.config["implementation"] != "upstream":
-            raise NotImplementedError(
-                "flashomni is_full follows the upstream FlashOmni full-kernel path "
-                "and requires implementation='upstream'."
-            )
         if self.config["implementation"] == "flex" and self.config["sparse_pattern"] != "local_qk_topk":
             raise NotImplementedError(
                 "flashomni implementation='flex' is only a slow local_qk_topk diagnostic path; "
                 "the upstream sparse-info path requires implementation='upstream'."
             )
-        if not self.config["is_full"] and self.config["sparse_pattern"] == "explicit":
+        if self.config["sparse_pattern"] == "explicit":
             _validate_explicit_sparse_info(self.config)
         if self.config["sparse_pattern"] == "local_qk_topk":
             import warnings
@@ -203,19 +198,6 @@ class FlashOmniMethod(SparseMethod):
             warnings.warn(
                 "flashomni sparse_pattern='local_qk_topk' is a SparseVideo diagnostic "
                 "pattern, not upstream FlashOmni video-method parity.",
-                RuntimeWarning,
-                stacklevel=2,
-            )
-        if self.config["sparse_pattern"] == "paper_mmdit":
-            import warnings
-
-            warnings.warn(
-                "flashomni sparse_pattern='paper_mmdit' uses SparseVideo-owned FlashOmni "
-                "attention sparse-info code. Hunyuan runs use the public anonymous "
-                "FlashOmni Hunyuan sparse-symbol policy and upstream default names "
-                "threshold_q, threshold_kv, fresh_threshold, max_order, first_enhance, "
-                "and saving_threshold_q_for_taylor, with the owned Hunyuan "
-                "forward/Taylor-cache patch installed through apply_sparse_attention.",
                 RuntimeWarning,
                 stacklevel=2,
             )
@@ -320,6 +302,7 @@ class FlashOmniMethod(SparseMethod):
                     cfg,
                     cfg["num_inference_steps"],
                     getattr(step_tracker, "step", None),
+                    notifier=self.warmup_notifier,
                 )
             ):
                 out = _flashomni_dense_warmup_attention(
@@ -332,30 +315,6 @@ class FlashOmniMethod(SparseMethod):
                 self.record_runtime_dispatch(
                     "dense",
                     backend=_flashomni_dense_warmup_backend_name(cfg),
-                    layer_idx=layer_idx,
-                    step=getattr(step_tracker, "step", None),
-                )
-                return out
-            if cfg["is_full"]:
-                out = _flashomni_explicit_attention(
-                    query, key, value,
-                    sparse_info=cfg["sparse_info"],
-                    sparse_kv_info=cfg["sparse_kv_info"],
-                    sparse_info_indptr=cfg["sparse_info_indptr"],
-                    sparse_kv_info_indptr=cfg["sparse_kv_info_indptr"],
-                    sparse_block_size_for_q=cfg["sparse_block_size_for_q"],
-                    sparse_block_size_for_kv=cfg["sparse_block_size_for_kv"],
-                    implementation=cfg["implementation"],
-                    backend=cfg["backend"],
-                    workspace_bytes=cfg["workspace_bytes"],
-                    is_full=True,
-                    attention_mask=attention_mask,
-                    text_len=kwargs.get("text_len", 0),
-                    **plan_kwargs,
-                )
-                self.record_runtime_dispatch(
-                    "dense",
-                    backend="flashomni_full_upstream",
                     layer_idx=layer_idx,
                     step=getattr(step_tracker, "step", None),
                 )
@@ -603,7 +562,7 @@ def _flashomni_paper_mmdit_schedule(
 ) -> _FlashOmniPaperMMDiTSchedule:
     if step is None:
         return _FlashOmniPaperMMDiTSchedule(
-            full=not has_symbols,
+            full=False,
             compute_symbols=not has_symbols,
             current_iter=0,
         )
@@ -612,24 +571,22 @@ def _flashomni_paper_mmdit_schedule(
     fresh_threshold = max(1, int(fresh_threshold))
     first_enhance = max(0, int(first_enhance))
     num_inference_steps = max(1, int(num_inference_steps))
-    last_step = step0 == num_inference_steps - 1
 
-    if not has_symbols and (first_enhance == 0 or step0 >= first_enhance - 1):
-        return _FlashOmniPaperMMDiTSchedule(full=True, compute_symbols=True, current_iter=step0)
+    if not has_symbols:
+        return _FlashOmniPaperMMDiTSchedule(full=False, compute_symbols=True, current_iter=step0)
 
     if step0 < first_enhance:
         compute_symbols = step0 == first_enhance - 1
         return _FlashOmniPaperMMDiTSchedule(
-            full=True,
+            full=False,
             compute_symbols=compute_symbols,
             current_iter=step0,
         )
 
     cycle_pos = (step0 - first_enhance) % fresh_threshold
-    full = last_step or cycle_pos == fresh_threshold - 1
     return _FlashOmniPaperMMDiTSchedule(
-        full=full,
-        compute_symbols=full,
+        full=False,
+        compute_symbols=cycle_pos == fresh_threshold - 1,
         current_iter=step0,
     )
 
@@ -1070,29 +1027,30 @@ def _flashomni_paper_mmdit_attention(query, key, value, tau_q, tau_kv, N, D, S_q
         text_len=int(text_len or 0),
     )
 
+    if schedule.compute_symbols:
+        _flashomni_trace_hunyuan_memory(cache_dic, current, "attention.policy.before")
+        sparse_q, sparse_kv = _flashomni_build_mmdit_sparse_symbols(
+            query,
+            trim.key,
+            model_type=model_type,
+            q_block_size=q_block_size,
+            kv_block_size=kv_block_size,
+            threshold_q=float(tau_q),
+            threshold_kv=float(tau_kv),
+            saving_threshold_q_for_taylor=float(S_q),
+            text_len=int(text_len or 0),
+            kv_text_len=trim.kv_text_len,
+            current_iter=schedule.current_iter,
+            max_sequence_length=int(max_sequence_length),
+            num_inference_steps=int(num_inference_steps),
+            simthreshd1=float(simthreshd1),
+            sm_scale=sm_scale,
+        )
+        _flashomni_trace_hunyuan_memory(cache_dic, current, "attention.policy.after")
+        state.update_symbols(sparse_q, sparse_kv)
+        _flashomni_save_hunyuan_sparse_ratios(cache_dic, current, sparse_q, sparse_kv)
+
     if schedule.full:
-        if schedule.compute_symbols:
-            _flashomni_trace_hunyuan_memory(cache_dic, current, "attention.policy.before")
-            sparse_q, sparse_kv = _flashomni_build_mmdit_sparse_symbols(
-                query,
-                trim.key,
-                model_type=model_type,
-                q_block_size=q_block_size,
-                kv_block_size=kv_block_size,
-                threshold_q=float(tau_q),
-                threshold_kv=float(tau_kv),
-                saving_threshold_q_for_taylor=float(S_q),
-                text_len=int(text_len or 0),
-                kv_text_len=trim.kv_text_len,
-                current_iter=schedule.current_iter,
-                max_sequence_length=int(max_sequence_length),
-                num_inference_steps=int(num_inference_steps),
-                simthreshd1=float(simthreshd1),
-                sm_scale=sm_scale,
-            )
-            _flashomni_trace_hunyuan_memory(cache_dic, current, "attention.policy.after")
-            state.update_symbols(sparse_q, sparse_kv)
-            _flashomni_save_hunyuan_sparse_ratios(cache_dic, current, sparse_q, sparse_kv)
         _flashomni_trace_hunyuan_memory(cache_dic, current, "attention.full.before")
         out = _flashomni_upstream_attention(
             query,

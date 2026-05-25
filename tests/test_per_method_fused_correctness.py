@@ -138,7 +138,7 @@ def test_svg1_fused_vs_unfused_wan_processor():
 
 
 def test_svg2_fused_vs_unfused_wan_processor():
-    _wan_processor_fused_vs_unfused("svg2", {"allow_triton_fallback": True})
+    _wan_processor_fused_vs_unfused("svg2", {})
 
 
 def test_radial_fused_vs_unfused_wan_processor():
@@ -166,7 +166,7 @@ def test_flashomni_fused_vs_unfused_wan_processor():
 
 
 def test_spargeattn_fused_vs_unfused_wan_processor():
-    _wan_processor_fused_vs_unfused("spargeattn", {"mode": "full"})
+    _wan_processor_fused_vs_unfused("spargeattn", {"dense_warmup_step_ratio": 1.0})
 
 
 # ============ Hunyuan processor tests ============
@@ -219,7 +219,7 @@ def test_svg1_fused_vs_unfused_hunyuan_processor():
 
 
 def test_svg2_fused_vs_unfused_hunyuan_processor():
-    _hunyuan_processor_fused_vs_unfused("svg2", {"allow_triton_fallback": True})
+    _hunyuan_processor_fused_vs_unfused("svg2", {})
 
 
 def test_radial_fused_vs_unfused_hunyuan_processor():
@@ -239,4 +239,4 @@ def test_sta_fused_vs_unfused_hunyuan_processor():
 
 
 def test_spargeattn_fused_vs_unfused_hunyuan_processor():
-    _hunyuan_processor_fused_vs_unfused("spargeattn", {"mode": "full"})
+    _hunyuan_processor_fused_vs_unfused("spargeattn", {"dense_warmup_step_ratio": 1.0})

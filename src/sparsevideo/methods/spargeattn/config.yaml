@@ -4,7 +4,7 @@
 defaults:
   dense_warmup_step_ratio: 0.1 # Fraction of denoising steps that run dense before sparse attention starts.
   dense_warmup_layer_ratio: 0.03 # Fraction of earliest transformer layers that always run dense.
-  mode: topk # SpargeAttn dispatch mode: full, cdfthreshd, topk, or block_sparse.
+  mode: topk # SpargeAttn dispatch mode: cdfthreshd, topk, or block_sparse.
   value: null # Upstream example-script value field used by mode-specific paths.
   topk: 0.5 # Top-k sparse attention budget for the plug-and-play topk mode.
   cdfthreshd: 0.98 # CDF threshold used by cdfthreshd mode.

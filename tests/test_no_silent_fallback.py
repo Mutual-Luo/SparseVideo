@@ -202,7 +202,7 @@ def test_spargeattn_sparse_mode_does_not_silently_run_dense(monkeypatch):
     )
     query = torch.randn(1, 128, 2, 64)
 
-    with pytest.raises(RuntimeError, match="Use mode=full for the dense baseline"):
+    with pytest.raises(RuntimeError, match="Use method=dense for the dense baseline"):
         processor.attn_fn(query, query, query, None)
 
 
@@ -226,7 +226,7 @@ def test_svg1_sparse_stage_does_not_fallback_to_dense_without_video_tokens():
         )
 
 
-def test_svg2_sparse_stage_does_not_silently_use_triton_fallback(monkeypatch):
+def test_svg2_sparse_stage_requires_flashinfer(monkeypatch):
     import sparsevideo.kernels.flashinfer_block_sparse as flashinfer_block_sparse
     import sparsevideo.methods.svg2.kmeans as kmeans_module
     from sparsevideo.methods.svg2 import method as svg2_method
@@ -255,7 +255,7 @@ def test_svg2_sparse_stage_does_not_silently_use_triton_fallback(monkeypatch):
     query = torch.randn(1, 8, 1, 4)
     state = {"centroids_init": False, "prev_q_centroids": None, "prev_k_centroids": None}
 
-    with pytest.raises(RuntimeError, match="allow_triton_fallback"):
+    with pytest.raises(RuntimeError, match="flashinfer.sparse"):
         _svg2_attention(
             query,
             query,

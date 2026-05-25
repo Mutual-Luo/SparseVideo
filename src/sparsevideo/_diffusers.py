@@ -13,9 +13,10 @@ def discover_diffusers_model(pipe: Any, *, infer_model_key: Callable):
 
     cls_name = type(transformers[0]).__name__
 
+    layer_context = {}
     if "Wan" in cls_name or "SkyReelsV2" in cls_name:
         model_type = "wan"
-        attn_paths = _enumerate_wan(transformers)
+        attn_paths, layer_context = _enumerate_wan(transformers)
     elif "HunyuanVideo" in cls_name:
         model_type = "hunyuan_video"
         attn_paths = _enumerate_hunyuan(transformers)
@@ -66,17 +67,21 @@ def discover_diffusers_model(pipe: Any, *, infer_model_key: Callable):
         model_key=infer_model_key(pipe, transformers, model_type),
         pipeline_backend="diffusers",
         _self_attn_paths=attn_paths,
+        _self_attn_layer_context=layer_context,
     )
 
 
-def _enumerate_wan(transformers) -> List[Tuple[str, Any]]:
+def _enumerate_wan(transformers) -> Tuple[List[Tuple[str, Any]], dict]:
     paths = []
+    layer_context = {}
     for t_idx, transformer in enumerate(transformers):
         prefix = "transformer_2" if t_idx == 1 else "transformer"
+        total_layers = len(transformer.blocks)
         for i, block in enumerate(transformer.blocks):
             path = f"{prefix}.blocks.{i}.attn1"
             paths.append((path, block.attn1))
-    return paths
+            layer_context[path] = (i, total_layers)
+    return paths, layer_context
 
 
 def _enumerate_hunyuan(transformers) -> List[Tuple[str, Any]]:

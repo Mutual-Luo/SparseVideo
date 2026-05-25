@@ -20,7 +20,6 @@ from sparsevideo.methods.adacluster.method import (
     _adacluster_kernel_head_dim,
     _adacluster_reuse_policy,
     _adacluster_thresholded_kmeans_count,
-    _adacluster_hunyuan_uses_dense,
     _adacluster_topk_from_qkv_minmax,
     _adacluster_trim_hunyuan_kv,
 )
@@ -61,7 +60,6 @@ def test_wan_adacluster_full_cluster_mask_matches_dense_attention_cuda():
         "prev_k_centroids": None,
         "q_kernel_num": None,
         "kv_kernel_num": None,
-        "use_full_attention": False,
     }
 
     actual = _adacluster_attention(
@@ -123,14 +121,29 @@ def _triton_kernel_calls(path: Path) -> set[str]:
     return calls
 
 
-def test_hunyuan_adacluster_dense_gate_matches_upstream_layers_and_steps():
-    assert _adacluster_hunyuan_uses_dense(layer_idx=18, step=8)
-    assert not _adacluster_hunyuan_uses_dense(layer_idx=18, step=9)
-    assert _adacluster_hunyuan_uses_dense(layer_idx=17, step=9)
-    assert _adacluster_hunyuan_uses_dense(layer_idx=34, step=9)
-    assert _adacluster_hunyuan_uses_dense(layer_idx=38, step=9)
-    assert _adacluster_hunyuan_uses_dense(layer_idx=39, step=9)
-    assert not _adacluster_hunyuan_uses_dense(layer_idx=40, step=9)
+def test_hunyuan_adacluster_dense_gate_is_only_common_warmup(monkeypatch):
+    import sparsevideo.methods.adacluster.method as adacluster_method
+
+    calls = []
+    monkeypatch.setattr(torch.Tensor, "is_cuda", property(lambda self: True))
+    monkeypatch.setattr(adacluster_method, "_adacluster_attention", lambda *args, **kwargs: calls.append("sparse") or args[0])
+
+    method = AdaClusterMethod(
+        config={"dense_warmup_step_ratio": 0.0, "dense_warmup_layer_ratio": 0.0},
+        model_info=SimpleNamespace(model_type="hunyuan_video", model_key=None),
+    )
+    processor = method.create_processor(
+        layer_idx=0,
+        total_layers=40,
+        original_processor=None,
+        step_tracker=SimpleNamespace(step=1),
+    )
+    query = torch.randn(1, 8, 2, 4)
+    mask = torch.ones(1, 8)
+
+    processor.attn_fn(query, query, query, mask)
+
+    assert calls == ["sparse"]
 
 
 def test_wan_adacluster_default_matches_runwan_fixed_cluster_path():
@@ -426,7 +439,6 @@ def test_wan_adacluster_uses_thresholded_kernel_selection_on_first_call(monkeypa
         "prev_k_centroids": None,
         "q_kernel_num": None,
         "kv_kernel_num": None,
-        "use_full_attention": False,
     }
     cfg = {
         "initial_q_kernel_num": 50,
@@ -481,7 +493,6 @@ def test_adacluster_owned_upstream_triton_path_executes_cuda():
         "centroids_init": False,
         "prev_q_centroids": None,
         "prev_k_centroids": None,
-        "use_full_attention": False,
     }
 
     out = _adacluster_attention(
@@ -618,7 +629,6 @@ def test_adacluster_sparse_path_pads_non_kernel_head_dim(monkeypatch):
         "centroids_init": False,
         "prev_q_centroids": None,
         "prev_k_centroids": None,
-        "use_full_attention": False,
     }
 
     out = _adacluster_attention(
@@ -644,19 +654,122 @@ def test_adacluster_sparse_path_pads_non_kernel_head_dim(monkeypatch):
     assert out.shape == query.shape
 
 
-def test_wan_adacluster_thresholded_selection_can_request_full_attention(monkeypatch):
+def test_adacluster_attention_prefers_flashinfer_variable_block_backend(monkeypatch):
     import sparsevideo.methods.adacluster.method as adacluster_method
 
-    dense_out = torch.full((1, 4, 1, 4), 7.0)
+    calls = {}
+
+    def fake_flash_kmeans_single(kernel, data, iter_time):
+        n_clusters = kernel.shape[2]
+        labels = torch.arange(data.shape[2], device=data.device).remainder(n_clusters)
+        labels = labels.expand(data.shape[0], data.shape[1], -1).int()
+        centroids = torch.zeros_like(kernel)
+        sizes = torch.zeros(data.shape[0], data.shape[1], n_clusters, 1, dtype=torch.int32, device=data.device)
+        sizes.scatter_add_(2, labels.long().unsqueeze(-1), torch.ones_like(labels, dtype=torch.int32).unsqueeze(-1))
+        return centroids, sizes, labels
+
+    def fake_flashinfer(query, key, value, compressed_attn_mask, q_sizes, kv_sizes, sm_scale):
+        calls["query_shape"] = tuple(query.shape)
+        calls["mask_shape"] = tuple(compressed_attn_mask.shape)
+        calls["q_sizes_shape"] = tuple(q_sizes.shape)
+        calls["kv_sizes_shape"] = tuple(kv_sizes.shape)
+        calls["scale"] = sm_scale
+        return query
+
+    def fake_cluster_sparse_attn(*args, **kwargs):
+        raise AssertionError("topk Triton fallback should not run when FlashInfer returns an output")
+
+    monkeypatch.setattr(adacluster_method, "_adacluster_flash_kmeans_single", fake_flash_kmeans_single)
+    monkeypatch.setattr(adacluster_method, "_adacluster_flashinfer_cluster_sparse_attn", fake_flashinfer)
+    monkeypatch.setattr(adacluster_method, "_adacluster_cluster_sparse_attn", fake_cluster_sparse_attn)
+    monkeypatch.setattr(torch, "randperm", lambda n, device=None: torch.arange(n, device=device))
+
+    query = torch.randn(1, 8, 2, 64)
+    state = {"centroids_init": False, "prev_q_centroids": None, "prev_k_centroids": None}
+    backend_trace = []
+
+    out = _adacluster_attention(
+        query,
+        query,
+        query,
+        topk_num=2,
+        q_kernel_num=4,
+        kv_kernel_num=4,
+        kmeans_iter_init=1,
+        kmeans_iter_step=1,
+        state=state,
+        backend_trace=backend_trace,
+    )
+
+    assert calls == {
+        "query_shape": (1, 2, 8, 64),
+        "mask_shape": (1, 2, 4, 4),
+        "q_sizes_shape": (1, 2, 4, 1),
+        "kv_sizes_shape": (1, 2, 4, 1),
+        "scale": 64 ** -0.5,
+    }
+    assert backend_trace == ["variable_block_sparse_attn"]
+    assert out.shape == query.shape
+
+
+def test_adacluster_attention_falls_back_to_topk_when_flashinfer_unavailable(monkeypatch):
+    import sparsevideo.methods.adacluster.method as adacluster_method
+
+    attn_calls = {}
+
+    def fake_flash_kmeans_single(kernel, data, iter_time):
+        n_clusters = kernel.shape[2]
+        labels = torch.arange(data.shape[2], device=data.device).remainder(n_clusters)
+        labels = labels.expand(data.shape[0], data.shape[1], -1).int()
+        centroids = torch.zeros_like(kernel)
+        sizes = torch.zeros(data.shape[0], data.shape[1], n_clusters, 1, dtype=torch.int32, device=data.device)
+        sizes.scatter_add_(2, labels.long().unsqueeze(-1), torch.ones_like(labels, dtype=torch.int32).unsqueeze(-1))
+        return centroids, sizes, labels
+
+    def fake_cluster_sparse_attn(query, key, value, compressed_attn_mask, q_counts, kv_counts, sm_scale, selected_kv_indices=None):
+        attn_calls["selected_shape"] = tuple(selected_kv_indices.shape)
+        attn_calls["q_counts_shape"] = tuple(q_counts.shape)
+        attn_calls["kv_counts_shape"] = tuple(kv_counts.shape)
+        return query
+
+    monkeypatch.setattr(adacluster_method, "_adacluster_flash_kmeans_single", fake_flash_kmeans_single)
+    monkeypatch.setattr(adacluster_method, "_adacluster_flashinfer_cluster_sparse_attn", lambda *args, **kwargs: None)
+    monkeypatch.setattr(adacluster_method, "_adacluster_cluster_sparse_attn", fake_cluster_sparse_attn)
+    monkeypatch.setattr(torch, "randperm", lambda n, device=None: torch.arange(n, device=device))
+
+    query = torch.randn(1, 8, 2, 64)
+    state = {"centroids_init": False, "prev_q_centroids": None, "prev_k_centroids": None}
+    backend_trace = []
+
+    out = _adacluster_attention(
+        query,
+        query,
+        query,
+        topk_num=2,
+        q_kernel_num=4,
+        kv_kernel_num=4,
+        kmeans_iter_init=1,
+        kmeans_iter_step=1,
+        state=state,
+        backend_trace=backend_trace,
+    )
+
+    assert attn_calls == {
+        "selected_shape": (1, 2, 4, 2),
+        "q_counts_shape": (1, 2, 4),
+        "kv_counts_shape": (1, 2, 4),
+    }
+    assert backend_trace == ["triton_cluster_sparse_attn_topk"]
+    assert out.shape == query.shape
+
+
+def test_wan_adacluster_thresholded_selection_rejects_full_attention_fallback(monkeypatch):
+    import sparsevideo.methods.adacluster.method as adacluster_method
+
     monkeypatch.setattr(
         adacluster_method,
         "_adacluster_thresholded_kmeans_count",
         lambda *args, **kwargs: -1,
-    )
-    monkeypatch.setattr(
-        adacluster_method,
-        "_adacluster_dense_attention",
-        lambda query, key, value, **kwargs: dense_out,
     )
 
     query = torch.randn(1, 4, 1, 4)
@@ -666,31 +779,28 @@ def test_wan_adacluster_thresholded_selection_can_request_full_attention(monkeyp
         "prev_k_centroids": None,
         "q_kernel_num": None,
         "kv_kernel_num": None,
-        "use_full_attention": False,
     }
 
-    out = _adacluster_attention(
-        query,
-        query,
-        query,
-        topk_num=2,
-        q_kernel_num=100,
-        kv_kernel_num=500,
-        kmeans_iter_init=3,
-        kmeans_iter_step=1,
-        state=state,
-        thresholded_kmeans_config={
-            "initial_q_kernel_num": 50,
-            "initial_kv_kernel_num": 200,
-            "q_distance_threshold": 9.0,
-            "kv_distance_threshold": 5.5,
-            "thresholded_kmeans_iter_time": 3,
-            "thresholded_kmeans_max_iterations": 10,
-        },
-    )
-
-    assert out is dense_out
-    assert state["use_full_attention"] is True
+    with pytest.raises(RuntimeError, match="dense fallback is controlled only by the common dense warmup ratios"):
+        _adacluster_attention(
+            query,
+            query,
+            query,
+            topk_num=2,
+            q_kernel_num=100,
+            kv_kernel_num=500,
+            kmeans_iter_init=3,
+            kmeans_iter_step=1,
+            state=state,
+            thresholded_kmeans_config={
+                "initial_q_kernel_num": 50,
+                "initial_kv_kernel_num": 200,
+                "q_distance_threshold": 9.0,
+                "kv_distance_threshold": 5.5,
+                "thresholded_kmeans_iter_time": 3,
+                "thresholded_kmeans_max_iterations": 10,
+            },
+        )
 
 
 def test_thresholded_kmeans_loop_returns_full_attention_when_cluster_cap_exceeded(monkeypatch):

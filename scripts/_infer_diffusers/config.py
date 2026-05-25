@@ -4,6 +4,8 @@ import json
 from pathlib import Path
 from typing import Any, Dict, Optional
 
+from sparsevideo._support import unsupported_method_model_reason
+
 from .models import FLASHOMNI_SPARSE_INFO_KEYS, STA_NATIVE_SEQ_SHAPES, STA_STRATEGY_SHAPES, STA_UNSUPPORTED_STRATEGY_MODELS, ModelSpec
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -144,13 +146,13 @@ def normalize_spargeattn_model_out_path(config: Dict[str, Any], output_file: Pat
 
 def validate_method_config(method: str, config: Dict[str, Any], model_family: Optional[str] = None) -> None:
     if method == "spargeattn":
-        if config.get("mode", "full") not in ("full", "cdfthreshd", "topk", "block_sparse"):
-            raise ValueError("spargeattn mode must be full, cdfthreshd, topk, or block_sparse")
+        if config.get("mode", "topk") not in ("cdfthreshd", "topk", "block_sparse"):
+            raise ValueError("spargeattn mode must be cdfthreshd, topk, or block_sparse")
         if config.get("tensor_layout", "HND") != "HND":
             raise ValueError("spargeattn SparseVideo processor uses tensor_layout=HND")
         if config.get("return_sparsity", False):
             raise NotImplementedError("spargeattn return_sparsity=true is not supported inside inference processors")
-        if config.get("mode", "full") == "block_sparse" and config.get("mask_id") is None:
+        if config.get("mode", "topk") == "block_sparse" and config.get("mask_id") is None:
             raise ValueError("spargeattn mode=block_sparse requires --method-config mask_id=<torch tensor path>")
         if config.get("pv_l1", 0.08) <= config.get("l1", 0.07):
             raise ValueError("spargeattn pv_l1 must be greater than l1")
@@ -218,12 +220,6 @@ def validate_method_config(method: str, config: Dict[str, Any], model_family: Op
             "use python -m sparsevideo.methods.sta.search tune for STA_tuning."
         )
     if method == "svoo":
-        if config.get("implementation") != "native":
-            raise NotImplementedError(
-                "svoo implementation must be native; SparseVideo no longer uses training_free runtime bridges"
-            )
-        if config.get("sparse_backend") not in ("flashinfer", "triton"):
-            raise ValueError("svoo sparse_backend must be flashinfer or triton")
         if config.get("use_dynamic_min_kc_ratio"):
             csv_path = config.get("sparsity_csv_path")
             if not csv_path:
@@ -243,10 +239,9 @@ def validate_method_config(method: str, config: Dict[str, Any], model_family: Op
                     f"svoo use_dynamic_min_kc_ratio requires an existing sparsity_csv_path: {path}"
                 )
             config["sparsity_csv_path"] = str(path)
-        if config.get("use_svoo", True):
-            for key in ("kmeans_iter_init", "kmeans_iter_step"):
-                if key in config and int(config.get(key, 0)) <= 0:
-                    raise ValueError(f"svoo use_svoo=true requires {key} > 0")
+        for key in ("kmeans_iter_init", "kmeans_iter_step"):
+            if key in config and int(config.get(key, 0)) <= 0:
+                raise ValueError(f"svoo requires {key} > 0")
 
 
 def normalize_seq_shape_for_warning(seq_shape) -> Optional[str]:
@@ -403,6 +398,9 @@ def sta_layout_preflight_messages(
     sta_families = ("wan", "hunyuan_video", "cogvideox", "ltx_video", "allegro", "mochi", "easyanimate")
     if spec.family not in sta_families:
         return {"errors": [f"sta is not implemented for {spec.family}."], "warnings": warnings}
+    model_reason = unsupported_method_model_reason("sta", spec.key)
+    if model_reason is not None:
+        return {"errors": [model_reason], "warnings": warnings}
     if height % 16 != 0 or width % 16 != 0:
         return {
             "errors": [
@@ -471,7 +469,7 @@ def sta_layout_preflight_messages(
     if padded_seq_shape not in STA_NATIVE_SEQ_SHAPES:
         if spec.family not in ("wan", "hunyuan_video"):
             warnings.append(
-                f"sta will use generalized FastVideo Triton STA for tile-padded canvas {padded_seq_shape} "
+                f"sta will use generalized STA A100 block-sparse CUDA for tile-padded canvas {padded_seq_shape} "
                 f"from latent layout {latent_seq_shape}."
             )
             return {"errors": errors, "warnings": warnings}
@@ -479,7 +477,7 @@ def sta_layout_preflight_messages(
             "sta upstream FastVideo native path only covers latent layouts "
             f"{sorted(STA_NATIVE_SEQ_SHAPES)}. Current latent layout is {latent_seq_shape} "
             f"and tile-padded canvas is {padded_seq_shape}, so SparseVideo will use the "
-            "generalized FastVideo Triton STA path with padded-border dense repair for this target shape. "
+            "generalized STA A100 block-sparse CUDA path with partial-border valid-token masking for this target shape. "
             "Do not treat this as native FastVideo profile parity unless the requested target has matching "
             "quality and speed evidence."
         )

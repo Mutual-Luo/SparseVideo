@@ -43,13 +43,13 @@ DEFAULT_NEGATIVE_PROMPT = (
 EXPECTED_SPARSE_BACKENDS = {
     "adacluster": {"adacluster_flashinfer", "triton_cluster_sparse_attn", "triton_cluster_sparse_attn_topk"},
     "draft": {"mit_block_sparse"},
-    "flashomni": {"flashomni_explicit_upstream", "flashomni_full_upstream"},
+    "flashomni": {"flashomni_explicit_upstream"},
     "radial": {"flashinfer", "sage_block_sparse"},
     "spargeattn": {"spas_sage", "spas_sage_block_sparse", "spas_sage_cdfthreshd", "spas_sage_topk", "spas_sage_tuned"},
-    "sta": {"fastvideo_sta_h100", "fastvideo_sta_a100_triton", "fastvideo_sta_triton"},
+    "sta": {"fastvideo_sta_h100", "fastvideo_sta_a100_block_sparse_cuda"},
     "svg1": {"flex_attention"},
     "svg2": {"flashinfer"},
-    "svoo": {"svoo_flashinfer", "svoo_triton"},
+    "svoo": {"svoo_flashinfer"},
 }
 
 
@@ -756,7 +756,7 @@ def _build_method_config(args, spec, *, strict_kernels: bool) -> Dict[str, Any]:
     if not strict_kernels:
         if args.method == "radial":
             method_config["allow_flex_fallback"] = True
-        if args.method in {"svg2", "draft"}:
+        if args.method == "draft":
             method_config["allow_triton_fallback"] = True
     return method_config
 

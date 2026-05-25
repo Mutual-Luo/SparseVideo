@@ -2,12 +2,17 @@ from __future__ import annotations
 
 import copy
 import os
+import sys
 from typing import Any, Dict, Optional
 
 from ._registry import get_method_class, list_methods as _list_methods
 from ._model_info import ModelInfo, discover_model
 from ._step_tracker import install_step_tracker
-from ._support import LIMITED_METHODS_BY_MODEL_TYPE, unvalidated_method_reason
+from ._support import (
+    LIMITED_METHODS_BY_MODEL_TYPE,
+    unvalidated_method_reason,
+    unsupported_method_model_reason,
+)
 
 
 _ACTIVE_HANDLE_ATTR = "_sparsevideo_active_handle"
@@ -166,9 +171,14 @@ def apply_sparse_attention(
 
     try:
         for layer_idx, (path, attn_module) in enumerate(model_info.iter_self_attn_modules()):
+            processor_layer_idx, processor_total_layers = model_info.self_attn_layer_context(
+                path,
+                layer_idx,
+                model_info.num_self_attn_layers,
+            )
             new_processor = method_instance.create_processor(
-                layer_idx=layer_idx,
-                total_layers=model_info.num_self_attn_layers,
+                layer_idx=processor_layer_idx,
+                total_layers=processor_total_layers,
                 original_processor=original_processors[path],
                 step_tracker=step_tracker,
             )
@@ -223,6 +233,10 @@ def _auto_set_torch_cuda_arch_list() -> None:
 def _validate_method_support(model_info: ModelInfo, method: str) -> None:
     if method == "dense":
         return
+    model_reason = unsupported_method_model_reason(method, model_info.model_key)
+    if model_reason is not None:
+        print(f"\033[31mError:\033[0m {model_reason}", file=sys.stderr)
+        raise NotImplementedError(model_reason)
     supported_methods = LIMITED_METHODS_BY_MODEL_TYPE.get(model_info.model_type)
     if supported_methods is None or method in supported_methods:
         return

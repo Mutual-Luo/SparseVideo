@@ -3,6 +3,16 @@ from __future__ import annotations
 from typing import Optional, Tuple
 
 
+STA_WAN21_T2V_13B_UNSUPPORTED_REASON = (
+    "STA is temporarily unsupported for Wan2.1-T2V-1.3B. The current version "
+    "has not found suitable STA parameters that balance efficiency and quality "
+    "for this model."
+)
+
+UNSUPPORTED_METHODS_BY_MODEL_KEY: dict[tuple[str, str], str] = {
+    ("sta", "wan21-t2v-1.3b"): STA_WAN21_T2V_13B_UNSUPPORTED_REASON,
+}
+
 LIMITED_METHODS_BY_MODEL_TYPE: dict[str, Tuple[str, ...]] = {}
 
 UNVALIDATED_METHOD_REASONS = {
@@ -52,3 +62,9 @@ def unvalidated_method_reason(
         smoke_label = "/".join(("dense", *smoke_methods))
         return f"{reason} Current smoke coverage is {smoke_label} only."
     return reason
+
+
+def unsupported_method_model_reason(method: str, model_key: Optional[str]) -> Optional[str]:
+    if model_key is None:
+        return None
+    return UNSUPPORTED_METHODS_BY_MODEL_KEY.get((method, model_key))

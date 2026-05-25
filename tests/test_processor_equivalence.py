@@ -705,15 +705,18 @@ def test_sparse_easyanimate_processor_passes_text_tail_to_method_attention():
     assert actual[1].shape == encoder_hidden_states.shape
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA/Triton")
-def test_svg2_sparse_attention_accepts_cfg_batch(monkeypatch):
-    import sparsevideo.kernels.flashinfer_block_sparse as flashinfer_block_sparse
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA/FlashInfer")
+def test_svg2_sparse_attention_accepts_cfg_batch():
+    pytest.importorskip("flashinfer.sparse")
+
+    from sparsevideo._runtime import _cuda_toolkit_status
     from sparsevideo.methods.svg2.method import _svg2_attention
 
-    monkeypatch.setattr(flashinfer_block_sparse, "HAS_FLASHINFER", False)
+    if not _cuda_toolkit_status()["available"]:
+        pytest.skip("FlashInfer sparse JIT requires nvcc")
 
     torch.manual_seed(9)
-    query = torch.randn(2, 32, 2, 16, device="cuda", dtype=torch.float16)
+    query = torch.randn(2, 64, 2, 64, device="cuda", dtype=torch.float16)
     key = torch.randn_like(query)
     value = torch.randn_like(query)
     state = {
@@ -733,7 +736,6 @@ def test_svg2_sparse_attention_accepts_cfg_batch(monkeypatch):
         kmeans_iter_init=1,
         kmeans_iter_step=1,
         state=state,
-        allow_triton_fallback=True,
         model_type="cogvideox",
     )
 
@@ -741,12 +743,15 @@ def test_svg2_sparse_attention_accepts_cfg_batch(monkeypatch):
     assert torch.isfinite(actual).all()
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA/Triton")
-def test_svg2_sparse_attention_accepts_allegro_head_dim(monkeypatch):
-    import sparsevideo.kernels.flashinfer_block_sparse as flashinfer_block_sparse
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA/FlashInfer")
+def test_svg2_sparse_attention_accepts_allegro_head_dim():
+    pytest.importorskip("flashinfer.sparse")
+
+    from sparsevideo._runtime import _cuda_toolkit_status
     from sparsevideo.methods.svg2.method import _svg2_attention
 
-    monkeypatch.setattr(flashinfer_block_sparse, "HAS_FLASHINFER", False)
+    if not _cuda_toolkit_status()["available"]:
+        pytest.skip("FlashInfer sparse JIT requires nvcc")
 
     torch.manual_seed(20)
     query = torch.randn(1, 32, 2, 96, device="cuda", dtype=torch.float16)
@@ -769,7 +774,6 @@ def test_svg2_sparse_attention_accepts_allegro_head_dim(monkeypatch):
         kmeans_iter_init=1,
         kmeans_iter_step=1,
         state=state,
-        allow_triton_fallback=True,
         model_type="allegro",
     )
 
@@ -777,26 +781,29 @@ def test_svg2_sparse_attention_accepts_allegro_head_dim(monkeypatch):
     assert torch.isfinite(actual).all()
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA/Triton")
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA/FlashInfer")
 def test_svoo_sparse_attention_accepts_cfg_batch():
+    pytest.importorskip("flashinfer.sparse")
+
+    from sparsevideo._runtime import _cuda_toolkit_status
     from sparsevideo.methods.svoo import config as svoo_config
     from sparsevideo.methods.svoo.ops import svoo_attention
 
+    if not _cuda_toolkit_status()["available"]:
+        pytest.skip("FlashInfer sparse JIT requires nvcc")
+
     torch.manual_seed(10)
-    query = torch.randn(2, 32, 2, 16, device="cuda", dtype=torch.float16)
+    query = torch.randn(2, 64, 2, 64, device="cuda", dtype=torch.float16)
     key = torch.randn_like(query)
     value = torch.randn_like(query)
     cfg = dict(svoo_config.CONFIG_DEFAULTS)
     cfg.update(
         {
-            "sparse_backend": "triton",
             "num_q_centroids": 4,
             "num_k_centroids": 8,
             "kmeans_iter_init": 1,
             "kmeans_iter_step": 1,
             "use_dynamic_min_kc_ratio": False,
-            "use_global_constraints": False,
-            "use_svoo": True,
         }
     )
     state = {

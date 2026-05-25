@@ -145,11 +145,10 @@ def test_flashomni_global_random_path_uses_upstream_benchmark_names():
 
 
 def test_flashomni_paper_mmdit_path_is_explicitly_paper_derived():
-    with pytest.warns(RuntimeWarning, match="anonymous FlashOmni Hunyuan"):
-        method = FlashOmniMethod(
-            config={"sparse_pattern": "paper_mmdit", "tau_q": 0.5, "tau_kv": 0.25, "N": 6, "D": 1, "S_q": 0.3},
-            model_info=SimpleNamespace(model_type="hunyuan_video"),
-        )
+    method = FlashOmniMethod(
+        config={"sparse_pattern": "paper_mmdit", "tau_q": 0.5, "tau_kv": 0.25, "N": 6, "D": 1, "S_q": 0.3},
+        model_info=SimpleNamespace(model_type="hunyuan_video"),
+    )
 
     assert method.config["sparse_pattern"] == "paper_mmdit"
     assert method.config["tau_q"] == 0.5
@@ -404,7 +403,7 @@ def test_flashomni_hunyuan_pool_blocks_triton_matches_pytorch_fallback():
     assert torch.equal(sim, expected_sim)
 
 
-def test_flashomni_paper_mmdit_schedule_matches_hunyuan_first_enhance_and_refresh():
+def test_flashomni_paper_mmdit_schedule_refreshes_symbols_without_dense_dispatch():
     no_symbols = _flashomni_paper_mmdit_schedule(
         1,
         fresh_threshold=6,
@@ -441,11 +440,11 @@ def test_flashomni_paper_mmdit_schedule_matches_hunyuan_first_enhance_and_refres
         has_symbols=True,
     )
 
-    assert no_symbols.full is True and no_symbols.compute_symbols is False
-    assert first_symbols.full is True and first_symbols.compute_symbols is True
+    assert no_symbols.full is False and no_symbols.compute_symbols is True
+    assert first_symbols.full is False and first_symbols.compute_symbols is True
     assert sparse.full is False and sparse.compute_symbols is False
-    assert refresh.full is True and refresh.compute_symbols is True
-    assert last.full is True and last.compute_symbols is True
+    assert refresh.full is False and refresh.compute_symbols is True
+    assert last.full is False and last.compute_symbols is True
 
 
 def test_flashomni_paper_mmdit_schedule_uses_hunyuan_zero_based_current_step():
@@ -463,6 +462,7 @@ def test_flashomni_hunyuan_forward_cache_schedule_matches_anonymous_defaults():
             "first_enhance": 8,
             "saving_threshold_q_for_taylor": 0.3,
             "num_inference_steps": 50,
+            "dense_warmup_layer_ratio": 0.0,
         },
     )
 
@@ -477,9 +477,32 @@ def test_flashomni_hunyuan_forward_cache_schedule_matches_anonymous_defaults():
         states.append((current["type"], current.get("flashomni"), current.get("sparse_type")))
 
     assert states[0] == ("full", False, None)
-    assert states[7] == ("full", True, None)
-    assert states[8] == ("Sparse", True, "flashomni")
-    assert states[13] == ("full", True, "flashomni")
+    assert states[4] == ("full", True, None)
+    assert states[5] == ("Sparse", False, "flashomni")
+    assert states[13] == ("Sparse", False, "flashomni")
+
+
+def test_flashomni_hunyuan_forward_layer_warmup_uses_common_ratio():
+    model = SimpleNamespace(config=SimpleNamespace(num_layers=2, num_single_layers=2))
+    cache_dic, current = _flashomni_hunyuan_cache_init(
+        model,
+        {
+            "num_inference_steps": 50,
+            "dense_warmup_step_ratio": 0.0,
+            "dense_warmup_layer_ratio": 0.5,
+        },
+    )
+    current["step"] = 10
+    cal_type(cache_dic, current)
+
+    states = []
+    for stream, layer in (("double_stream", 0), ("double_stream", 1), ("single_stream", 0)):
+        current["stream"] = stream
+        current["layer"] = layer
+        cal_type_sparse(cache_dic, current)
+        states.append((current["type"], current.get("sparse_type")))
+
+    assert states == [("full", None), ("full", None), ("Sparse", "flashomni")]
 
 
 def test_flashomni_hunyuan_taylor_formula_matches_upstream_default_and_attention_orders():
@@ -651,19 +674,20 @@ def test_flashomni_paper_mmdit_processor_generates_sparse_patterns(monkeypatch):
         fake_upstream,
     )
     monkeypatch.setattr(torch.Tensor, "is_cuda", property(lambda self: True))
-    with pytest.warns(RuntimeWarning, match="anonymous FlashOmni Hunyuan"):
-        method = FlashOmniMethod(
-            config={
-                "sparse_pattern": "paper_mmdit",
-                "sparse_block_size_for_q": 2,
-                "sparse_block_size_for_kv": 2,
-                "tau_q": 0.0,
-                "tau_kv": 0.3,
-                "N": 3,
-                "first_enhance": 0,
-            },
-            model_info=SimpleNamespace(model_type="hunyuan_video"),
-        )
+    method = FlashOmniMethod(
+        config={
+            "sparse_pattern": "paper_mmdit",
+            "sparse_block_size_for_q": 2,
+            "sparse_block_size_for_kv": 2,
+            "tau_q": 0.0,
+            "tau_kv": 0.3,
+            "N": 3,
+            "first_enhance": 0,
+            "dense_warmup_step_ratio": 0.0,
+            "dense_warmup_layer_ratio": 0.0,
+        },
+        model_info=SimpleNamespace(model_type="hunyuan_video"),
+    )
     step_tracker = SimpleNamespace(step=1)
     processor = method.create_processor(layer_idx=0, total_layers=1, original_processor=None, step_tracker=step_tracker)
     query = torch.randn(1, 8, 2, 4)
@@ -674,12 +698,12 @@ def test_flashomni_paper_mmdit_processor_generates_sparse_patterns(monkeypatch):
 
     assert calls == [
         {
-            "block_mask_pattern_shape": None,
-            "sparse_q_shape": None,
+            "block_mask_pattern_shape": (1, 2, 4, 4),
+            "sparse_q_shape": (1, 2, 4),
             "text_len": 2,
             "q_block_size": 2,
             "kv_block_size": 2,
-            "is_full": True,
+            "is_full": False,
         },
         {
             "block_mask_pattern_shape": (1, 2, 4, 4),
@@ -690,10 +714,9 @@ def test_flashomni_paper_mmdit_processor_generates_sparse_patterns(monkeypatch):
             "is_full": False,
         },
     ]
-    assert method.runtime_summary()["dispatch_counts"] == {"dense": 1, "sparse": 1}
+    assert method.runtime_summary()["dispatch_counts"] == {"sparse": 2}
     assert method.runtime_summary()["backend_counts"] == {
-        "flashomni_full_upstream": 1,
-        "flashomni_explicit_upstream": 1,
+        "flashomni_explicit_upstream": 2,
     }
 
 
@@ -758,10 +781,10 @@ def test_flashomni_paper_mmdit_dispatch_reuses_cached_q_blocks(monkeypatch):
         step=2,
     )
 
-    assert update.dispatch == "dense"
+    assert update.dispatch == "sparse"
     assert dispatch.dispatch == "sparse"
-    assert torch.equal(dispatch.output[:, :2], torch.full_like(dispatch.output[:, :2], 7.0))
-    assert torch.equal(dispatch.output[:, 2:], torch.zeros_like(dispatch.output[:, 2:]))
+    assert torch.equal(update.output, torch.zeros_like(update.output))
+    assert torch.equal(dispatch.output, torch.zeros_like(dispatch.output))
 
 
 def test_flashomni_paper_mmdit_isolates_mochi_cache_suffixes(monkeypatch):
@@ -824,8 +847,8 @@ def test_flashomni_paper_mmdit_isolates_mochi_cache_suffixes(monkeypatch):
     processor.attn_fn(q4, q4, q4, None, text_len=0, cache_key_suffix=0)
     processor.attn_fn(q6, q6, q6, None, text_len=0, cache_key_suffix=1)
 
-    assert calls == [(4, True), (6, True), (4, False), (6, False)]
-    assert method.runtime_summary()["dispatch_counts"] == {"dense": 2, "sparse": 2}
+    assert calls == [(4, False), (6, False), (4, False), (6, False)]
+    assert method.runtime_summary()["dispatch_counts"] == {"sparse": 4}
 
 
 def test_flashomni_paper_mmdit_attention_saves_hunyuan_sparse_ratios_for_taylor(monkeypatch):
@@ -1283,27 +1306,12 @@ def test_flashomni_flex_is_only_local_diagnostic_path():
         )
 
 
-def test_flashomni_is_full_keeps_upstream_kernel_path(monkeypatch):
-    calls = {}
-
-    def fake_flashomni_attention(query, key, value, **kwargs):
-        calls["is_full"] = kwargs["is_full"]
-        return torch.empty_like(query)
-
-    monkeypatch.setattr(
-        "sparsevideo.methods.flashomni.method._flashomni_explicit_attention",
-        fake_flashomni_attention,
-    )
-
-    method = FlashOmniMethod(
-        config={"is_full": True},
-        model_info=SimpleNamespace(model_type="wan"),
-    )
-    processor = method.create_processor(layer_idx=0, total_layers=1, original_processor=None, step_tracker=None)
-    query = torch.randn(1, 8, 2, 4)
-    processor.attn_fn(query, query, query, None)
-
-    assert calls["is_full"] is True
+def test_flashomni_rejects_public_is_full_dense_switch():
+    with pytest.raises(ValueError, match="is_full"):
+        FlashOmniMethod(
+            config={"is_full": True},
+            model_info=SimpleNamespace(model_type="wan"),
+        )
 
 
 def test_flashomni_explicit_path_forwards_attention_mask_as_custom_mask(monkeypatch):

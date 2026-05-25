@@ -399,7 +399,7 @@ class CogVideoXImageToVideoPipeline(_Pipe):
 NEW_BACKBONE_PROCESSOR_METHODS = [
     ("svg1", {}),
     ("svg2", {}),
-    ("spargeattn", {"mode": "full"}),
+    ("spargeattn", {}),
     ("radial", {}),
     ("sta", {}),
     ("draft", {}),
@@ -470,6 +470,38 @@ def test_public_apply_alias_installs_and_restores_sparse_processor():
     assert installed != original
 
     handle.restore()
+    assert _processors(transformer, "attn1") == original
+
+
+@pytest.mark.parametrize(
+    "method",
+    ["svg1", "svg2", "spargeattn", "radial", "sta", "draft", "adacluster", "flashomni", "svoo"],
+)
+def test_apply_wan22_dual_transformer_uses_local_layer_indices(method):
+    pipe = _Pipe(WanTinyTransformer())
+    pipe.transformer_2 = WanTinyTransformer()
+
+    handle = sparsevideo.apply_sparse_attention(pipe, method=method)
+
+    try:
+        assert [processor.layer_idx for processor in _processors(pipe.transformer, "attn1")] == [0, 1]
+        assert [processor.layer_idx for processor in _processors(pipe.transformer_2, "attn1")] == [0, 1]
+    finally:
+        handle.restore()
+
+
+def test_replace_attention_rejects_sta_for_wan21_t2v_13b_with_red_error(capsys):
+    transformer = WanTinyTransformer()
+    pipe = _Pipe(transformer)
+    pipe._name_or_path = "Wan-AI/Wan2.1-T2V-1.3B-Diffusers"
+    original = _processors(transformer, "attn1")
+
+    with pytest.raises(NotImplementedError, match="temporarily unsupported for Wan2.1-T2V-1.3B"):
+        sparsevideo.replace_attention(pipe, method="sta")
+
+    stderr = capsys.readouterr().err
+    assert "\033[31mError:\033[0m" in stderr
+    assert "has not found suitable STA parameters that balance efficiency and quality" in stderr
     assert _processors(transformer, "attn1") == original
 
 
@@ -1211,7 +1243,7 @@ def test_runtime_summary_records_dense_dispatch_for_cpu_dense_gate_methods():
         ("svg2", {}, "SVG2Method", "torch_sdpa"),
         ("svoo", {}, "SVOOMethod", "torch_sdpa"),
         ("draft", {}, "DraftMethod", "torch_sdpa"),
-        ("spargeattn", {"mode": "full"}, "SpargeAttnMethod", "diffusers_dispatch"),
+        ("spargeattn", {"dense_warmup_step_ratio": 1.0}, "SpargeAttnMethod", "diffusers_dispatch"),
     ]
 
     for method, config, method_class, backend in cases:
@@ -1357,6 +1389,32 @@ def test_apply_and_restore_svoo_restores_hunyuan_sparse_forward_patch():
     handle.restore()
     assert HunyuanVideoSingleTransformerBlock.forward is original_single_forward
     assert HunyuanVideoTransformerBlock.forward is original_block_forward
+    assert HunyuanVideoTransformer3DModel.forward is original_model_forward
+
+
+def test_apply_and_restore_spargeattn_restores_hunyuan_forward_patch(monkeypatch):
+    from diffusers.models.transformers.transformer_hunyuan_video import (
+        HunyuanVideoTransformer3DModel,
+    )
+
+    monkeypatch.setattr(
+        "sparsevideo.methods.spargeattn.method._load_spas_sage_attn_functions",
+        lambda: (lambda *args, **kwargs: args[0], lambda *args, **kwargs: args[0]),
+    )
+    transformer = HunyuanVideoTinyTransformer()
+    pipe = _Pipe(transformer)
+    original_model_forward = HunyuanVideoTransformer3DModel.forward
+
+    handle = sparsevideo.apply_sparse_attention(
+        pipe,
+        method="spargeattn",
+        config={"dense_warmup_step_ratio": 1.0},
+    )
+
+    assert HunyuanVideoTransformer3DModel.forward is not original_model_forward
+    assert handle.summary()["restore_callback_count"] == 2
+
+    handle.restore()
     assert HunyuanVideoTransformer3DModel.forward is original_model_forward
 
 

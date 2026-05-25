@@ -1015,6 +1015,7 @@ inline __device__ void compute_block_attn_1rowblock(const Params &params, const 
                     params.streaming_info[bidh * 2 + 1], params.streaming_info[bidh * 2]
                 );
             }
+            flash::apply_key_valid_mask(scores, params.key_valid_mask, bidb, params.seqlen_k, n_block * kBlockN);
         
             flash::cp_async_wait<0>();
             __syncthreads();
@@ -1146,6 +1147,7 @@ inline __device__ void compute_block_attn_1rowblock(const Params &params, const 
                 params.streaming_info[bidh * 2 + 1], params.streaming_info[bidh * 2]
             );
         }
+        flash::apply_key_valid_mask(scores, params.key_valid_mask, bidb, params.seqlen_k, n_block * kBlockN);
         
         // flash::cp_async_wait<0>();
         // __syncthreads();

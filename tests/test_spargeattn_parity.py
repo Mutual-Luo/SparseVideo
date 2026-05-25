@@ -18,6 +18,7 @@ from sparsevideo.methods.spargeattn.method import (
     _sparge_kernel_head_dim,
     _sparge_sparse_rejection_reason,
 )
+from sparsevideo.methods.spargeattn.hunyuan_forward import spargeattn_hunyuan_forward
 from sparsevideo.kernels.spas_sage_runtime import _candidate_spas_sage_attn_roots, load_spas_sage_attn_module
 from sparsevideo.methods.spargeattn.config import default_config
 
@@ -142,7 +143,7 @@ def test_spargeattn_sparse_mode_rejects_when_upstream_conditions_fail(monkeypatc
         ),
     )
     method = SpargeAttnMethod(
-        config={"mode": "topk", "value": 0.5},
+        config={"mode": "topk", "value": 0.5, "dense_warmup_layer_ratio": 0.0},
         model_info=SimpleNamespace(model_type="hunyuan_video", transformers=[]),
     )
     processor = method.create_processor(
@@ -161,13 +162,103 @@ def test_spargeattn_sparse_mode_rejects_when_upstream_conditions_fail(monkeypatc
         processor.attn_fn(query, key, value, attention_mask)
 
 
+def test_spargeattn_hunyuan_forward_trims_padding_and_clears_attention_mask():
+    class FakeBlock:
+        def __init__(self):
+            self.calls = []
+
+        def __call__(
+            self,
+            hidden_states,
+            encoder_hidden_states,
+            temb,
+            attention_mask,
+            image_rotary_emb,
+            *args,
+        ):
+            self.calls.append(
+                {
+                    "encoder_len": encoder_hidden_states.shape[1],
+                    "attention_mask": attention_mask,
+                    "image_rotary_emb": image_rotary_emb,
+                }
+            )
+            return hidden_states, encoder_hidden_states
+
+    class FakeTransformer:
+        def __init__(self):
+            self.config = SimpleNamespace(patch_size=1, patch_size_t=1)
+            self.gradient_checkpointing = False
+            self.transformer_blocks = [FakeBlock()]
+            self.single_transformer_blocks = [FakeBlock()]
+
+        def rope(self, hidden_states):
+            return "rope"
+
+        def time_text_embed(self, timestep, pooled_projections, guidance):
+            return torch.zeros(1, 2), None
+
+        def x_embedder(self, hidden_states):
+            return torch.zeros(hidden_states.shape[0], 4, 2)
+
+        def context_embedder(self, encoder_hidden_states, timestep, encoder_attention_mask):
+            return encoder_hidden_states
+
+        def norm_out(self, hidden_states, temb):
+            return hidden_states
+
+        def proj_out(self, hidden_states):
+            return hidden_states
+
+    transformer = FakeTransformer()
+    hidden_states = torch.randn(1, 2, 1, 2, 2)
+    encoder_hidden_states = torch.randn(1, 5, 2)
+    encoder_attention_mask = torch.tensor([[True, True, True, False, False]])
+
+    output = spargeattn_hunyuan_forward(
+        transformer,
+        hidden_states,
+        torch.tensor([1]),
+        encoder_hidden_states,
+        encoder_attention_mask,
+        torch.zeros(1, 2),
+        return_dict=False,
+    )
+
+    assert output[0].shape == hidden_states.shape
+    for block in [*transformer.transformer_blocks, *transformer.single_transformer_blocks]:
+        assert block.calls == [
+            {"encoder_len": 3, "attention_mask": None, "image_rotary_emb": "rope"}
+        ]
+
+
+def test_spargeattn_hunyuan_forward_keeps_upstream_batch_size_one_limit():
+    transformer = SimpleNamespace(
+        config=SimpleNamespace(patch_size=1, patch_size_t=1),
+    )
+    hidden_states = torch.randn(2, 2, 1, 2, 2)
+    encoder_hidden_states = torch.randn(2, 5, 2)
+    encoder_attention_mask = torch.ones(2, 5, dtype=torch.bool)
+
+    with pytest.raises(RuntimeError, match="batch size 1"):
+        spargeattn_hunyuan_forward(
+            transformer,
+            hidden_states,
+            torch.tensor([1]),
+            encoder_hidden_states,
+            encoder_attention_mask,
+            torch.zeros(2, 2),
+            return_dict=False,
+        )
+
+
 def test_spargeattn_sparse_rejection_reason_reports_kernel_requirements():
     query = torch.randn(1, 4, 2, 8)
 
     assert _sparge_sparse_rejection_reason(query, None) == "query/key/value are not CUDA tensors"
 
 
-def test_spargeattn_wan_full_mode_uses_upstream_dispatch_layout(monkeypatch):
+def test_spargeattn_wan_dense_warmup_uses_upstream_dispatch_layout(monkeypatch):
     calls = {}
 
     def fake_dispatch(query, key, value, **kwargs):
@@ -181,7 +272,7 @@ def test_spargeattn_wan_full_mode_uses_upstream_dispatch_layout(monkeypatch):
         lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("Wan full branch should use dispatch")),
     )
     method = SpargeAttnMethod(
-        config={"mode": "full"},
+        config={"dense_warmup_step_ratio": 1.0},
         model_info=SimpleNamespace(model_type="wan", transformers=[]),
     )
     processor = method.create_processor(
@@ -204,7 +295,7 @@ def test_spargeattn_wan_full_mode_uses_upstream_dispatch_layout(monkeypatch):
 
 def test_spargeattn_wan_processor_default_fused_norm_rope():
     method = SpargeAttnMethod(
-        config={"mode": "full"},
+        config={"dense_warmup_step_ratio": 1.0},
         model_info=SimpleNamespace(model_type="wan", transformers=[]),
     )
 
@@ -220,7 +311,7 @@ def test_spargeattn_wan_processor_default_fused_norm_rope():
 
 def test_spargeattn_wan_processor_can_disable_fused_norm_rope():
     method = SpargeAttnMethod(
-        config={"mode": "full", "use_fused_qk_norm_rope": False},
+        config={"dense_warmup_step_ratio": 1.0, "use_fused_qk_norm_rope": False},
         model_info=SimpleNamespace(model_type="wan", transformers=[]),
     )
 
@@ -234,7 +325,7 @@ def test_spargeattn_wan_processor_can_disable_fused_norm_rope():
     assert processor.use_fused_qk_norm_rope is False
 
 
-def test_spargeattn_hunyuan_full_mode_uses_upstream_sdpa_layout(monkeypatch):
+def test_spargeattn_hunyuan_dense_warmup_uses_upstream_sdpa_layout(monkeypatch):
     calls = {}
 
     def fake_sdpa(query, key, value, **kwargs):
@@ -248,7 +339,7 @@ def test_spargeattn_hunyuan_full_mode_uses_upstream_sdpa_layout(monkeypatch):
         lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("Hunyuan full branch should use SDPA")),
     )
     method = SpargeAttnMethod(
-        config={"mode": "full"},
+        config={"dense_warmup_step_ratio": 1.0},
         model_info=SimpleNamespace(model_type="hunyuan_video", transformers=[]),
     )
     processor = method.create_processor(
@@ -291,7 +382,7 @@ def test_spargeattn_allegro_dense_attention_matches_diffusers_sdpa():
 
 def test_spargeattn_hunyuan_processor_default_fused_norm_rope():
     method = SpargeAttnMethod(
-        config={"mode": "full"},
+        config={"dense_warmup_step_ratio": 1.0},
         model_info=SimpleNamespace(model_type="hunyuan_video", transformers=[]),
     )
 
@@ -321,7 +412,7 @@ def test_spargeattn_topk_path_forwards_upstream_kernel_names(monkeypatch):
     )
     monkeypatch.setattr(torch.Tensor, "is_cuda", property(lambda self: True))
     method = SpargeAttnMethod(
-        config={"mode": "topk", "simthreshd1": -0.1, "pvthreshd": 42},
+        config={"mode": "topk", "simthreshd1": -0.1, "pvthreshd": 42, "dense_warmup_layer_ratio": 0.0},
         model_info=SimpleNamespace(model_type="wan", transformers=[]),
     )
     processor = method.create_processor(
@@ -357,7 +448,7 @@ def test_spargeattn_sparse_path_forwards_cfg_batches(monkeypatch):
     )
     monkeypatch.setattr(torch.Tensor, "is_cuda", property(lambda self: True))
     method = SpargeAttnMethod(
-        config={"mode": "topk"},
+        config={"mode": "topk", "dense_warmup_layer_ratio": 0.0},
         model_info=SimpleNamespace(model_type="wan", transformers=[]),
     )
     processor = method.create_processor(
@@ -390,7 +481,7 @@ def test_spargeattn_sparse_path_pads_non_kernel_head_dim(monkeypatch):
     )
     monkeypatch.setattr(torch.Tensor, "is_cuda", property(lambda self: True))
     method = SpargeAttnMethod(
-        config={"mode": "topk"},
+        config={"mode": "topk", "dense_warmup_layer_ratio": 0.0},
         model_info=SimpleNamespace(model_type="wan", transformers=[]),
     )
     processor = method.create_processor(
@@ -430,7 +521,7 @@ def test_spargeattn_block_sparse_path_forwards_mask_id(monkeypatch):
     monkeypatch.setattr(torch.Tensor, "is_cuda", property(lambda self: True))
     mask_id = torch.ones(1, 2, 1, 2, dtype=torch.int32)
     method = SpargeAttnMethod(
-        config={"mode": "block_sparse", "mask_id": mask_id},
+        config={"mode": "block_sparse", "mask_id": mask_id, "dense_warmup_layer_ratio": 0.0},
         model_info=SimpleNamespace(model_type="wan", transformers=[]),
     )
     processor = method.create_processor(

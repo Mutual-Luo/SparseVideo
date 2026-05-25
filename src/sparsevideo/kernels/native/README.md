@@ -27,9 +27,9 @@ SparseVideo requires this local runtime once `flashomni_kernels*.so` is built;
 environment `flashomni` packages are not accepted for runtime parity.
 
 `sta_h100/` is a buildable local runtime-source copy of FastVideo's H100/TK
-STA source. The current A100 environment should use the SparseVideo-owned copy
-of FastVideo's Triton STA fallback; build this directory only on a Hopper
-target.
+STA source. The current A100 environment uses the SparseVideo-owned SM80
+block-sparse CUDA backend in `draft_block_sparse/` with STA's tile-window mask;
+build `sta_h100/` only on a Hopper target.
 
 Build for the current environment:
 

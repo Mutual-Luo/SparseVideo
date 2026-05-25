@@ -122,7 +122,7 @@ def warmup_dimensions(pipe, *, model_type: str, height: int, width: int, num_fra
         }
 
     if model_type == "hunyuan_video":
-        context_length = int(config.get("context_length") or 256)
+        context_length = 256
         num_frame_patches = 1 + int(num_frames) // 4
         frame_size = int(height) * int(width) // 256
         seq_len = num_frame_patches * frame_size
@@ -151,10 +151,7 @@ def warmup_dimensions(pipe, *, model_type: str, height: int, width: int, num_fra
             int(width) // (spatial_scale * patch_size)
         )
         seq_len = latent_frames * frame_size
-        context_length = int(
-            config.get("context_length")
-            or getattr(transformer.config, "max_text_seq_length", 226)
-        )
+        context_length = int(getattr(transformer.config, "max_text_seq_length", 226))
         return {
             "model_name": "CogVideoX",
             "num_heads": num_heads,
@@ -226,7 +223,7 @@ def warmup_dimensions(pipe, *, model_type: str, height: int, width: int, num_fra
             int(width) // (vae_spatial_scale * patch_size)
         )
         seq_len = latent_frames * frame_size
-        context_length = int(config.get("context_length") or getattr(transformer.config, "max_sequence_length", 256))
+        context_length = int(getattr(transformer.config, "max_sequence_length", 256))
         return {
             "model_name": "Mochi",
             "num_heads": num_heads,
@@ -248,7 +245,7 @@ def warmup_dimensions(pipe, *, model_type: str, height: int, width: int, num_fra
             int(width) // (vae_spatial_scale * patch_size)
         )
         seq_len = latent_frames * frame_size
-        context_length = int(config.get("context_length") or getattr(transformer.config, "max_text_seq_length", 256))
+        context_length = int(getattr(transformer.config, "max_text_seq_length", 256))
         return {
             "model_name": "EasyAnimate",
             "num_heads": num_heads,
@@ -416,7 +413,7 @@ def warmup_svoo_kernels_from_pipeline(
             "num_heads": dims["num_heads"],
             "head_dim": dims["head_dim"],
             "block_hidden_dim": dims["block_hidden_dim"],
-            "sparse_backend": config.get("sparse_backend", "flashinfer"),
+            "backend": "flashinfer",
         }
     )
 
@@ -447,8 +444,7 @@ def warmup_svoo_kernels_from_pipeline(
                     device,
                     cfg_values=(1,),
                 )
-            if config.get("sparse_backend", "flashinfer") == "flashinfer":
-                _warmup_flashinfer_sparse(dims["num_heads"], dims["head_dim"], dtype, device)
+            _warmup_flashinfer_sparse(dims["num_heads"], dims["head_dim"], dtype, device)
         _cleanup(device)
         status["ran"] = True
         status["elapsed_sec"] = time.perf_counter() - start

@@ -5,6 +5,8 @@ from typing import Any, Dict, Optional, Tuple, Union
 
 import torch
 
+from .._schedule import configured_dense_warmup_layer_count
+
 
 _PATCH_REFCOUNT = 0
 _ORIGINALS = {}
@@ -366,12 +368,16 @@ def _flashomni_hunyuan_single_block_forward(
 
 
 def _flashomni_hunyuan_cache_init(model, config: Dict[str, Any]):
+    num_double_layers = int(model.config.num_layers)
+    num_single_layers = int(model.config.num_single_layers)
+    total_layers = num_double_layers + num_single_layers
+    dense_warmup_layer_ratio = float(config.get("dense_warmup_layer_ratio", 0.03))
     cache: Dict[int, Any] = {-1: {"double_stream": {}, "single_stream": {}}}
     cache_index = {"taylor_start": {"double_stream": {}, "single_stream": {}}}
-    for layer in range(model.config.num_layers):
+    for layer in range(num_double_layers):
         cache[-1]["double_stream"][layer] = {}
         cache_index["taylor_start"]["double_stream"][layer] = False
-    for layer in range(model.config.num_single_layers):
+    for layer in range(num_single_layers):
         cache[-1]["single_stream"][layer] = {}
         cache_index["taylor_start"]["single_stream"][layer] = False
 
@@ -391,6 +397,13 @@ def _flashomni_hunyuan_cache_init(model, config: Dict[str, Any]):
         "threshold_kv": float(config.get("threshold_kv", 0.05)),
         "saving_threshold_q_for_taylor": float(config.get("saving_threshold_q_for_taylor", 0.3)),
         "max_sequence_length": int(config.get("max_sequence_length", -1)),
+        "dense_warmup_step_ratio": float(config.get("dense_warmup_step_ratio", 0.1)),
+        "dense_warmup_layer_ratio": dense_warmup_layer_ratio,
+        "dense_warmup_layer_count": configured_dense_warmup_layer_count(
+            {"dense_warmup_layer_ratio": dense_warmup_layer_ratio},
+            total_layers,
+        ),
+        "num_double_layers": num_double_layers,
         "taylor_cache_device": str(config.get("taylor_cache_device", "cuda")),
         "debug_memory_trace": config.get("_memory_trace") if bool(config.get("debug_memory", False)) else None,
         "debug_memory_max_events": int(config.get("debug_memory_max_events", 4000)),
@@ -405,34 +418,50 @@ def _flashomni_hunyuan_cache_init(model, config: Dict[str, Any]):
 
 
 def cal_type(cache_dic: Dict[str, Any], current: Dict[str, Any]) -> None:
-    if (cache_dic["fresh_ratio"] == 0.0) and (not cache_dic["taylor_cache"]):
-        first_step = current["step"] == 0
-    else:
-        first_step = current["step"] < cache_dic["first_enhance"]
-    last_step = current["step"] == current["num_steps"] - 1
+    num_steps = max(1, int(current["num_steps"]))
+    dense_ratio = max(0.0, min(1.0, float(cache_dic.get("dense_warmup_step_ratio", 0.0))))
+    warmup_steps = num_steps if dense_ratio >= 1.0 else int(math.floor(dense_ratio * num_steps))
+    is_warmup = int(current["step"]) < warmup_steps
 
-    current["warmup"] = first_step
-    fresh_interval = cache_dic["fresh_threshold"] if first_step else cache_dic.get("cal_threshold", cache_dic["fresh_threshold"])
-    if first_step:
-        current["flashomni"] = current["step"] == cache_dic["first_enhance"] - 1
+    current["warmup"] = is_warmup
+    current["flashomni"] = is_warmup and int(current["step"]) == warmup_steps - 1
 
-    if first_step or cache_dic["cache_counter"] == fresh_interval - 1 or last_step:
+    if is_warmup:
         current["type"] = "full"
+        current["base_type"] = "full"
+        current["sparse_type"] = None
         cache_dic["cache_counter"] = 0
         current["activated_steps"].append(current["step"])
         force_scheduler(cache_dic, current)
     elif cache_dic["taylor_cache"]:
         cache_dic["cache_counter"] += 1
         current["type"] = "Sparse"
+        current["base_type"] = "Sparse"
+        current["sparse_type"] = None
 
 
 def cal_type_sparse(cache_dic: Dict[str, Any], current: Dict[str, Any]) -> None:
+    current["type"] = current.get("base_type", current["type"])
+    current["sparse_type"] = None
     if current["type"] != "Sparse":
+        return
+    if _flashomni_hunyuan_layer_warmup_requires_full(cache_dic, current):
+        current["type"] = "full"
         return
     if _taylor_started(cache_dic, current):
         current["sparse_type"] = "taylor_cache"
     else:
         current["sparse_type"] = "flashomni"
+
+
+def _flashomni_hunyuan_layer_warmup_requires_full(cache_dic: Dict[str, Any], current: Dict[str, Any]) -> bool:
+    layer_count = int(cache_dic.get("dense_warmup_layer_count", 0) or 0)
+    if layer_count <= 0:
+        return False
+    layer = int(current.get("layer", 0) or 0)
+    if current.get("stream") == "single_stream":
+        layer += int(cache_dic.get("num_double_layers", 0) or 0)
+    return layer < layer_count
 
 
 def force_scheduler(cache_dic: Dict[str, Any], current: Dict[str, Any]) -> None:

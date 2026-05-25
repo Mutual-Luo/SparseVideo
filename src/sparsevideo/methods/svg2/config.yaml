@@ -12,7 +12,6 @@ defaults:
   zero_step_kmeans_init: false # If true, initialize k-means state during dense warmup step 0.
   context_length: null # Optional Hunyuan/text-tail context token length override.
   prompt_length: null # Optional prompt token length override for text/video split handling.
-  allow_triton_fallback: false # Allows the local Triton debug block-sparse fallback when strict kernels are disabled.
 
 model_defaults:
   wan21-t2v-1.3b:
@@ -27,7 +26,6 @@ model_defaults:
     zero_step_kmeans_init: false
     context_length: null
     prompt_length: null
-    allow_triton_fallback: false
   wan21-t2v-14b:
     dense_warmup_step_ratio: 0.1
     dense_warmup_layer_ratio: 0.03
@@ -40,7 +38,6 @@ model_defaults:
     zero_step_kmeans_init: false
     context_length: null
     prompt_length: null
-    allow_triton_fallback: false
   wan22-t2v-a14b:
     dense_warmup_step_ratio: 0.1
     dense_warmup_layer_ratio: 0.03
@@ -53,7 +50,6 @@ model_defaults:
     zero_step_kmeans_init: false
     context_length: null
     prompt_length: null
-    allow_triton_fallback: false
   hunyuan-t2v:
     dense_warmup_step_ratio: 0.1
     dense_warmup_layer_ratio: 0.03
@@ -66,7 +62,6 @@ model_defaults:
     zero_step_kmeans_init: true
     context_length: 256
     prompt_length: null
-    allow_triton_fallback: false
   wan21-i2v-14b:
     dense_warmup_step_ratio: 0.1
     dense_warmup_layer_ratio: 0.03
@@ -79,7 +74,6 @@ model_defaults:
     zero_step_kmeans_init: false
     context_length: null
     prompt_length: null
-    allow_triton_fallback: false
   wan22-i2v-a14b:
     dense_warmup_step_ratio: 0.1
     dense_warmup_layer_ratio: 0.03
@@ -92,7 +86,6 @@ model_defaults:
     zero_step_kmeans_init: false
     context_length: null
     prompt_length: null
-    allow_triton_fallback: false
   hunyuan-i2v:
     dense_warmup_step_ratio: 0.1
     dense_warmup_layer_ratio: 0.03
@@ -105,7 +98,6 @@ model_defaults:
     zero_step_kmeans_init: true
     context_length: 256
     prompt_length: null
-    allow_triton_fallback: false
   skyreels-v2-t2v-14b:
     dense_warmup_step_ratio: 0.1
     dense_warmup_layer_ratio: 0.03
@@ -118,7 +110,6 @@ model_defaults:
     zero_step_kmeans_init: false
     context_length: null
     prompt_length: null
-    allow_triton_fallback: false
   skyreels-v2-i2v-14b:
     dense_warmup_step_ratio: 0.1
     dense_warmup_layer_ratio: 0.03
@@ -131,7 +122,6 @@ model_defaults:
     zero_step_kmeans_init: false
     context_length: null
     prompt_length: null
-    allow_triton_fallback: false
   wan22-animate-14b:
     dense_warmup_step_ratio: 0.1
     dense_warmup_layer_ratio: 0.03
@@ -144,7 +134,6 @@ model_defaults:
     zero_step_kmeans_init: false
     context_length: null
     prompt_length: null
-    allow_triton_fallback: false
   wan21-vace-1.3b:
     dense_warmup_step_ratio: 0.1
     dense_warmup_layer_ratio: 0.03
@@ -157,7 +146,6 @@ model_defaults:
     zero_step_kmeans_init: false
     context_length: null
     prompt_length: null
-    allow_triton_fallback: false
   wan21-vace-14b:
     dense_warmup_step_ratio: 0.1
     dense_warmup_layer_ratio: 0.03
@@ -170,7 +158,6 @@ model_defaults:
     zero_step_kmeans_init: false
     context_length: null
     prompt_length: null
-    allow_triton_fallback: false
   cogvideox-t2v:
     dense_warmup_step_ratio: 0.1
     dense_warmup_layer_ratio: 0.03
@@ -183,7 +170,6 @@ model_defaults:
     zero_step_kmeans_init: false
     context_length: null
     prompt_length: null
-    allow_triton_fallback: false
   cogvideox-i2v:
     dense_warmup_step_ratio: 0.1
     dense_warmup_layer_ratio: 0.03
@@ -196,7 +182,6 @@ model_defaults:
     zero_step_kmeans_init: false
     context_length: null
     prompt_length: null
-    allow_triton_fallback: false
   ltx-video:
     dense_warmup_step_ratio: 0.1
     dense_warmup_layer_ratio: 0.03
@@ -209,7 +194,6 @@ model_defaults:
     zero_step_kmeans_init: false
     context_length: null
     prompt_length: null
-    allow_triton_fallback: false
   ltx-video-i2v:
     dense_warmup_step_ratio: 0.1
     dense_warmup_layer_ratio: 0.03
@@ -222,7 +206,6 @@ model_defaults:
     zero_step_kmeans_init: false
     context_length: null
     prompt_length: null
-    allow_triton_fallback: false
   allegro:
     dense_warmup_step_ratio: 0.1
     dense_warmup_layer_ratio: 0.03
@@ -235,7 +218,6 @@ model_defaults:
     zero_step_kmeans_init: false
     context_length: null
     prompt_length: null
-    allow_triton_fallback: false
   mochi-1:
     dense_warmup_step_ratio: 0.1
     dense_warmup_layer_ratio: 0.03
@@ -248,7 +230,6 @@ model_defaults:
     zero_step_kmeans_init: false
     context_length: null
     prompt_length: null
-    allow_triton_fallback: false
   easyanimate-v5-t2v-12b:
     dense_warmup_step_ratio: 0.1
     dense_warmup_layer_ratio: 0.03
@@ -261,5 +242,4 @@ model_defaults:
     zero_step_kmeans_init: false
     context_length: null
     prompt_length: null
-    allow_triton_fallback: false
 aliases: {}

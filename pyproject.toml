@@ -59,6 +59,7 @@ artifacts = [
     "src/sparsevideo/kernels/native/**/*.h",
     "src/sparsevideo/kernels/native/**/*.json",
     "src/sparsevideo/kernels/native/**/setup.py",
+    "src/sparsevideo/kernels/native/**/setup.sh",
     "src/sparsevideo/kernels/native/**/build.py",
     "src/sparsevideo/kernels/native/**/Makefile",
     "src/sparsevideo/kernels/native/**/CMakeLists.txt",

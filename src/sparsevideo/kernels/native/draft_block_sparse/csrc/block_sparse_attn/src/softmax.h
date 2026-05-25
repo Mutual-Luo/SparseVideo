@@ -180,6 +180,36 @@ inline __device__ void apply_mask_local(Tensor<Engine, Layout> &tensor, const in
 }
 
 
+template <typename Engine, typename Layout>
+inline __device__ void apply_key_valid_mask(Tensor<Engine, Layout> &tensor,
+                                            const uint8_t *key_valid_mask,
+                                            const int batch_idx,
+                                            const int max_seqlen_k,
+                                            const int col_idx_offset_ = 0) {
+    if (key_valid_mask == nullptr) {
+        return;
+    }
+    static_assert(Layout::rank == 2, "Only support 2D Tensor");
+    const int lane_id = threadIdx.x % 32;
+    const int col_idx_offset = col_idx_offset_ + (lane_id % 4) * 2;
+    const uint8_t *batch_mask = key_valid_mask + batch_idx * max_seqlen_k;
+    #pragma unroll
+    for (int nj = 0; nj < size<1, 1>(tensor); ++nj) {
+        const int col_idx_base = col_idx_offset + nj * 8;
+        #pragma unroll
+        for (int j = 0; j < size<1, 0>(tensor); ++j) {
+            const int col_idx = col_idx_base + j;
+            if (col_idx >= max_seqlen_k || batch_mask[col_idx] == 0) {
+                #pragma unroll
+                for (int mi = 0; mi < size<0>(tensor); ++mi) {
+                    tensor(mi, make_coord(j, nj)) = -INFINITY;
+                }
+            }
+        }
+    }
+}
+
+
 
 template <bool HasWSLeft=true, typename Engine, typename Layout>
 inline __device__ void apply_mask_streaming(Tensor<Engine, Layout> &tensor, const int col_idx_offset_,

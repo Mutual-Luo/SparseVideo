@@ -40,6 +40,10 @@ def _modulate_shift_fwd_fused(
 
 def triton_modulate_shift_forward(x, scale, shift, output_dtype=torch.float32):
     """Compute x * (1 + scale) + shift."""
+    if scale is not None and torch.is_tensor(scale) and scale.dim() == 3 and scale.shape[1] == 1:
+        return triton_modulate_shift_batched_forward(
+            x, scale.squeeze(1), shift.squeeze(1), output_dtype=output_dtype
+        )
     if scale is not None and torch.is_tensor(scale) and scale.dim() == 2:
         return triton_modulate_shift_batched_forward(x, scale, shift, output_dtype=output_dtype)
 
@@ -108,6 +112,10 @@ def _modulate_gate_residual_fwd_fused(
 
 def triton_modulate_gate_residual_forward(residual, x, gate, output_dtype=torch.float32):
     """Compute residual + x * gate."""
+    if gate is not None and torch.is_tensor(gate) and gate.dim() == 3 and gate.shape[1] == 1:
+        return triton_modulate_gate_residual_batched_forward(
+            residual, x, gate.squeeze(1), output_dtype=output_dtype
+        )
     if gate is not None and torch.is_tensor(gate) and gate.dim() == 2:
         return triton_modulate_gate_residual_batched_forward(residual, x, gate, output_dtype=output_dtype)
 

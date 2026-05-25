@@ -742,7 +742,6 @@ def test_svg2_runtime_load_status_detects_owned_apis():
     assert status["triton_kmeans"] is True
     assert status["euclid_assign_triton"] is True
     assert status["identify_dynamic_map"] is True
-    assert status["block_sparse_attention"] is True
     assert status["permute_tensor_by_labels_triton"] is True
     assert status["variable_block_sparse_attn"] is True
     assert status["hunyuan_flashinfer_varlen_attn"] is True
@@ -902,7 +901,6 @@ def test_svoo_runtime_load_status_detects_owned_apis():
     assert status["triton_modulate_shift_forward"] is True
     assert status["co_cluster_tokens"] is True
     assert status["identify_dynamic_map"] is True
-    assert status["block_sparse_attention"] is True
     assert status["variable_block_sparse_attn"] is True
     assert status["compute_exact_attention_sparsity"] is True
     assert status["import_error"] is None
@@ -1101,7 +1099,7 @@ def test_flashomni_load_status_rejects_training_free_package(monkeypatch, tmp_pa
     assert "training_free" in status["import_error"]
 
 
-def test_sta_load_status_detects_triton_and_h100_apis(monkeypatch, tmp_path):
+def test_sta_load_status_detects_h100_and_a100_apis(monkeypatch, tmp_path):
     from sparsevideo import _runtime
 
     owned_root = tmp_path / "repo" / "src" / "sparsevideo" / "kernels" / "native" / "sta_h100"
@@ -1127,14 +1125,26 @@ def test_sta_load_status_detects_triton_and_h100_apis(monkeypatch, tmp_path):
         return real_import_module(name)
 
     monkeypatch.setattr(_runtime.importlib, "import_module", fake_import_module)
+    monkeypatch.setattr(
+        _runtime,
+        "draft_block_sparse_load_status",
+        lambda: {
+            "imported": True,
+            "cuda_extension_imported": True,
+            "block_sparse_attn_func": True,
+            "cuda_fwd_block": True,
+        },
+    )
 
     status = _runtime.sta_load_status()
 
-    assert status["triton_imported"] is True
-    assert status["triton_sliding_tile_attention_triton"] is True
+    assert status["triton_load_checked"] is False
+    assert status["triton_imported"] is False
+    assert status["triton_sliding_tile_attention_triton"] is False
     assert status["h100_package_imported"] is True
     assert status["h100_native_extension_imported"] is True
     assert status["h100_sta_fwd"] is True
+    assert status["a100_block_sparse_ready"] is True
     assert status["triton_import_error"] is None
     assert status["h100_import_error"] is None
 
@@ -1162,6 +1172,18 @@ def test_sta_load_status_reports_missing_h100_sta_fwd(monkeypatch, tmp_path):
         return real_import_module(name)
 
     monkeypatch.setattr(_runtime.importlib, "import_module", fake_import_module)
+    monkeypatch.setattr(
+        _runtime,
+        "draft_block_sparse_load_status",
+        lambda: {
+            "imported": False,
+            "cuda_extension_imported": False,
+            "block_sparse_attn_func": False,
+            "cuda_fwd_block": False,
+            "import_error_type": "ImportError",
+            "import_error": "missing block_sparse_attn_cuda",
+        },
+    )
 
     status = _runtime.sta_load_status()
 
@@ -1170,6 +1192,8 @@ def test_sta_load_status_reports_missing_h100_sta_fwd(monkeypatch, tmp_path):
     assert status["h100_sta_fwd"] is False
     assert status["h100_import_error_type"] == "ImportError"
     assert "fastvideo_kernel_ops" in status["h100_import_error"]
+    assert status["a100_block_sparse_ready"] is False
+    assert "block_sparse_attn_cuda" in status["a100_import_error"]
 
 
 def test_draft_block_sparse_load_status_detects_required_apis(monkeypatch, tmp_path):

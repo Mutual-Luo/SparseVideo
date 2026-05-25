@@ -5,8 +5,8 @@ This directory is a buildable runtime-source copy of FastVideo's
 `training_free/` checkout remains reference-only; SparseVideo should not import
 it at runtime.
 
-The current A100 environment should use SparseVideo's Triton STA path. The H100
-extension is only useful on Hopper targets and should be built with
+The current A100 environment should use SparseVideo's SM80 block-sparse CUDA STA
+path. The H100 extension is only useful on Hopper targets and should be built with
 `FASTVIDEO_KERNEL_BUILD_TK=ON` and a Hopper CUDA architecture.
 
 Build on a Hopper-capable build environment with CMake >= 3.26:

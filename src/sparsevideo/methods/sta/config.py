@@ -25,14 +25,18 @@ def _owned_model_mask_strategy(model_key):
     return str(path) if path.exists() else None
 
 
+# WanVACE 1.3B keeps its separate local default until a matching 720p/81f search is recorded.
+_SKIP_OWNED_MASK_STRATEGY = {"wan21-vace-1.3b"}
+
+
 def default_config(**context):
     config = copy_config_defaults(CONFIG_DEFAULTS)
     model_key = context.get("model_key")
     apply_model_defaults(config, MODEL_DEFAULTS, context)
-    if (owned_strategy := _owned_model_mask_strategy(model_key)) is not None:
+    if model_key in _SKIP_OWNED_MASK_STRATEGY:
+        pass
+    elif (owned_strategy := _owned_model_mask_strategy(model_key)) is not None:
         config["mask_strategy_file_path"] = owned_strategy
-    elif model_key == "wan21-t2v-1.3b":
-        config["mask_strategy_file_path"] = _WAN13_MASK_STRATEGY
     elif model_key == "wan21-t2v-14b":
         config["mask_strategy_file_path"] = _WAN_MASK_STRATEGY
     elif model_key in ("hunyuan-t2v", "hunyuan-i2v"):

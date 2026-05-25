@@ -52,6 +52,7 @@ class SVG2Method(SparseMethod):
                     runtime_num_inference_steps(step_tracker),
                     step_tracker.step,
                     scheduler_timestep,
+                    notifier=self.warmup_notifier,
                 )
             )
             if full_attention:
@@ -73,7 +74,6 @@ class SVG2Method(SparseMethod):
                         kmeans_iter_step=cfg["kmeans_iter_step"],
                         state=runtime_state,
                         initialize_only=True,
-                        allow_triton_fallback=cfg["allow_triton_fallback"],
                         model_type=self.model_info.model_type,
                         text_len=kwargs.get("text_len", 0),
                         prompt_length=prompt_length,
@@ -112,7 +112,6 @@ class SVG2Method(SparseMethod):
                 kmeans_iter_init=cfg["kmeans_iter_init"],
                 kmeans_iter_step=cfg["kmeans_iter_step"],
                 state=runtime_state,
-                allow_triton_fallback=cfg["allow_triton_fallback"],
                 model_type=self.model_info.model_type,
                 text_len=kwargs.get("text_len", 0),
                 prompt_length=prompt_length,
@@ -120,7 +119,7 @@ class SVG2Method(SparseMethod):
             )
             self.record_runtime_dispatch(
                 "sparse",
-                backend=_svg2_sparse_backend_name(cfg["allow_triton_fallback"]),
+                backend="flashinfer",
                 layer_idx=layer_idx,
                 step=getattr(step_tracker, "step", None),
             )
@@ -182,33 +181,20 @@ def _svg2_dense_backend_name(query, attention_mask, model_type):
     return "torch_sdpa"
 
 
-def _svg2_sparse_backend_name(allow_triton_fallback):
-    from ...kernels.flashinfer_block_sparse import HAS_FLASHINFER
-
-    if HAS_FLASHINFER:
-        return "flashinfer"
-    if allow_triton_fallback:
-        return "triton_debug_fallback"
-    return "flashinfer"
-
-
 def _svg2_attention(query, key, value, top_p_kmeans, min_kc_ratio,
                     num_q_centroids, num_k_centroids, kmeans_iter_init,
                     kmeans_iter_step, state, initialize_only=False,
-                    allow_triton_fallback=False, model_type="wan",
+                    model_type="wan",
                     text_len=0, prompt_length=None, context_length=None):
     """SVG2: k-means clustering + block-sparse attention.
 
     query/key/value: [B, N, H, D]
-    Primary backend: flashinfer VariableBlockSparseAttentionWrapper.
-    Triton block_sparse_attention is explicit debug fallback only.
+    Sparse attention backend: flashinfer VariableBlockSparseAttentionWrapper.
     """
-    from ...kernels.block_sparse_attn import block_sparse_attention
     from ...kernels.flashinfer_block_sparse import HAS_FLASHINFER, variable_block_sparse_attn
     from .kmeans import triton_kmeans
 
     B, N, H, D = query.shape
-    scale = D ** -0.5
 
     # CogVideoX classifier-free guidance arrives as a batch of negative and
     # positive prompts. The owned kernels operate on folded batch-head slots,
@@ -296,24 +282,15 @@ def _svg2_attention(query, key, value, top_p_kmeans, min_kc_ratio,
             prompt_length=prompt_length,
         )
 
-    # Block-sparse attention: FlashInfer parity path, explicit Triton debug fallback.
+    # Block-sparse attention: FlashInfer parity path.
     q_sizes_i32 = q_sizes.to(torch.int32)
     k_sizes_i32 = k_sizes.to(torch.int32)
-    if HAS_FLASHINFER:
-        out_sorted = variable_block_sparse_attn(
-            q_sorted, k_sorted, v_sorted,
-            dynamic_map, q_sizes_i32, k_sizes_i32,
-        )
-    else:
-        if not allow_triton_fallback:
-            raise RuntimeError(
-                "svg2 sparse path requires the upstream FlashInfer variable block-sparse backend. "
-                "Set allow_triton_fallback=True only for explicit debug smoke runs."
-            )
-        out_sorted = block_sparse_attention(
-            q_sorted, k_sorted, v_sorted,
-            q_sizes, k_sizes, dynamic_map, scale,
-        )
+    if not HAS_FLASHINFER:
+        raise RuntimeError("svg2 sparse path requires flashinfer.sparse")
+    out_sorted = variable_block_sparse_attn(
+        q_sorted, k_sorted, v_sorted,
+        dynamic_map, q_sizes_i32, k_sizes_i32,
+    )
 
     # Unsort
     out_flat = _svg2_inverse_permutation(out_sorted, q_sorted_idx)

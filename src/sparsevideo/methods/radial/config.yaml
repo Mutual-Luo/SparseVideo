@@ -4,8 +4,6 @@
 defaults:
   dense_warmup_step_ratio: 0.1 # Fraction of denoising steps that run dense before sparse attention starts.
   dense_warmup_layer_ratio: 0.03 # Fraction of earliest transformer layers that always run dense.
-  dense_layers: 0 # Upstream radial dense layer count before radial sparse masks apply.
-  dense_timesteps: 0 # Upstream scheduler-timestep threshold for dense radial attention.
   decay_factor: 1 # Radial mask decay factor controlling sparsity by distance.
   block_size: 128 # Block size used by FlashInfer/Sage sparse mask construction.
   use_sage_attention: false # Route sparse attention through owned SageAttention instead of FlashInfer.
@@ -15,8 +13,6 @@ model_defaults:
   wan21-t2v-1.3b:
     dense_warmup_step_ratio: 0.1
     dense_warmup_layer_ratio: 0.03
-    dense_layers: 1
-    dense_timesteps: 12
     decay_factor: 0.2
     block_size: 128
     use_sage_attention: false
@@ -24,8 +20,6 @@ model_defaults:
   wan21-t2v-14b:
     dense_warmup_step_ratio: 0.1
     dense_warmup_layer_ratio: 0.03
-    dense_layers: 1
-    dense_timesteps: 12
     decay_factor: 0.2
     block_size: 128
     use_sage_attention: false
@@ -33,8 +27,6 @@ model_defaults:
   wan22-t2v-a14b:
     dense_warmup_step_ratio: 0.1
     dense_warmup_layer_ratio: 0.03
-    dense_layers: 1
-    dense_timesteps: 11
     decay_factor: 0.8
     block_size: 64
     use_sage_attention: false
@@ -42,8 +34,6 @@ model_defaults:
   hunyuan-t2v:
     dense_warmup_step_ratio: 0.1
     dense_warmup_layer_ratio: 0.03
-    dense_layers: 0
-    dense_timesteps: 12
     decay_factor: 0.95
     block_size: 128
     use_sage_attention: false
@@ -51,8 +41,6 @@ model_defaults:
   wan21-i2v-14b:
     dense_warmup_step_ratio: 0.1
     dense_warmup_layer_ratio: 0.03
-    dense_layers: 1
-    dense_timesteps: 12
     decay_factor: 0.2
     block_size: 128
     use_sage_attention: false
@@ -60,8 +48,6 @@ model_defaults:
   wan22-i2v-a14b:
     dense_warmup_step_ratio: 0.1
     dense_warmup_layer_ratio: 0.03
-    dense_layers: 1
-    dense_timesteps: 12
     decay_factor: 0.2
     block_size: 128
     use_sage_attention: false
@@ -69,8 +55,6 @@ model_defaults:
   hunyuan-i2v:
     dense_warmup_step_ratio: 0.1
     dense_warmup_layer_ratio: 0.03
-    dense_layers: 0
-    dense_timesteps: 12
     decay_factor: 0.95
     block_size: 128
     use_sage_attention: false
@@ -78,8 +62,6 @@ model_defaults:
   skyreels-v2-t2v-14b:
     dense_warmup_step_ratio: 0.1
     dense_warmup_layer_ratio: 0.03
-    dense_layers: 1
-    dense_timesteps: 12
     decay_factor: 0.2
     block_size: 128
     use_sage_attention: false
@@ -87,8 +69,6 @@ model_defaults:
   skyreels-v2-i2v-14b:
     dense_warmup_step_ratio: 0.1
     dense_warmup_layer_ratio: 0.03
-    dense_layers: 1
-    dense_timesteps: 12
     decay_factor: 0.2
     block_size: 128
     use_sage_attention: false
@@ -96,8 +76,6 @@ model_defaults:
   wan22-animate-14b:
     dense_warmup_step_ratio: 0.1
     dense_warmup_layer_ratio: 0.03
-    dense_layers: 1
-    dense_timesteps: 12
     decay_factor: 0.2
     block_size: 128
     use_sage_attention: false
@@ -105,8 +83,6 @@ model_defaults:
   wan21-vace-1.3b:
     dense_warmup_step_ratio: 0.1
     dense_warmup_layer_ratio: 0.03
-    dense_layers: 1
-    dense_timesteps: 12
     decay_factor: 0.2
     block_size: 128
     use_sage_attention: false
@@ -114,8 +90,6 @@ model_defaults:
   wan21-vace-14b:
     dense_warmup_step_ratio: 0.1
     dense_warmup_layer_ratio: 0.03
-    dense_layers: 1
-    dense_timesteps: 12
     decay_factor: 0.2
     block_size: 128
     use_sage_attention: false
@@ -123,8 +97,6 @@ model_defaults:
   cogvideox-t2v:
     dense_warmup_step_ratio: 0.1
     dense_warmup_layer_ratio: 0.03
-    dense_layers: 0
-    dense_timesteps: 0
     decay_factor: 1
     block_size: 128
     use_sage_attention: false
@@ -132,8 +104,6 @@ model_defaults:
   cogvideox-i2v:
     dense_warmup_step_ratio: 0.1
     dense_warmup_layer_ratio: 0.03
-    dense_layers: 0
-    dense_timesteps: 0
     decay_factor: 1
     block_size: 128
     use_sage_attention: false
@@ -141,8 +111,6 @@ model_defaults:
   ltx-video:
     dense_warmup_step_ratio: 0.1
     dense_warmup_layer_ratio: 0.03
-    dense_layers: 0
-    dense_timesteps: 0
     decay_factor: 1
     block_size: 128
     use_sage_attention: false
@@ -150,8 +118,6 @@ model_defaults:
   ltx-video-i2v:
     dense_warmup_step_ratio: 0.1
     dense_warmup_layer_ratio: 0.03
-    dense_layers: 0
-    dense_timesteps: 0
     decay_factor: 1
     block_size: 128
     use_sage_attention: false
@@ -159,8 +125,6 @@ model_defaults:
   allegro:
     dense_warmup_step_ratio: 0.1
     dense_warmup_layer_ratio: 0.03
-    dense_layers: 0
-    dense_timesteps: 0
     decay_factor: 1
     block_size: 128
     use_sage_attention: false
@@ -168,8 +132,6 @@ model_defaults:
   mochi-1:
     dense_warmup_step_ratio: 0.1
     dense_warmup_layer_ratio: 0.03
-    dense_layers: 0
-    dense_timesteps: 0
     decay_factor: 1
     block_size: 128
     use_sage_attention: false
@@ -177,8 +139,6 @@ model_defaults:
   easyanimate-v5-t2v-12b:
     dense_warmup_step_ratio: 0.1
     dense_warmup_layer_ratio: 0.03
-    dense_layers: 0
-    dense_timesteps: 0
     decay_factor: 1
     block_size: 128
     use_sage_attention: false

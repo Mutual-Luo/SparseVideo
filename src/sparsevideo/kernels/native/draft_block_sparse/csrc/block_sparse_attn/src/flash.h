@@ -86,6 +86,7 @@ struct Flash_fwd_params : public Qkv_params {
     int *__restrict__ blockmask;
     int *__restrict__ streaming_info;
     int *__restrict__ head_mask_type;
+    uint8_t *__restrict__ key_valid_mask;
     // add by JXGuo
     int m_block_dim, n_block_dim, num_blocksparse_heads;
 

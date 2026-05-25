@@ -16,7 +16,6 @@ from sparsevideo.methods.radial.method import (
     _radial_attention,
     _radial_block_sizes,
     _radial_flashinfer_attention,
-    _radial_is_dense_layer_or_timestep,
     _radial_sage_attention,
     _radial_bsr_mask,
     _radial_window_width,
@@ -508,7 +507,7 @@ def test_radial_use_sage_attention_accepts_partial_final_block(monkeypatch):
     }
 
 
-def test_radial_dense_timestep_gate_matches_upstream_numeral_timestep_boundary(monkeypatch):
+def test_radial_dense_warmup_ratio_is_only_step_gate(monkeypatch):
     calls = []
 
     def fake_radial(query, key, value, **kwargs):
@@ -519,7 +518,7 @@ def test_radial_dense_timestep_gate_matches_upstream_numeral_timestep_boundary(m
     monkeypatch.setattr(torch.Tensor, "is_cuda", property(lambda self: True))
 
     method = RadialMethod(
-        config={"dense_timesteps": 12, "dense_layers": 0},
+        config={"dense_warmup_step_ratio": 0.0, "dense_warmup_layer_ratio": 0.0},
         model_info=SimpleNamespace(model_type="wan", transformers=[]),
     )
     query = torch.randn(1, 128, 2, 64)
@@ -536,31 +535,14 @@ def test_radial_dense_timestep_gate_matches_upstream_numeral_timestep_boundary(m
         layer_idx=0,
         total_layers=1,
         original_processor=None,
-        step_tracker=SimpleNamespace(step=1, timestep=12),
+        step_tracker=SimpleNamespace(step=1, timestep=999),
     )
     processor.attn_fn(query, query, query, None)
 
-    assert calls == ["dense", "sparse"]
+    assert calls == ["sparse", "sparse"]
 
 
-def test_radial_hunyuan_missing_timestep_falls_back_to_dense_like_upstream():
-    assert _radial_is_dense_layer_or_timestep(
-        "hunyuan_video",
-        layer_idx=10,
-        dense_layers=0,
-        dense_timesteps=12,
-        timestep=None,
-    )
-    assert not _radial_is_dense_layer_or_timestep(
-        "wan",
-        layer_idx=10,
-        dense_layers=0,
-        dense_timesteps=12,
-        timestep=None,
-    )
-
-
-def test_radial_dense_layer_gate_matches_upstream_layer_boundary(monkeypatch):
+def test_radial_dense_layer_gate_uses_common_warmup_ratio(monkeypatch):
     calls = []
 
     def fake_radial(query, key, value, **kwargs):
@@ -571,7 +553,7 @@ def test_radial_dense_layer_gate_matches_upstream_layer_boundary(monkeypatch):
     monkeypatch.setattr(torch.Tensor, "is_cuda", property(lambda self: True))
 
     method = RadialMethod(
-        config={"dense_timesteps": 0, "dense_layers": 1},
+        config={"dense_warmup_step_ratio": 0.0, "dense_warmup_layer_ratio": 0.5},
         model_info=SimpleNamespace(model_type="wan", transformers=[]),
     )
     query = torch.randn(1, 128, 2, 64)
