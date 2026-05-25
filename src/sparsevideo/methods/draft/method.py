@@ -104,7 +104,6 @@ class DraftMethod(SparseMethod):
                 expected_text_len=cfg["text_len"],
                 batch_size=cfg["batch_size"],
                 attention_mask=attention_mask,
-                allow_triton_fallback=cfg["allow_triton_fallback"],
                 backend_trace=backend_trace,
             )
             self.record_runtime_dispatch(
@@ -200,13 +199,12 @@ def _draft_attention(query, key, value, sparsity_ratio, pool_h, pool_w,
                      model_type="wan", text_len=0, latent_h=None, latent_w=None,
                      visual_len=None, expected_text_len=None, batch_size=None,
                      attention_mask=None,
-                     allow_triton_fallback=False, backend_trace=None):
+                     backend_trace=None):
     """Draft Attention: upstream reorg + percentile mask + block-sparse execution.
 
     query/key/value: [B, N, H, D]
     """
     B, N, H, D = query.shape
-    scale = D ** -0.5
 
     layout = infer_video_token_layout(N, model_type=model_type, text_len=text_len)
     context_len = layout.context_len
@@ -281,57 +279,36 @@ def _draft_attention(query, key, value, sparsity_ratio, pool_h, pool_w,
         text_len=tail_len,
         device=query.device,
     )
+    if model_type == "hunyuan_video":
+        attention_mask = _draft_hunyuan_text_mask_for_mit(
+            attention_mask,
+            batch_size=B,
+            original_total_len=N,
+            original_video_len=video_len,
+            text_len=tail_len,
+        )
 
     if query.is_cuda:
-        try:
-            out = _draft_mit_path(
-                kernel_query, kernel_key, kernel_value, B, kernel_N, H, D,
-                context_len, kernel_video_end, T, kernel_frame_h, kernel_frame_w, kernel_frame_size,
-                sparsity_ratio, pool_h, pool_w, reorg_idx, restore_idx,
-                attention_mask=attention_mask,
+        out = _draft_mit_path(
+            kernel_query, kernel_key, kernel_value, B, kernel_N, H, D,
+            context_len, kernel_video_end, T, kernel_frame_h, kernel_frame_w, kernel_frame_size,
+            sparsity_ratio, pool_h, pool_w, reorg_idx, restore_idx,
+            attention_mask=attention_mask,
+        )
+        if padded_canvas:
+            out = _crop_draft_video_canvas(
+                out,
+                context_len=context_len,
+                tail_len=tail_len,
+                T=T,
+                frame_h=frame_h,
+                frame_w=frame_w,
+                canvas_h=canvas_h,
+                canvas_w=canvas_w,
             )
-            if padded_canvas:
-                out = _crop_draft_video_canvas(
-                    out,
-                    context_len=context_len,
-                    tail_len=tail_len,
-                    T=T,
-                    frame_h=frame_h,
-                    frame_w=frame_w,
-                    canvas_h=canvas_h,
-                    canvas_w=canvas_w,
-                )
-            if backend_trace is not None:
-                backend_trace.append("mit_block_sparse")
-            return out
-        except Exception as exc:
-            if not allow_triton_fallback:
-                raise RuntimeError(
-                    "draft upstream MIT Block-Sparse-Attention path failed; "
-                    "set allow_triton_fallback=True only for debug fallback runs."
-                ) from exc
-        try:
-            out = _draft_triton_path(
-                kernel_query, kernel_key, kernel_value, B, kernel_N, H, D, scale,
-                context_len, kernel_video_end, T, kernel_frame_h, kernel_frame_w, kernel_frame_size,
-                sparsity_ratio, pool_h, pool_w, reorg_idx, restore_idx,
-            )
-            if padded_canvas:
-                out = _crop_draft_video_canvas(
-                    out,
-                    context_len=context_len,
-                    tail_len=tail_len,
-                    T=T,
-                    frame_h=frame_h,
-                    frame_w=frame_w,
-                    canvas_h=canvas_h,
-                    canvas_w=canvas_w,
-                )
-            if backend_trace is not None:
-                backend_trace.append("triton_debug_fallback")
-            return out
-        except Exception as exc:
-            raise RuntimeError("draft Triton sparse path failed") from exc
+        if backend_trace is not None:
+            backend_trace.append("mit_block_sparse")
+        return out
 
     raise RuntimeError("draft sparse path requires CUDA")
 
@@ -344,6 +321,23 @@ def _validate_configured_int(name, configured, actual):
         raise RuntimeError(
             f"draft upstream {name} config mismatch: expected {expected}, got {int(actual)}"
         )
+
+
+def _draft_hunyuan_text_mask_for_mit(attention_mask, *, batch_size, original_total_len, original_video_len, text_len):
+    if attention_mask is None or text_len <= 0:
+        return attention_mask
+
+    mask = attention_mask.reshape(attention_mask.shape[0], -1)
+    if mask.shape[0] != int(batch_size):
+        raise RuntimeError(
+            f"draft Hunyuan attention_mask batch mismatch: got {mask.shape[0]}, expected {int(batch_size)}"
+        )
+    if mask.shape[1] == int(text_len):
+        return mask.contiguous()
+    if mask.shape[1] == int(original_total_len):
+        start = int(original_video_len)
+        return mask[:, start:start + int(text_len)].contiguous()
+    return attention_mask
 
 
 def _draft_mit_path(query, key, value, B, N, H, D,
@@ -463,52 +457,6 @@ def _draft_expand_visual_mask_for_segments(base_visual, segment_count):
     raise RuntimeError(
         f"draft block mask segment mismatch: got segment_count={segment_count}, batch={batch}"
     )
-
-
-def _draft_triton_path(query, key, value, B, N, H, D, scale,
-                       context_len, video_end, T, frame_h, frame_w, frame_size,
-                       sparsity_ratio, pool_h, pool_w, reorg_idx, restore_idx):
-    """Pool-guided block-sparse attention.
-
-    Backend: SparseVideo-owned generic Triton block_sparse_attention. This is
-    debug fallback only; the parity path is _draft_mit_path().
-    """
-    from ...kernels.block_sparse_attn import block_sparse_attention
-
-    video_len = video_end - context_len
-    q_vid = query[:, context_len:video_end, :, :]
-    k_vid = key[:, context_len:video_end, :, :]
-
-    draft_attn = _sample_qk_attention_2d(q_vid, k_vid, frame_h, frame_w, pool_h, pool_w)
-    S = draft_attn.shape[-1]
-    m_block_dim = (video_len + S - 1) // S
-    n_block_dim = (video_len + S - 1) // S
-    q_block_num = (N + m_block_dim - 1) // m_block_dim
-    k_block_num = (N + n_block_dim - 1) // n_block_dim
-
-    base_visual = _attention_percentile_mask_headwise(draft_attn, 1.0 - float(sparsity_ratio))
-    base_blockmask = torch.ones(B, H, q_block_num, k_block_num, dtype=torch.bool, device=query.device)
-    base_blockmask[:, :, :base_visual.shape[2], :base_visual.shape[3]] = base_visual
-
-    q_reorg = query.index_select(1, reorg_idx)
-    k_reorg = key.index_select(1, reorg_idx)
-    v_reorg = value.index_select(1, reorg_idx)
-
-    q_sorted = q_reorg.permute(0, 2, 1, 3).reshape(B * H, N, D).contiguous()
-    k_sorted = k_reorg.permute(0, 2, 1, 3).reshape(B * H, N, D).contiguous()
-    v_sorted = v_reorg.permute(0, 2, 1, 3).reshape(B * H, N, D).contiguous()
-
-    q_sizes = _fixed_block_sizes(N, m_block_dim, q_block_num, B * H, query.device)
-    k_sizes = _fixed_block_sizes(N, n_block_dim, k_block_num, B * H, query.device)
-    dynamic_map = base_blockmask.reshape(B * H, q_block_num, k_block_num)
-
-    out_sorted = block_sparse_attention(
-        q_sorted, k_sorted, v_sorted,
-        q_sizes.to(torch.long), k_sizes.to(torch.long), dynamic_map, scale,
-    )
-
-    out_reorg = out_sorted.reshape(B, H, N, D).permute(0, 2, 1, 3)
-    return out_reorg.index_select(1, restore_idx)
 
 
 def _draft_mit_head_dim(head_dim):
@@ -715,9 +663,3 @@ def _attention_percentile_mask_headwise(attn_map, keep_ratio):
             mask[b, h] = head_scores >= threshold
 
     return mask
-
-
-def _fixed_block_sizes(total_len, block_dim, block_num, batch_heads, device):
-    starts = torch.arange(block_num, device=device, dtype=torch.int64) * int(block_dim)
-    sizes = torch.clamp(total_len - starts, min=0, max=int(block_dim)).to(torch.int32)
-    return sizes.unsqueeze(0).expand(batch_heads, -1).contiguous()

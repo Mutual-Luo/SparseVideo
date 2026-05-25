@@ -170,8 +170,8 @@ def validate_method_config(method: str, config: Dict[str, Any], model_family: Op
         raise ValueError("radial block_size must be 64 or 128")
     if method == "flashomni":
         sync_flashomni_config_aliases(config)
-        if config.get("implementation") not in ("upstream", "flex"):
-            raise ValueError("flashomni implementation must be upstream or flex")
+        if config.get("implementation") != "upstream":
+            raise ValueError("flashomni implementation must be upstream")
         if config.get("backend") not in ("auto", "fa2", "fa3"):
             raise ValueError("flashomni backend must be auto, fa2, or fa3")
         if config.get("pos_encoding_mode") not in ("NONE", "ROPE_LLAMA", "ALIBI"):
@@ -194,10 +194,6 @@ def validate_method_config(method: str, config: Dict[str, Any], model_family: Op
             raise ValueError("flashomni num_inference_steps must be >= 1")
         if not isinstance(config.get("use_sparse_gemm", True), bool):
             raise ValueError("flashomni use_sparse_gemm must be a boolean")
-        if config.get("implementation") == "flex" and config.get("sparse_pattern") != "local_qk_topk":
-            raise NotImplementedError(
-                "flashomni implementation=flex is only available for sparse_pattern=local_qk_topk"
-            )
         if config.get("sparse_pattern") == "global_random":
             config["sparse_block_size_for_q"] = int(config.get("sparse_size", 128))
             config["sparse_block_size_for_kv"] = int(config.get("sparse_size", 128))
@@ -391,7 +387,6 @@ def radial_flashinfer_layout_warning(
 
 def sta_layout_preflight_messages(
     spec: ModelSpec, height: int, width: int, num_frames: int, config: Dict[str, Any],
-    *, strict_kernels: bool = True,
 ) -> Dict[str, list]:
     errors: list = []
     warnings: list = []
@@ -432,19 +427,13 @@ def sta_layout_preflight_messages(
                     f"{STA_UNSUPPORTED_STRATEGY_MODELS[spec.key]} "
                     f"Provided strategy has shape steps/layers/heads={strategy_shape}."
                 )
-                if strict_kernels:
-                    errors.append(message)
-                else:
-                    warnings.append(message)
+                errors.append(message)
             elif expected_shape is not None and strategy_shape != expected_shape:
                 message = (
                     f"sta mask_strategy_file_path shape steps/layers/heads={strategy_shape} does not match "
                     f"the expected {spec.key} strategy shape {expected_shape}."
                 )
-                if strict_kernels:
-                    errors.append(message)
-                else:
-                    warnings.append(message)
+                errors.append(message)
 
     latent_t, latent_h, latent_w = _radial_estimated_latent_shape(spec, height, width, num_frames)
     latent_shape = (latent_t, latent_h, latent_w)

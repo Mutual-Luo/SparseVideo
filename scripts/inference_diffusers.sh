@@ -7,8 +7,8 @@
 # cogvideox, cogvideox-i2v, ltx, ltx-i2v, allegro, mochi, easyanimate
 #
 # Run after activating the sparsevideo environment:
-# source /home/dataset-assist-0/luojy/miniconda3/bin/activate
-# conda activate sparsevideo
+source /home/dataset-assist-0/luojy/miniconda3/bin/activate
+conda activate sparsevideo
 #
 # Total command lines: 190 = 19 backbones x 10 methods.
 
@@ -61,10 +61,10 @@ CUDA_VISIBLE_DEVICES=1 python scripts/infer_diffusers.py --model wan22          
 CUDA_VISIBLE_DEVICES=1 python scripts/infer_diffusers.py --model wan22             --method svg1       --prompt-file example/t2v/1.txt --cpu-offload --cpu-offload-mode model # 29:56
 CUDA_VISIBLE_DEVICES=5 python scripts/infer_diffusers.py --model wan22             --method svg2       --prompt-file example/t2v/1.txt --cpu-offload --cpu-offload-mode model
 CUDA_VISIBLE_DEVICES=6 python scripts/infer_diffusers.py --model wan22             --method spargeattn --prompt-file example/t2v/1.txt --cpu-offload --cpu-offload-mode model
-CUDA_VISIBLE_DEVICES=7 python scripts/infer_diffusers.py --model wan22             --method radial     --prompt-file example/t2v/1.txt --cpu-offload --cpu-offload-mode model
+CUDA_VISIBLE_DEVICES=1 python scripts/infer_diffusers.py --model wan22             --method radial     --prompt-file example/t2v/1.txt --cpu-offload --cpu-offload-mode model
 CUDA_VISIBLE_DEVICES=4 python scripts/infer_diffusers.py --model wan22             --method sta        --prompt-file example/t2v/1.txt --cpu-offload --cpu-offload-mode model
-CUDA_VISIBLE_DEVICES=5 python scripts/infer_diffusers.py --model wan22             --method draft      --prompt-file example/t2v/1.txt --cpu-offload --cpu-offload-mode model
-CUDA_VISIBLE_DEVICES=6 python scripts/infer_diffusers.py --model wan22             --method adacluster --prompt-file example/t2v/1.txt --cpu-offload --cpu-offload-mode model
+CUDA_VISIBLE_DEVICES=2 python scripts/infer_diffusers.py --model wan22             --method draft      --prompt-file example/t2v/1.txt --cpu-offload --cpu-offload-mode model
+CUDA_VISIBLE_DEVICES=3 python scripts/infer_diffusers.py --model wan22             --method adacluster --prompt-file example/t2v/1.txt --cpu-offload --cpu-offload-mode model
 CUDA_VISIBLE_DEVICES=5 python scripts/infer_diffusers.py --model wan22             --method flashomni  --prompt-file example/t2v/1.txt --cpu-offload --cpu-offload-mode model
 CUDA_VISIBLE_DEVICES=7 python scripts/infer_diffusers.py --model wan22             --method svoo       --prompt-file example/t2v/1.txt --cpu-offload --cpu-offload-mode model
 
@@ -89,12 +89,12 @@ CUDA_VISIBLE_DEVICES=4 python scripts/infer_diffusers.py --model hunyuan        
 CUDA_VISIBLE_DEVICES=5 python scripts/infer_diffusers.py --model hunyuan           --method svg1       --prompt-file example/t2v/1.txt # 29:57
 CUDA_VISIBLE_DEVICES=6 python scripts/infer_diffusers.py --model hunyuan           --method svg2       --prompt-file example/t2v/1.txt # 34:43
 CUDA_VISIBLE_DEVICES=7 python scripts/infer_diffusers.py --model hunyuan           --method spargeattn --prompt-file example/t2v/1.txt # 36:33
-CUDA_VISIBLE_DEVICES=5 python scripts/infer_diffusers.py --model hunyuan           --method radial     --prompt-file example/t2v/1.txt
+CUDA_VISIBLE_DEVICES=5 python scripts/infer_diffusers.py --model hunyuan           --method radial     --prompt-file example/t2v/1.txt # 35:45
 CUDA_VISIBLE_DEVICES=4 python scripts/infer_diffusers.py --model hunyuan           --method sta        --prompt-file example/t2v/1.txt
 CUDA_VISIBLE_DEVICES=6 python scripts/infer_diffusers.py --model hunyuan           --method draft      --prompt-file example/t2v/1.txt
 CUDA_VISIBLE_DEVICES=1 python scripts/infer_diffusers.py --model hunyuan           --method adacluster --prompt-file example/t2v/1.txt
 CUDA_VISIBLE_DEVICES=7 python scripts/infer_diffusers.py --model hunyuan           --method flashomni  --prompt-file example/t2v/1.txt
-CUDA_VISIBLE_DEVICES=7 python scripts/infer_diffusers.py --model hunyuan           --method svoo       --prompt-file example/t2v/1.txt
+CUDA_VISIBLE_DEVICES=4 python scripts/infer_diffusers.py --model hunyuan           --method svoo       --prompt-file example/t2v/1.txt
 
 # ---------------------------------------
 # hunyuanvideo i2v (model: hunyuan-i2v)
@@ -107,7 +107,7 @@ CUDA_VISIBLE_DEVICES=4 python scripts/infer_diffusers.py --model hunyuan-i2v    
 CUDA_VISIBLE_DEVICES=4 python scripts/infer_diffusers.py --model hunyuan-i2v       --method sta        --prompt-file example/i2v/1.txt --image example/i2v/1.jpg
 CUDA_VISIBLE_DEVICES=5 python scripts/infer_diffusers.py --model hunyuan-i2v       --method draft      --prompt-file example/i2v/1.txt --image example/i2v/1.jpg
 CUDA_VISIBLE_DEVICES=6 python scripts/infer_diffusers.py --model hunyuan-i2v       --method adacluster --prompt-file example/i2v/1.txt --image example/i2v/1.jpg
-CUDA_VISIBLE_DEVICES=5 python scripts/infer_diffusers.py --model hunyuan-i2v       --method flashomni  --prompt-file example/i2v/1.txt --image example/i2v/1.jpg --method-config sparse_pattern=paper_mmdit --method-config use_sparse_gemm=false --method-config taylor_cache_device=cpu --method-config D=1 --cpu-offload --cpu-offload-mode model --vae-tiling --vae-slicing --vae-decoder-chunk-size 1
+CUDA_VISIBLE_DEVICES=5 python scripts/infer_diffusers.py --model hunyuan-i2v       --method flashomni  --prompt-file example/i2v/1.txt --image example/i2v/1.jpg
 CUDA_VISIBLE_DEVICES=7 python scripts/infer_diffusers.py --model hunyuan-i2v       --method svoo       --prompt-file example/i2v/1.txt --image example/i2v/1.jpg
 
 # ---------------------------------------
@@ -135,7 +135,7 @@ CUDA_VISIBLE_DEVICES=4 python scripts/infer_diffusers.py --model skyreels-v2-i2v
 CUDA_VISIBLE_DEVICES=5 python scripts/infer_diffusers.py --model skyreels-v2-i2v   --method sta        --prompt-file example/i2v/1.txt --image example/i2v/1.jpg
 CUDA_VISIBLE_DEVICES=6 python scripts/infer_diffusers.py --model skyreels-v2-i2v   --method draft      --prompt-file example/i2v/1.txt --image example/i2v/1.jpg
 CUDA_VISIBLE_DEVICES=7 python scripts/infer_diffusers.py --model skyreels-v2-i2v   --method adacluster --prompt-file example/i2v/1.txt --image example/i2v/1.jpg
-CUDA_VISIBLE_DEVICES=0 python scripts/infer_diffusers.py --model skyreels-v2-i2v   --method flashomni  --prompt-file example/i2v/1.txt --image example/i2v/1.jpg --method-config sparse_pattern=paper_mmdit --method-config use_sparse_gemm=false --method-config taylor_cache_device=cpu
+CUDA_VISIBLE_DEVICES=0 python scripts/infer_diffusers.py --model skyreels-v2-i2v   --method flashomni  --prompt-file example/i2v/1.txt --image example/i2v/1.jpg
 CUDA_VISIBLE_DEVICES=1 python scripts/infer_diffusers.py --model skyreels-v2-i2v   --method svoo       --prompt-file example/i2v/1.txt --image example/i2v/1.jpg
 
 # ---------------------------------------
@@ -149,7 +149,7 @@ CUDA_VISIBLE_DEVICES=4 python scripts/infer_diffusers.py --model wananimate     
 CUDA_VISIBLE_DEVICES=5 python scripts/infer_diffusers.py --model wananimate        --method sta        --prompt-file example/t2v/1.txt --image example/i2v/1.jpg --pose-video result/inference/wan21-t2v-1.3b/dense/seed0_720x1280_81f.mp4 --face-video result/inference/wan21-t2v-1.3b/dense/seed0_720x1280_81f.mp4
 CUDA_VISIBLE_DEVICES=6 python scripts/infer_diffusers.py --model wananimate        --method draft      --prompt-file example/t2v/1.txt --image example/i2v/1.jpg --pose-video result/inference/wan21-t2v-1.3b/dense/seed0_720x1280_81f.mp4 --face-video result/inference/wan21-t2v-1.3b/dense/seed0_720x1280_81f.mp4
 CUDA_VISIBLE_DEVICES=7 python scripts/infer_diffusers.py --model wananimate        --method adacluster --prompt-file example/t2v/1.txt --image example/i2v/1.jpg --pose-video result/inference/wan21-t2v-1.3b/dense/seed0_720x1280_81f.mp4 --face-video result/inference/wan21-t2v-1.3b/dense/seed0_720x1280_81f.mp4
-CUDA_VISIBLE_DEVICES=0 python scripts/infer_diffusers.py --model wananimate        --method flashomni  --prompt-file example/t2v/1.txt --image example/i2v/1.jpg --pose-video result/inference/wan21-t2v-1.3b/dense/seed0_720x1280_81f.mp4 --face-video result/inference/wan21-t2v-1.3b/dense/seed0_720x1280_81f.mp4 --method-config sparse_pattern=paper_mmdit --method-config use_sparse_gemm=false --method-config taylor_cache_device=cpu
+CUDA_VISIBLE_DEVICES=0 python scripts/infer_diffusers.py --model wananimate        --method flashomni  --prompt-file example/t2v/1.txt --image example/i2v/1.jpg --pose-video result/inference/wan21-t2v-1.3b/dense/seed0_720x1280_81f.mp4 --face-video result/inference/wan21-t2v-1.3b/dense/seed0_720x1280_81f.mp4 
 CUDA_VISIBLE_DEVICES=1 python scripts/infer_diffusers.py --model wananimate        --method svoo       --prompt-file example/t2v/1.txt --image example/i2v/1.jpg --pose-video result/inference/wan21-t2v-1.3b/dense/seed0_720x1280_81f.mp4 --face-video result/inference/wan21-t2v-1.3b/dense/seed0_720x1280_81f.mp4
 
 # ---------------------------------------
@@ -183,7 +183,7 @@ CUDA_VISIBLE_DEVICES=1 python scripts/infer_diffusers.py --model wan21-vace-14b 
 # ---------------------------------------
 # cogvideox t2v (model: cogvideox)
 # ---------------------------------------
-CUDA_VISIBLE_DEVICES=0 python scripts/infer_diffusers.py --model cogvideox         --method dense      --prompt-file example/t2v/1.txt --cpu-offload --cpu-offload-mode model
+CUDA_VISIBLE_DEVICES=0 python scripts/infer_diffusers.py --model cogvideox         --method dense      --prompt-file example/t2v/1.txt
 CUDA_VISIBLE_DEVICES=1 python scripts/infer_diffusers.py --model cogvideox         --method svg1       --prompt-file example/t2v/1.txt
 CUDA_VISIBLE_DEVICES=2 python scripts/infer_diffusers.py --model cogvideox         --method svg2       --prompt-file example/t2v/1.txt
 CUDA_VISIBLE_DEVICES=3 python scripts/infer_diffusers.py --model cogvideox         --method spargeattn --prompt-file example/t2v/1.txt
@@ -191,7 +191,7 @@ CUDA_VISIBLE_DEVICES=4 python scripts/infer_diffusers.py --model cogvideox      
 CUDA_VISIBLE_DEVICES=5 python scripts/infer_diffusers.py --model cogvideox         --method sta        --prompt-file example/t2v/1.txt
 CUDA_VISIBLE_DEVICES=6 python scripts/infer_diffusers.py --model cogvideox         --method draft      --prompt-file example/t2v/1.txt
 CUDA_VISIBLE_DEVICES=7 python scripts/infer_diffusers.py --model cogvideox         --method adacluster --prompt-file example/t2v/1.txt
-CUDA_VISIBLE_DEVICES=0 python scripts/infer_diffusers.py --model cogvideox         --method flashomni  --prompt-file example/t2v/1.txt --method-config sparse_pattern=paper_mmdit --method-config use_sparse_gemm=false --method-config taylor_cache_device=cpu
+CUDA_VISIBLE_DEVICES=0 python scripts/infer_diffusers.py --model cogvideox         --method flashomni  --prompt-file example/t2v/1.txt
 CUDA_VISIBLE_DEVICES=1 python scripts/infer_diffusers.py --model cogvideox         --method svoo       --prompt-file example/t2v/1.txt
 
 # ---------------------------------------
@@ -205,7 +205,7 @@ CUDA_VISIBLE_DEVICES=4 python scripts/infer_diffusers.py --model cogvideox-i2v  
 CUDA_VISIBLE_DEVICES=5 python scripts/infer_diffusers.py --model cogvideox-i2v     --method sta        --prompt-file example/i2v/1.txt --image example/i2v/1.jpg --height 480 --width 720
 CUDA_VISIBLE_DEVICES=6 python scripts/infer_diffusers.py --model cogvideox-i2v     --method draft      --prompt-file example/i2v/1.txt --image example/i2v/1.jpg --height 480 --width 720
 CUDA_VISIBLE_DEVICES=7 python scripts/infer_diffusers.py --model cogvideox-i2v     --method adacluster --prompt-file example/i2v/1.txt --image example/i2v/1.jpg --height 480 --width 720
-CUDA_VISIBLE_DEVICES=0 python scripts/infer_diffusers.py --model cogvideox-i2v     --method flashomni  --prompt-file example/i2v/1.txt --image example/i2v/1.jpg --height 480 --width 720 --method-config sparse_pattern=paper_mmdit --method-config use_sparse_gemm=false --method-config taylor_cache_device=cpu
+CUDA_VISIBLE_DEVICES=0 python scripts/infer_diffusers.py --model cogvideox-i2v     --method flashomni  --prompt-file example/i2v/1.txt --image example/i2v/1.jpg --height 480 --width 720
 CUDA_VISIBLE_DEVICES=1 python scripts/infer_diffusers.py --model cogvideox-i2v     --method svoo       --prompt-file example/i2v/1.txt --image example/i2v/1.jpg --height 480 --width 720
 
 # ---------------------------------------
@@ -219,7 +219,7 @@ CUDA_VISIBLE_DEVICES=4 python scripts/infer_diffusers.py --model ltx            
 CUDA_VISIBLE_DEVICES=5 python scripts/infer_diffusers.py --model ltx               --method sta        --prompt-file example/t2v/1.txt --height 704 --width 1280
 CUDA_VISIBLE_DEVICES=6 python scripts/infer_diffusers.py --model ltx               --method draft      --prompt-file example/t2v/1.txt --height 704 --width 1280
 CUDA_VISIBLE_DEVICES=7 python scripts/infer_diffusers.py --model ltx               --method adacluster --prompt-file example/t2v/1.txt --height 704 --width 1280
-CUDA_VISIBLE_DEVICES=0 python scripts/infer_diffusers.py --model ltx               --method flashomni  --prompt-file example/t2v/1.txt --height 704 --width 1280 --method-config sparse_pattern=paper_mmdit --method-config use_sparse_gemm=false --method-config taylor_cache_device=cpu
+CUDA_VISIBLE_DEVICES=0 python scripts/infer_diffusers.py --model ltx               --method flashomni  --prompt-file example/t2v/1.txt --height 704 --width 1280
 CUDA_VISIBLE_DEVICES=1 python scripts/infer_diffusers.py --model ltx               --method svoo       --prompt-file example/t2v/1.txt --height 704 --width 1280
 
 # ---------------------------------------
@@ -233,7 +233,7 @@ CUDA_VISIBLE_DEVICES=4 python scripts/infer_diffusers.py --model ltx-i2v        
 CUDA_VISIBLE_DEVICES=5 python scripts/infer_diffusers.py --model ltx-i2v           --method sta        --prompt-file example/i2v/1.txt --image example/i2v/1.jpg --height 704 --width 1280
 CUDA_VISIBLE_DEVICES=6 python scripts/infer_diffusers.py --model ltx-i2v           --method draft      --prompt-file example/i2v/1.txt --image example/i2v/1.jpg --height 704 --width 1280
 CUDA_VISIBLE_DEVICES=7 python scripts/infer_diffusers.py --model ltx-i2v           --method adacluster --prompt-file example/i2v/1.txt --image example/i2v/1.jpg --height 704 --width 1280
-CUDA_VISIBLE_DEVICES=0 python scripts/infer_diffusers.py --model ltx-i2v           --method flashomni  --prompt-file example/i2v/1.txt --image example/i2v/1.jpg --height 704 --width 1280 --method-config sparse_pattern=paper_mmdit --method-config use_sparse_gemm=false --method-config taylor_cache_device=cpu
+CUDA_VISIBLE_DEVICES=0 python scripts/infer_diffusers.py --model ltx-i2v           --method flashomni  --prompt-file example/i2v/1.txt --image example/i2v/1.jpg --height 704 --width 1280
 CUDA_VISIBLE_DEVICES=1 python scripts/infer_diffusers.py --model ltx-i2v           --method svoo       --prompt-file example/i2v/1.txt --image example/i2v/1.jpg --height 704 --width 1280
 
 # ---------------------------------------
@@ -247,7 +247,7 @@ CUDA_VISIBLE_DEVICES=4 python scripts/infer_diffusers.py --model allegro        
 CUDA_VISIBLE_DEVICES=5 python scripts/infer_diffusers.py --model allegro           --method sta        --prompt-file example/t2v/1.txt --vae-tiling
 CUDA_VISIBLE_DEVICES=6 python scripts/infer_diffusers.py --model allegro           --method draft      --prompt-file example/t2v/1.txt --vae-tiling
 CUDA_VISIBLE_DEVICES=7 python scripts/infer_diffusers.py --model allegro           --method adacluster --prompt-file example/t2v/1.txt --vae-tiling
-CUDA_VISIBLE_DEVICES=0 python scripts/infer_diffusers.py --model allegro           --method flashomni  --prompt-file example/t2v/1.txt --vae-tiling --method-config sparse_pattern=paper_mmdit --method-config use_sparse_gemm=false --method-config taylor_cache_device=cpu
+CUDA_VISIBLE_DEVICES=0 python scripts/infer_diffusers.py --model allegro           --method flashomni  --prompt-file example/t2v/1.txt --vae-tiling
 CUDA_VISIBLE_DEVICES=1 python scripts/infer_diffusers.py --model allegro           --method svoo       --prompt-file example/t2v/1.txt --vae-tiling
 
 # ---------------------------------------

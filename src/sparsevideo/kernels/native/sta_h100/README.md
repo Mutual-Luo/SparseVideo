@@ -24,7 +24,6 @@ On this checkout, the conda environment provides a new enough CMake. If the
 host compiler lacks C++20 support for ThunderKittens headers, set `CC`, `CXX`,
 and `CUDAHOSTCXX` to the conda GCC/G++ wrappers before running the script.
 
-This copy keeps upstream CMake metadata, Python wrappers, C++/CUDA sources,
-ThunderKittens headers, CUTLASS headers, and licenses. It intentionally excludes
-only git metadata, build outputs, caches, docs, demos, and unrelated checkout
-state.
+This copy keeps the H100/TK C++/CUDA sources, the minimal Python loader needed
+to expose the compiled extension, ThunderKittens headers, CUTLASS headers, and
+licenses. It intentionally excludes upstream Triton fallback wrappers.

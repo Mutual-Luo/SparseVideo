@@ -35,7 +35,7 @@ behavior.
 ## Config Defaults
 
 Each method has `methods/<name>/config.yaml`. Edit `defaults` for generic
-fallbacks and `model_defaults` for concrete backbone keys such as
+settings and `model_defaults` for concrete backbone keys such as
 `wan21-t2v-1.3b` or `cogvideox-i2v`. Do not add family-wide groups such as
 `wan` or `hunyuan_video`; config resolution only applies exact `model_key`
 entries. `config.py` should only keep alias validation and dynamic values such
@@ -65,8 +65,7 @@ svg1        Adapter port. Uses upstream names/defaults; mask construction is
             and placement-kernel APIs before quality/speed runs.
 svg2        Adapter port. Uses upstream k-means/top-p names/defaults; executes
             through method-owned Sparse-VideoGen SAP Triton k-means and
-            FlashInfer block-sparse kernels. The local Triton block-sparse
-            path requires the explicit allow_triton_fallback debug override.
+            FlashInfer block-sparse kernels.
             Strict preflight imports FlashInfer and the owned Sparse-VideoGen
             Triton/helper modules, then checks the k-means, dynamic-map,
             permutation, block-sparse, and variable-block FlashInfer APIs
@@ -106,9 +105,8 @@ radial      Adapter port. Uses upstream decay_factor/block_size names and
             model-aware inference-shell defaults. Dense warmup is controlled
             only by the common dense_warmup_* ratios. FlashInfer path uses the
             upstream shrinkMaskStrict BSR
-            mask construction. FlexAttention requires the explicit local
-            allow_flex_fallback debug override and is not a benchmark-equivalent
-            kernel path. use_sage_attention routes the sparse stage through
+            mask construction. Missing FlashInfer support is a hard error.
+            use_sage_attention routes the sparse stage through
             SparseVideo-owned spas_sage_attn
             block_sparse_sage2_attn_cuda and the upstream sparge_mask_convert
             layout conversion. It requires upstream-compatible
@@ -128,9 +126,9 @@ radial      Adapter port. Uses upstream decay_factor/block_size names and
             use_sage_attention=false; use_sage_attention dense warmup uses the
             SparseVideo-owned SageAttention runtime under
             src/sparsevideo/kernels/native/sageattention.
-sta         Adapter port with SparseVideo-owned FastVideo STA wrapper. CPU
-            fallback is disabled for fair benchmarking. FastVideo H100/TK
-            source is copied under src/sparsevideo/kernels/native/sta_h100;
+sta         Adapter port with SparseVideo-owned FastVideo STA wrapper. Sparse
+            inference requires CUDA. FastVideo H100/TK source is copied under
+            src/sparsevideo/kernels/native/sta_h100;
             the local H100 extension is only expected to build/run on Hopper
             targets. A100 runs use the SparseVideo-owned SM80 block-sparse
             CUDA backend under src/sparsevideo/kernels/native/draft_block_sparse
@@ -194,8 +192,7 @@ flashomni   Kernel adapter. FlashOmni itself is a sparse kernel interface; an
             implementation=upstream calls FlashOmni's
             BatchFlashOmniFAWithRaggedKVWrapper and requires its CUDA/C++ ops;
             attention_mask is routed through FlashOmni custom_mask for the
-            explicit/full/global_random upstream paths. implementation=flex is
-            an explicit slow fallback.
+            explicit/full/global_random upstream paths.
             SparseVideo owns a FlashOmni runtime/source copy under
             src/sparsevideo/kernels/native/flashomni and requires it for
             upstream/runtime parity once the local flashomni_kernels extension

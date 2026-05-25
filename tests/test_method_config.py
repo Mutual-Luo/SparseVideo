@@ -103,7 +103,7 @@ def test_upstream_default_names_are_exposed():
     assert sparsevideo.default_method_config("svg2")["prompt_length"] is None
     assert "allow_triton_fallback" not in sparsevideo.default_method_config("svg2")
     assert sparsevideo.default_method_config("draft")["sparsity_ratio"] == 0.9
-    assert sparsevideo.default_method_config("draft")["allow_triton_fallback"] is False
+    assert "allow_triton_fallback" not in sparsevideo.default_method_config("draft")
     assert sparsevideo.default_method_config("adacluster")["topk_num"] == 128
     assert sparsevideo.default_method_config("sta")["tile_size"] == [6, 8, 8]
     assert sparsevideo.default_method_config("sta")["window_size"] == [3, 6, 10]
@@ -128,7 +128,7 @@ def test_upstream_default_names_are_exposed():
     assert sparsevideo.default_method_config("flashomni")["sm_scale"] is None
     assert sparsevideo.default_method_config("flashomni")["rope_scale"] is None
     assert sparsevideo.default_method_config("flashomni")["rope_theta"] is None
-    assert sparsevideo.default_method_config("radial")["allow_flex_fallback"] is False
+    assert "allow_flex_fallback" not in sparsevideo.default_method_config("radial")
     assert sparsevideo.default_method_config("spargeattn")["model_out_path"] is None
     assert sparsevideo.default_method_config("spargeattn")["mode"] == "topk"
     assert sparsevideo.default_method_config("spargeattn")["topk"] == 0.5
@@ -385,7 +385,7 @@ def test_draft_inference_context_uses_upstream_defaults():
     assert wan["text_len"] == 0
     assert wan["sparsity_ratio"] == 0.75
     assert wan["batch_size"] is None
-    assert wan["allow_triton_fallback"] is False
+    assert "allow_triton_fallback" not in wan
 
     hunyuan = sparsevideo.default_method_config("draft", model_family="hunyuan_video", model_key="hunyuan-t2v")
     assert hunyuan["pool_h"] == 8
@@ -599,7 +599,7 @@ def test_base_method_defaults_use_model_context():
 
     draft = DraftMethod(config={}, model_info=SimpleNamespace(model_type="wan", model_key="wan21-t2v-14b"))
     assert draft.config["sparsity_ratio"] == 0.75
-    assert draft.config["allow_triton_fallback"] is False
+    assert "allow_triton_fallback" not in draft.config
 
     radial = RadialMethod(
         config={},

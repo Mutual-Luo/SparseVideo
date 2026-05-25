@@ -93,7 +93,7 @@ endif()
 if(ENABLE_TK_KERNELS)
     message(STATUS "ThunderKittens kernels: ENABLED")
 else()
-    message(STATUS "ThunderKittens kernels: DISABLED (will use Triton fallbacks at runtime)")
+    message(STATUS "ThunderKittens kernels: DISABLED (STA H100 native attention kernels unavailable)")
 endif()
 
 # Always try to build the extension if CUDA is available, but conditionally add sources/flags

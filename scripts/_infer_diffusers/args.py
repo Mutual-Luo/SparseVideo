@@ -168,16 +168,6 @@ def build_parser() -> argparse.ArgumentParser:
             "backend/kernel dispatch smoke; it is not visual quality evidence."
         ),
     )
-    parser.add_argument(
-        "--strict-kernels",
-        action="store_true",
-        help="Keep strict fallback checks enabled. This is the default and overrides --allow-debug-fallbacks.",
-    )
-    parser.add_argument(
-        "--allow-debug-fallbacks",
-        action="store_true",
-        help="Allow explicitly labeled non-parity fallback kernel paths for smoke/debug runs only.",
-    )
     parser.add_argument("--method-config-json", type=str, default=None)
     parser.add_argument(
         "--method-config",

@@ -248,12 +248,12 @@ def _sta_attention(query, key, value, tile_size, kernel_size, model_type="wan",
     W_pad = ceil(spatial_w / ws) * ws
 
     if not query.is_cuda:
-        raise RuntimeError("sta sparse path requires CUDA; CPU fallback is disabled for fair inference benchmarking")
+        raise RuntimeError("sta sparse path requires CUDA for fair inference benchmarking")
 
     if tile_size != STA_TILE_SIZE:
         raise RuntimeError(
             f"sta sparse path requires FastVideo STA tile_size={STA_TILE_SIZE}; got {tile_size}. "
-            "SparseVideo does not silently run the non-upstream generalized STA fallback for parity runs."
+            "SparseVideo rejects the non-upstream generalized STA path for parity runs."
         )
 
     return _sta_sparsevideo_fastvideo_path(

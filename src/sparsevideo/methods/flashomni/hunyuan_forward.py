@@ -507,12 +507,18 @@ def taylor_formula(
     device: Optional[torch.device | str] = None,
 ) -> torch.Tensor:
     x = current["step"] - current["activated_steps"][-1]
-    output = 0
     values = _layer_cache(cache_dic, current)[current["module"]]
+    if not values:
+        raise RuntimeError(
+            "flashomni Hunyuan Taylor cache is empty for "
+            f"{current.get('stream')}.{current.get('layer')}.{current.get('module')}"
+        )
     device = torch.device(device) if device is not None else _flashomni_taylor_output_device(values)
+    output = None
     for order in range(len(values)):
         value = _flashomni_taylor_tensor_to(values[order], device)
-        output = output + (1 / math.factorial(order)) * value * (x ** order)
+        term = (1 / math.factorial(order)) * value * (x ** order)
+        output = term if output is None else output + term
     return output
 
 

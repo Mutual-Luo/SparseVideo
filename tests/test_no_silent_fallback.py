@@ -297,7 +297,7 @@ def test_radial_sparse_stage_does_not_silently_use_flex_fallback(monkeypatch):
     monkeypatch.setattr(torch.Tensor, "is_cuda", property(lambda self: True))
     monkeypatch.setattr(flashinfer_block_sparse, "HAS_FLASHINFER", False)
 
-    with pytest.raises(RuntimeError, match="allow_flex_fallback"):
+    with pytest.raises(RuntimeError, match="FlashInfer is not available"):
         _radial_attention(
             query,
             key,

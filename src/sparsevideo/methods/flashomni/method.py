@@ -159,8 +159,8 @@ class FlashOmniMethod(SparseMethod):
         if self.config["sparse_pattern"] == "global_random":
             self.config["sparse_block_size_for_q"] = int(self.config["sparse_size"])
             self.config["sparse_block_size_for_kv"] = int(self.config["sparse_size"])
-        if self.config["implementation"] not in ("upstream", "flex"):
-            raise ValueError("flashomni implementation must be 'upstream' or 'flex'")
+        if self.config["implementation"] != "upstream":
+            raise ValueError("flashomni implementation must be 'upstream'")
         if self.config["backend"] not in ("auto", "fa2", "fa3"):
             raise ValueError("flashomni backend must be 'auto', 'fa2', or 'fa3'")
         if self.config["sparse_pattern"] not in ("explicit", "global_random", "paper_mmdit", "local_qk_topk"):
@@ -185,11 +185,6 @@ class FlashOmniMethod(SparseMethod):
             raise ValueError("flashomni taylor_cache_device must be 'cuda' or 'cpu'")
         if int(self.config["debug_memory_max_events"]) < 1:
             raise ValueError("flashomni debug_memory_max_events must be >= 1")
-        if self.config["implementation"] == "flex" and self.config["sparse_pattern"] != "local_qk_topk":
-            raise NotImplementedError(
-                "flashomni implementation='flex' is only a slow local_qk_topk diagnostic path; "
-                "the upstream sparse-info path requires implementation='upstream'."
-            )
         if self.config["sparse_pattern"] == "explicit":
             _validate_explicit_sparse_info(self.config)
         if self.config["sparse_pattern"] == "local_qk_topk":
@@ -423,7 +418,7 @@ class FlashOmniMethod(SparseMethod):
             )
             self.record_runtime_dispatch(
                 "sparse",
-                backend=_flashomni_local_backend_name(cfg["implementation"]),
+                backend="flashomni_local_qk_topk_upstream",
                 layer_idx=layer_idx,
                 step=getattr(step_tracker, "step", None),
             )
@@ -475,16 +470,8 @@ class FlashOmniMethod(SparseMethod):
         stats["last_kernel"] = {key: value for key, value in event.items() if value is not None}
 
 
-def _flashomni_local_backend_name(implementation):
-    if implementation == "upstream":
-        return "flashomni_local_qk_topk_upstream"
-    return "flex_debug_fallback"
-
-
 def _flashomni_dense_warmup_backend_name(config):
-    if config["implementation"] == "upstream":
-        return "flashomni_full_upstream"
-    return "torch_sdpa"
+    return "flashomni_full_upstream"
 
 
 def _flashomni_dense_warmup_attention(query, key, value, *, cfg, attention_mask, text_len, plan_kwargs):
@@ -832,7 +819,7 @@ def _flashomni_attention(query, key, value, sparse_kv_budget,
                          causal=False, pos_encoding_mode="NONE",
                          use_fp16_qk_reduction=False, logits_soft_cap=0.0,
                          sm_scale=None, rope_scale=None, rope_theta=None):
-    """Local q/k block-mean top-k sparse attention through FlashOmni/flex.
+    """Local q/k block-mean top-k sparse attention through FlashOmni.
 
     This helper is an explicit SparseVideo diagnostic path and is not upstream
     FlashOmni video-method parity. Use sparse_pattern="explicit" with
@@ -866,9 +853,6 @@ def _flashomni_attention(query, key, value, sparse_kv_budget,
         k_padded = k
         v_padded = v
 
-    q_len_padded = num_q_blocks * q_block_size
-    kv_len_padded = num_k_blocks * kv_block_size
-
     # Block-level means: [B, H, num_blocks, D]
     q_blocks = q_padded.view(B, H, num_q_blocks, q_block_size, D).mean(dim=3)
     k_blocks = k_padded.view(B, H, num_k_blocks, kv_block_size, D).mean(dim=3)
@@ -882,57 +866,19 @@ def _flashomni_attention(query, key, value, sparse_kv_budget,
     block_mask_pattern = torch.zeros_like(block_attn, dtype=torch.bool)
     block_mask_pattern.scatter_(dim=-1, index=topk_idx, value=True)
 
-    if implementation == "upstream":
-        if not query.is_cuda:
-            raise RuntimeError("flashomni upstream sparse path requires CUDA")
-        out = _flashomni_upstream_attention(
-            q_padded, k_padded, v_padded, block_mask_pattern,
-            q_len=N, q_block_size=q_block_size, kv_block_size=kv_block_size,
-            backend=backend, workspace_bytes=workspace_bytes,
-            causal=causal, pos_encoding_mode=pos_encoding_mode,
-            use_fp16_qk_reduction=use_fp16_qk_reduction,
-            logits_soft_cap=logits_soft_cap, sm_scale=sm_scale,
-            rope_scale=rope_scale, rope_theta=rope_theta,
-        )
-        if q_pad_n > 0:
-            out = out[:, :, :N, :]
-        return out.permute(0, 2, 1, 3)
-
-    if implementation != "flex":
-        raise ValueError("flashomni implementation must be 'upstream' or 'flex'")
-    if (
-        causal
-        or pos_encoding_mode != "NONE"
-        or use_fp16_qk_reduction
-        or logits_soft_cap not in (None, 0.0)
-        or sm_scale is not None
-        or rope_scale is not None
-        or rope_theta is not None
-    ):
-        raise NotImplementedError(
-            "flashomni implementation='flex' is a local diagnostic fallback and "
-            "does not implement upstream FlashOmni plan modifiers."
-        )
-
-    # Explicit fallback: use flex_attention with block mask derived from pattern.
-    from torch.nn.attention.flex_attention import flex_attention, create_block_mask
-
-    # block_mask_pattern is [B, H, nqb, nkb], use first batch element
-    pattern = block_mask_pattern[0]  # [H, nqb, nkb]
-
-    def mask_mod(b, h, q_idx, kv_idx):
-        q_block = q_idx // q_block_size
-        kv_block = kv_idx // kv_block_size
-        q_block = torch.clamp(q_block, 0, num_q_blocks - 1)
-        kv_block = torch.clamp(kv_block, 0, num_k_blocks - 1)
-        return pattern[h, q_block, kv_block]
-
-    bm = create_block_mask(
-        mask_mod, B=None, H=H, Q_LEN=q_len_padded, KV_LEN=kv_len_padded,
-        device=query.device, BLOCK_SIZE=(q_block_size, kv_block_size),
+    if implementation != "upstream":
+        raise ValueError("flashomni implementation must be 'upstream'")
+    if not query.is_cuda:
+        raise RuntimeError("flashomni upstream sparse path requires CUDA")
+    out = _flashomni_upstream_attention(
+        q_padded, k_padded, v_padded, block_mask_pattern,
+        q_len=N, q_block_size=q_block_size, kv_block_size=kv_block_size,
+        backend=backend, workspace_bytes=workspace_bytes,
+        causal=causal, pos_encoding_mode=pos_encoding_mode,
+        use_fp16_qk_reduction=use_fp16_qk_reduction,
+        logits_soft_cap=logits_soft_cap, sm_scale=sm_scale,
+        rope_scale=rope_scale, rope_theta=rope_theta,
     )
-
-    out = flex_attention(q_padded, k_padded, v_padded, block_mask=bm)
     if q_pad_n > 0:
         out = out[:, :, :N, :]
     return out.permute(0, 2, 1, 3)
@@ -1241,6 +1187,9 @@ def _flashomni_hunyuan_attn_taylor_out(cache_dic, current, *, device=None):
         if current.get("type") != "Sparse" or current.get("sparse_type") != "flashomni":
             return None
         if current.get("module") != "attn":
+            return None
+        values = cache_dic["cache"][-1][current["stream"]][current["layer"]].get(current["module"])
+        if not values:
             return None
         return taylor_formula(cache_dic, current, device=device).contiguous()
     except (KeyError, TypeError, IndexError):

@@ -15,10 +15,9 @@ from sparsevideo.methods.draft.method import (
     _draft_attention,
     _draft_cu_seqlens,
     _draft_dense_attention,
+    _draft_hunyuan_text_mask_for_mit,
     _draft_mit_path,
-    _draft_triton_path,
     _crop_draft_video_canvas,
-    _fixed_block_sizes,
     _generate_reorg_restore_indices,
     _pad_draft_video_canvas,
     _sample_qk_attention_2d,
@@ -251,19 +250,6 @@ def test_draft_runtime_layout_gate_rejects_non_upstream_hunyuan_shapes():
         )
 
 
-def test_draft_fixed_block_sizes_cover_text_tail():
-    sizes = _fixed_block_sizes(
-        total_len=27,
-        block_dim=12,
-        block_num=3,
-        batch_heads=2,
-        device=torch.device("cpu"),
-    )
-
-    assert sizes.dtype == torch.int32
-    assert sizes.tolist() == [[12, 12, 3], [12, 12, 3]]
-
-
 def test_draft_hunyuan_sparse_path_accepts_attention_mask_like_upstream(monkeypatch):
     calls = []
 
@@ -291,6 +277,35 @@ def test_draft_hunyuan_sparse_path_accepts_attention_mask_like_upstream(monkeypa
     assert out.shape == query.shape
     assert calls[0]["model_type"] == "hunyuan_video"
     assert calls[0]["text_len"] == 256
+
+
+def test_draft_hunyuan_padded_mit_uses_text_tail_from_unpadded_full_mask():
+    original_video_len = 33 * 45 * 80
+    padded_video_len = 33 * 48 * 80
+    text_len = 256
+    prompt_len = 137
+    attention_mask = torch.ones(1, 1, 1, original_video_len + text_len, dtype=torch.bool)
+    attention_mask[..., original_video_len + prompt_len:] = False
+
+    text_mask = _draft_hunyuan_text_mask_for_mit(
+        attention_mask,
+        batch_size=1,
+        original_total_len=original_video_len + text_len,
+        original_video_len=original_video_len,
+        text_len=text_len,
+    )
+    cu_seqlens = _draft_cu_seqlens(
+        attention_mask=text_mask,
+        batch_size=1,
+        total_len=padded_video_len + text_len,
+        video_len=padded_video_len,
+        text_len=text_len,
+        device=torch.device("cpu"),
+    )
+
+    assert text_mask.shape == (1, text_len)
+    assert int(text_mask.sum().item()) == prompt_len
+    assert cu_seqlens.tolist() == [0, padded_video_len + prompt_len, padded_video_len + text_len]
 
 
 def test_draft_wan_sparse_path_rejects_attention_mask(monkeypatch):
@@ -340,67 +355,6 @@ def test_draft_rejects_configured_layout_mismatches_before_sparse_kernel():
             model_type="wan",
             batch_size=2,
         )
-
-
-def test_draft_runtime_uses_owned_triton_block_sparse_not_flashinfer(monkeypatch):
-    calls = []
-
-    def fake_block_sparse_attention(q_sorted, k_sorted, v_sorted, q_sizes, k_sizes, dynamic_map, scale):
-        calls.append(
-            {
-                "q_shape": tuple(q_sorted.shape),
-                "q_sizes": q_sizes.clone(),
-                "k_sizes": k_sizes.clone(),
-                "dynamic_map": dynamic_map.clone(),
-                "scale": scale,
-            }
-        )
-        return q_sorted
-
-    monkeypatch.setattr(
-        "sparsevideo.kernels.block_sparse_attn.block_sparse_attention",
-        fake_block_sparse_attention,
-    )
-
-    query = torch.arange(1 * 24 * 1 * 16, dtype=torch.float32).reshape(1, 24, 1, 16)
-    reorg_idx, restore_idx = _generate_reorg_restore_indices(
-        pool_h=2,
-        pool_w=2,
-        latent_h=4,
-        latent_w=6,
-        visual_len=24,
-        text_len=0,
-        device=torch.device("cpu"),
-    )
-
-    out = _draft_triton_path(
-        query,
-        query,
-        query,
-        B=1,
-        N=24,
-        H=1,
-        D=16,
-        scale=16 ** -0.5,
-        context_len=0,
-        video_end=24,
-        T=1,
-        frame_h=4,
-        frame_w=6,
-        frame_size=24,
-        sparsity_ratio=0.75,
-        pool_h=2,
-        pool_w=2,
-        reorg_idx=reorg_idx,
-        restore_idx=restore_idx,
-    )
-
-    assert calls
-    assert calls[0]["q_shape"] == (1, 24, 16)
-    assert calls[0]["q_sizes"].dtype == torch.long
-    assert calls[0]["k_sizes"].dtype == torch.long
-    assert calls[0]["dynamic_map"].dtype == torch.bool
-    assert torch.equal(out, query)
 
 
 def test_draft_mit_path_calls_upstream_block_sparse_interface(monkeypatch):
@@ -936,148 +890,3 @@ def test_draft_mit_path_rejects_non_128_block_layout(monkeypatch):
             reorg_idx=reorg_idx,
             restore_idx=restore_idx,
         )
-
-
-def test_draft_block_sparse_layout_matches_upstream_with_text_tail(monkeypatch):
-    calls = []
-
-    def fake_block_sparse_attention(q_sorted, k_sorted, v_sorted, q_sizes, k_sizes, dynamic_map, scale):
-        calls.append(
-            {
-                "q_sizes": q_sizes.clone(),
-                "k_sizes": k_sizes.clone(),
-                "dynamic_map": dynamic_map.clone(),
-            }
-        )
-        return q_sorted
-
-    monkeypatch.setattr(
-        "sparsevideo.kernels.block_sparse_attn.block_sparse_attention",
-        fake_block_sparse_attention,
-    )
-
-    query = torch.arange(1 * 27 * 1 * 16, dtype=torch.float32).reshape(1, 27, 1, 16)
-    reorg_idx, restore_idx = _generate_reorg_restore_indices(
-        pool_h=2,
-        pool_w=2,
-        latent_h=4,
-        latent_w=6,
-        visual_len=24,
-        text_len=3,
-        device=torch.device("cpu"),
-    )
-
-    out = _draft_triton_path(
-        query,
-        query,
-        query,
-        B=1,
-        N=27,
-        H=1,
-        D=16,
-        scale=16 ** -0.5,
-        context_len=0,
-        video_end=24,
-        T=1,
-        frame_h=4,
-        frame_w=6,
-        frame_size=24,
-        sparsity_ratio=0.75,
-        pool_h=2,
-        pool_w=2,
-        reorg_idx=reorg_idx,
-        restore_idx=restore_idx,
-    )
-
-    assert calls
-    call = calls[0]
-    assert call["q_sizes"].tolist() == [[4, 4, 4, 4, 4, 4, 3]]
-    assert call["k_sizes"].tolist() == [[4, 4, 4, 4, 4, 4, 3]]
-    assert call["dynamic_map"].shape == (1, 7, 7)
-
-    sampled = _sample_qk_attention_2d(
-        query[:, :24],
-        query[:, :24],
-        frame_h=4,
-        frame_w=6,
-        pool_h=2,
-        pool_w=2,
-    )
-    expected_visual = _attention_percentile_mask_headwise(sampled, keep_ratio=0.25).reshape(1, 6, 6)
-
-    assert torch.equal(call["dynamic_map"][:, :6, :6], expected_visual)
-    assert call["dynamic_map"][:, 6, :].all()
-    assert call["dynamic_map"][:, :, 6].all()
-    assert torch.equal(out, query)
-
-
-def test_draft_batch_masks_match_classifier_free_guidance_semantics(monkeypatch):
-    calls = []
-
-    def fake_block_sparse_attention(q_sorted, k_sorted, v_sorted, q_sizes, k_sizes, dynamic_map, scale):
-        calls.append(
-            {
-                "q_shape": tuple(q_sorted.shape),
-                "q_sizes": q_sizes.clone(),
-                "dynamic_map": dynamic_map.clone(),
-            }
-        )
-        return q_sorted
-
-    monkeypatch.setattr(
-        "sparsevideo.kernels.block_sparse_attn.block_sparse_attention",
-        fake_block_sparse_attention,
-    )
-
-    torch.manual_seed(0)
-    query = torch.randn(2, 24, 1, 16)
-    reorg_idx, restore_idx = _generate_reorg_restore_indices(
-        pool_h=2,
-        pool_w=2,
-        latent_h=4,
-        latent_w=6,
-        visual_len=24,
-        text_len=0,
-        device=torch.device("cpu"),
-    )
-
-    out = _draft_triton_path(
-        query,
-        query,
-        query,
-        B=2,
-        N=24,
-        H=1,
-        D=16,
-        scale=16 ** -0.5,
-        context_len=0,
-        video_end=24,
-        T=1,
-        frame_h=4,
-        frame_w=6,
-        frame_size=24,
-        sparsity_ratio=0.75,
-        pool_h=2,
-        pool_w=2,
-        reorg_idx=reorg_idx,
-        restore_idx=restore_idx,
-    )
-
-    assert calls
-    call = calls[0]
-    assert call["q_shape"] == (2, 24, 16)
-    assert call["q_sizes"].tolist() == [[4, 4, 4, 4, 4, 4], [4, 4, 4, 4, 4, 4]]
-
-    sampled = _sample_qk_attention_2d(
-        query,
-        query,
-        frame_h=4,
-        frame_w=6,
-        pool_h=2,
-        pool_w=2,
-    )
-    expected = _attention_percentile_mask_headwise(sampled, keep_ratio=0.25).reshape(2, 6, 6)
-
-    assert torch.equal(call["dynamic_map"], expected)
-    assert not torch.equal(call["dynamic_map"][0], call["dynamic_map"][1])
-    assert torch.equal(out, query)

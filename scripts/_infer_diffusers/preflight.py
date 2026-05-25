@@ -140,7 +140,6 @@ def preflight_runtime(
     config: Dict[str, Any],
     device: str,
     runtime_status: Dict[str, Any],
-    strict_kernels: bool = True,
     model_family: Optional[str] = None,
 ) -> Dict[str, Any]:
     kernels = runtime_status["optional_kernels"]
@@ -189,10 +188,7 @@ def preflight_runtime(
         and fused.get("backend_env") == "auto"
         and not fused.get("native_extension")
     ):
-        if strict_kernels:
-            errors.append(fused_unavailable_message)
-        else:
-            warnings.append(fused_unavailable_message)
+        errors.append(fused_unavailable_message)
 
     spargeattn_needs_runtime = (
         method == "spargeattn"
@@ -450,25 +446,17 @@ def preflight_runtime(
                 "Build/use the SparseVideo-owned runtime under src/sparsevideo/kernels/native/flashomni."
             )
         elif flashomni.get("environment_runtime_detected") or flashomni.get("selected_runtime") != "sparsevideo":
-            message = (
+            errors.append(
                 "flashomni implementation=upstream requires the SparseVideo-owned runtime under "
                 "src/sparsevideo/kernels/native/flashomni. Environment flashomni packages are "
                 "not accepted for SparseVideo runtime parity."
             )
-            if strict_kernels:
-                errors.append(message)
-            else:
-                warnings.append(message)
         owned_source = flashomni.get("sparsevideo_owned_source", {})
         if not owned_source.get("source_files"):
-            message = (
+            errors.append(
                 "flashomni has no SparseVideo-owned FlashOmni native source under "
                 "src/sparsevideo/kernels/native/flashomni; this is not package-ready kernel parity."
             )
-            if strict_kernels:
-                errors.append(message)
-            else:
-                warnings.append(message)
         if config.get("sparse_pattern", "explicit") == "explicit":
             missing = [key for key in FLASHOMNI_SPARSE_INFO_KEYS if config.get(key) is None]
             if missing:
@@ -488,24 +476,16 @@ def preflight_runtime(
                     "tensors are proven to come from an upstream-compatible video policy."
                 )
     if method == "flashomni" and config.get("sparse_pattern") == "local_qk_topk":
-        message = (
+        errors.append(
             "flashomni sparse_pattern=local_qk_topk uses SparseVideo's block-mean top-k "
             "diagnostic policy, not upstream FlashOmni video-method parity."
         )
-        if strict_kernels:
-            errors.append(message)
-        else:
-            warnings.append(message)
     if method == "flashomni" and config.get("sparse_pattern") == "global_random":
-        message = (
+        errors.append(
             "flashomni sparse_pattern=global_random matches FlashOmni's upstream synthetic kernel benchmark mask, "
             "not a video diffusion quality-parity sparsity policy. Use it for native-kernel smoke/speed checks only; "
             "use sparse_pattern=explicit with upstream-compatible sparse-info tensors for real method comparisons."
         )
-        if strict_kernels:
-            errors.append(message)
-        else:
-            warnings.append(message)
     if (
         method == "flashomni"
         and config.get("sparse_pattern") == "paper_mmdit"
@@ -874,40 +854,24 @@ def preflight_runtime(
                 errors.append(error)
 
     if method == "draft":
+        message = None
         if model_family in (None, "wan", "hunyuan_video") and _has_dense_warmup(config):
             message = _flash_attn_preflight_error(
                 kernels,
                 required_func="flash_attn_varlen_func",
                 requirement="draft dense warmup requires FlashAttention varlen for upstream parity",
             )
-            if message is not None:
-                if strict_kernels:
-                    errors.append(message)
-                else:
-                    warnings.append(message)
+        if message is not None:
+            errors.append(message)
         draft = kernels["draft_kernels"]
         mit_backend = draft.get("mit_block_sparse_attn", {})
         mit_ready = mit_backend.get("source_files") and mit_backend.get("cuda_extension")
-        fallback_ready = draft.get("triton_package") and draft["triton_block_sparse_attn"].get("source_files")
         if not mit_ready:
-            message = (
+            errors.append(
                 "draft upstream parity requires SparseVideo-owned MIT Han Lab "
                 "Block-Sparse-Attention source and block_sparse_attn_cuda extension under "
-                "src/sparsevideo/kernels/native/draft_block_sparse. The generic "
-                "src/sparsevideo/kernels/block_sparse_attn.py Triton kernel is not the "
-                "upstream Draft backend and is debug fallback only."
+                "src/sparsevideo/kernels/native/draft_block_sparse."
             )
-            if strict_kernels:
-                errors.append(message)
-            else:
-                warnings.append(message)
-                if not draft.get("triton_package"):
-                    errors.append("draft debug fallback requires the triton package.")
-                if not draft["triton_block_sparse_attn"].get("source_files"):
-                    errors.append(
-                        "draft debug fallback requires SparseVideo-owned generic Triton "
-                        "block sparse source at src/sparsevideo/kernels/block_sparse_attn.py."
-                    )
         elif draft.get("mit_load_checked") or mit_backend.get("load_checked"):
             mit_load_error = None
             if mit_backend.get("import_error"):
@@ -933,27 +897,17 @@ def preflight_runtime(
                         f"{missing}."
                     )
             if mit_load_error is not None:
-                if strict_kernels:
-                    errors.append(mit_load_error)
-                else:
-                    warnings.append(mit_load_error)
-        elif not fallback_ready:
-            warnings.append(
-                "draft MIT backend is present; generic Triton fallback source is missing, "
-                "so --allow-debug-fallbacks cannot exercise the local fallback path."
-            )
+                errors.append(mit_load_error)
 
     if method == "radial":
         flashinfer = kernels["flashinfer"]
         if not flashinfer.get("package"):
             message = (
-                "radial FlashInfer is not importable; the FlexAttention path is debug-only "
-                "and requires allow_flex_fallback."
+                "radial FlashInfer is not importable."
             )
         elif not flashinfer.get("sparse_module"):
             message = (
-                "radial requires flashinfer.sparse for the upstream sparse kernel path; "
-                "the FlexAttention path is debug-only and requires allow_flex_fallback."
+                "radial requires flashinfer.sparse for the upstream sparse kernel path."
             )
         elif "cuda_toolkit" in flashinfer and not flashinfer.get("cuda_toolkit", {}).get("available"):
             message = (
@@ -963,10 +917,7 @@ def preflight_runtime(
         else:
             message = None
         if message is not None:
-            if strict_kernels:
-                errors.append(message)
-            else:
-                warnings.append(message)
+            errors.append(message)
         else:
             required_attrs = (
                 "top_level_block_sparse_attention_wrapper",
@@ -987,10 +938,7 @@ def preflight_runtime(
                 requirement="radial requires loadable FlashInfer sparse APIs for the upstream sparse path",
             )
             if load_error is not None:
-                if strict_kernels:
-                    errors.append(load_error)
-                else:
-                    warnings.append(load_error)
+                errors.append(load_error)
 
     if method == "svg2":
         flashinfer = kernels["flashinfer"]
@@ -1036,28 +984,20 @@ def preflight_runtime(
         if tile_size != (6, 8, 8):
             errors.append(
                 "sta tile_size differs from FastVideo's fixed upstream tile_size=(6,8,8); "
-                "SparseVideo rejects the non-upstream generalized STA fallback for parity runs."
+                "SparseVideo rejects the non-upstream generalized STA path for parity runs."
             )
         has_hopper = _has_hopper_device(torch_status)
         has_ampere = _has_ampere_device(torch_status)
         if not sta["sparsevideo_h100"].get("source", {}).get("source_files"):
-            message = (
+            errors.append(
                 "sta FastVideo H100/TK C++ source is missing under "
                 "src/sparsevideo/kernels/native/sta_h100; this is not package-ready kernel parity."
             )
-            if strict_kernels:
-                errors.append(message)
-            else:
-                warnings.append(message)
         if has_ampere and not sta.get("sparsevideo_a100_block_sparse", {}).get("source", {}).get("source_files"):
-            message = (
+            errors.append(
                 "sta A100 block-sparse CUDA source is missing under "
                 "src/sparsevideo/kernels/native/draft_block_sparse; A100 STA cannot be used for speed claims."
             )
-            if strict_kernels:
-                errors.append(message)
-            else:
-                warnings.append(message)
         seq_shape = normalize_seq_shape_for_warning(config.get("seq_shape"))
         if seq_shape is None:
             message = (
@@ -1081,23 +1021,15 @@ def preflight_runtime(
             if sta.get("a100_block_sparse_load_checked"):
                 a100_usable = bool(sta.get("a100_block_sparse_ready"))
                 if sta.get("a100_import_error"):
-                    message = (
+                    errors.append(
                         "sta A100 block-sparse CUDA backend failed to load during preflight: "
                         f"{sta.get('a100_import_error_type')}: {sta.get('a100_import_error')}."
                     )
-                    if strict_kernels:
-                        errors.append(message)
-                    else:
-                        warnings.append(message)
             if not a100_usable:
-                message = (
+                errors.append(
                     "sta A100 block-sparse CUDA backend is not available as SparseVideo-owned native code; "
                     "strict STA speed runs on A100 require this backend."
                 )
-                if strict_kernels:
-                    errors.append(message)
-                else:
-                    warnings.append(message)
         if seq_shape in STA_NATIVE_SEQ_SHAPES:
             h100_extension = bool(sta["sparsevideo_h100"].get("native_extension"))
             h100_load_error = None
@@ -1115,19 +1047,12 @@ def preflight_runtime(
                 elif not sta.get("h100_sta_fwd"):
                     h100_load_error = "sta H100/TK C++ extension is missing sta_fwd."
             if h100_load_error is not None:
-                if strict_kernels:
-                    errors.append(h100_load_error)
-                else:
-                    warnings.append(h100_load_error)
+                errors.append(h100_load_error)
             if has_hopper and not h100_usable:
-                message = (
+                errors.append(
                     "sta H100/TK C++ parity kernel is not available as a SparseVideo-owned sta_h100 extension; "
                     "runtime cannot claim H100 STA native parity."
                 )
-                if strict_kernels:
-                    errors.append(message)
-                else:
-                    warnings.append(message)
             elif h100_usable and not has_hopper and not has_ampere:
                 message = (
                     "sta_h100 extension is built but no Hopper GPU is visible; "

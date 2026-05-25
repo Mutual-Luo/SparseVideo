@@ -415,7 +415,7 @@ DIFFSYNTH_APPLY_METHODS = [
     ("spargeattn", {}),
     ("radial", {}),
     ("sta", {}),
-    ("draft", {"allow_triton_fallback": True}),
+    ("draft", {}),
     ("adacluster", {}),
     ("flashomni", {"sparse_pattern": "global_random"}),
     ("svoo", {}),

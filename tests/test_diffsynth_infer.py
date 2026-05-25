@@ -2230,7 +2230,6 @@ def test_infer_diffsynth_sparse_summary_validation_rejects_no_patch_or_no_sparse
                 "backend_counts": {"flashinfer": 60},
             },
         },
-        strict_kernels=True,
     )
     infer._validate_sparse_apply_summary(
         "dense",
@@ -2329,7 +2328,6 @@ def test_infer_diffsynth_sparse_summary_validation_rejects_no_patch_or_no_sparse
         infer._validate_sparse_backend_summary(
             "svg2",
             sparse_summary,
-            strict_kernels=True,
         )
 
     with pytest.raises(RuntimeError, match="debug fallback"):
@@ -2342,7 +2340,6 @@ def test_infer_diffsynth_sparse_summary_validation_rejects_no_patch_or_no_sparse
                     "backend_counts": {"triton_debug_fallback": 60},
                 },
             },
-            strict_kernels=True,
         )
 
     with pytest.raises(RuntimeError, match="unexpected sparse backend"):
@@ -2355,7 +2352,6 @@ def test_infer_diffsynth_sparse_summary_validation_rejects_no_patch_or_no_sparse
                     "backend_counts": {"torch_sdpa": 60},
                 },
             },
-            strict_kernels=True,
         )
 
 
@@ -2460,8 +2456,6 @@ def test_infer_diffsynth_apply_only_records_method_config_timing_and_cuda(monkey
     assert payload["method_config"]["num_q_centroids"] == 3
     assert payload["method_config"]["dense_warmup_step_ratio"] == 0
     assert "allow_triton_fallback" not in payload["method_config"]
-    assert payload["strict_kernels"] is True
-    assert payload["allow_debug_fallbacks"] is False
     assert payload["sparse_attention_handle"] == payload["apply_summary"]
     assert payload["sparse_attention_handle_after_restore"] == payload["restore_summary"]
     assert payload["timings"]["load_apply_sec"] >= 0
@@ -2469,18 +2463,17 @@ def test_infer_diffsynth_apply_only_records_method_config_timing_and_cuda(monkey
     assert payload["restore_summary"]["restored"] is True
 
 
-def test_infer_diffsynth_allow_debug_fallbacks_does_not_modify_svg2_config():
+def test_infer_diffsynth_build_method_config_does_not_add_fallback_keys():
     infer = _load_infer_module()
     args = infer.build_parser().parse_args(
         [
             "--method",
             "svg2",
-            "--allow-debug-fallbacks",
         ]
     )
     spec = infer.get_diffsynth_model_spec(args.model)
 
-    method_config = infer._build_method_config(args, spec, strict_kernels=False)
+    method_config = infer._build_method_config(args, spec)
 
     assert "allow_triton_fallback" not in method_config
 
@@ -2565,8 +2558,6 @@ def test_infer_diffsynth_generation_uses_pipeline_audio_sample_rate(monkeypatch,
     assert payload["fps"] == 24
     assert payload["num_inference_steps"] == 50
     assert payload["seed"] == 0
-    assert payload["strict_kernels"] is True
-    assert payload["allow_debug_fallbacks"] is False
     assert payload["sparse_attention_handle"] == payload["generate_summary"]
     assert payload["sparse_attention_handle_after_restore"] == payload["restore_summary"]
     assert payload["audio_sample_rate"] == 24000

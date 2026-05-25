@@ -869,12 +869,6 @@ def flashomni_load_status() -> Dict[str, Any]:
 def sta_load_status() -> Dict[str, Any]:
     status: Dict[str, Any] = {
         "load_checked": True,
-        "triton_load_checked": False,
-        "triton_imported": False,
-        "triton_sliding_tile_attention_triton": False,
-        "triton_module_file": None,
-        "triton_import_error_type": None,
-        "triton_import_error": None,
         "h100_native_load_checked": True,
         "h100_package_imported": False,
         "h100_native_extension_imported": False,
@@ -1274,10 +1268,6 @@ def optional_kernel_status() -> Dict[str, Any]:
                 "extension_files": draft_mit_extension_files[:8],
                 "selected_runtime": "sparsevideo" if draft_mit_extension_files else "missing",
             },
-            "triton_block_sparse_attn": _source_dir_status(
-                repo_root / "src" / "sparsevideo" / "kernels",
-                ("block_sparse_attn.py",),
-            ),
             "methods": ["draft"],
         },
         "svg1_kernels": {
@@ -1442,10 +1432,6 @@ def optional_kernel_status() -> Dict[str, Any]:
             "methods": ["radial"],
         },
         "sta_kernels": {
-            "sparsevideo_fastvideo_triton": _source_dir_status(
-                sta_h100_source_root / "python" / "fastvideo_kernel" / "triton_kernels",
-                ("st_attn_triton.py",),
-            ),
             "sparsevideo_h100": {
                 "native_extension": bool(sparsevideo_sta_h100_files),
                 "candidate_dirs": [str(path) for path in sta_h100_candidate_dirs],

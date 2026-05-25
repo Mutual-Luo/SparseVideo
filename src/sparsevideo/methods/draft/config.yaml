@@ -13,7 +13,6 @@ defaults:
   sparsity_ratio: 0.9 # Fraction of attention kept by Draft's sparse mask policy.
   batch_size: null # Batch size hint used by layout validation.
   block_sparse_attention: true # Must stay true for sparse Draft; false is the dense baseline.
-  allow_triton_fallback: false # Allow local Triton debug fallback when the MIT backend is unavailable.
 
 model_defaults:
   wan21-t2v-1.3b:
@@ -28,7 +27,6 @@ model_defaults:
     sparsity_ratio: 0.75
     batch_size: null
     block_sparse_attention: true
-    allow_triton_fallback: false
   wan21-t2v-14b:
     dense_warmup_step_ratio: 0.1
     dense_warmup_layer_ratio: 0.03
@@ -41,7 +39,6 @@ model_defaults:
     sparsity_ratio: 0.75
     batch_size: null
     block_sparse_attention: true
-    allow_triton_fallback: false
   wan22-t2v-a14b:
     dense_warmup_step_ratio: 0.1
     dense_warmup_layer_ratio: 0.03
@@ -54,7 +51,6 @@ model_defaults:
     sparsity_ratio: 0.75
     batch_size: null
     block_sparse_attention: true
-    allow_triton_fallback: false
   hunyuan-t2v:
     dense_warmup_step_ratio: 0.1
     dense_warmup_layer_ratio: 0.03
@@ -67,7 +63,6 @@ model_defaults:
     sparsity_ratio: 0.9
     batch_size: null
     block_sparse_attention: true
-    allow_triton_fallback: false
   wan21-i2v-14b:
     dense_warmup_step_ratio: 0.1
     dense_warmup_layer_ratio: 0.03
@@ -80,7 +75,6 @@ model_defaults:
     sparsity_ratio: 0.75
     batch_size: null
     block_sparse_attention: true
-    allow_triton_fallback: false
   wan22-i2v-a14b:
     dense_warmup_step_ratio: 0.1
     dense_warmup_layer_ratio: 0.03
@@ -93,7 +87,6 @@ model_defaults:
     sparsity_ratio: 0.75
     batch_size: null
     block_sparse_attention: true
-    allow_triton_fallback: false
   hunyuan-i2v:
     dense_warmup_step_ratio: 0.1
     dense_warmup_layer_ratio: 0.03
@@ -106,7 +99,6 @@ model_defaults:
     sparsity_ratio: 0.9
     batch_size: null
     block_sparse_attention: true
-    allow_triton_fallback: false
   skyreels-v2-t2v-14b:
     dense_warmup_step_ratio: 0.1
     dense_warmup_layer_ratio: 0.03
@@ -119,7 +111,6 @@ model_defaults:
     sparsity_ratio: 0.75
     batch_size: null
     block_sparse_attention: true
-    allow_triton_fallback: false
   skyreels-v2-i2v-14b:
     dense_warmup_step_ratio: 0.1
     dense_warmup_layer_ratio: 0.03
@@ -132,7 +123,6 @@ model_defaults:
     sparsity_ratio: 0.75
     batch_size: null
     block_sparse_attention: true
-    allow_triton_fallback: false
   wan22-animate-14b:
     dense_warmup_step_ratio: 0.1
     dense_warmup_layer_ratio: 0.03
@@ -145,7 +135,6 @@ model_defaults:
     sparsity_ratio: 0.75
     batch_size: null
     block_sparse_attention: true
-    allow_triton_fallback: false
   wan21-vace-1.3b:
     dense_warmup_step_ratio: 0.1
     dense_warmup_layer_ratio: 0.03
@@ -158,7 +147,6 @@ model_defaults:
     sparsity_ratio: 0.75
     batch_size: null
     block_sparse_attention: true
-    allow_triton_fallback: false
   wan21-vace-14b:
     dense_warmup_step_ratio: 0.1
     dense_warmup_layer_ratio: 0.03
@@ -171,7 +159,6 @@ model_defaults:
     sparsity_ratio: 0.75
     batch_size: null
     block_sparse_attention: true
-    allow_triton_fallback: false
   cogvideox-t2v:
     dense_warmup_step_ratio: 0.1
     dense_warmup_layer_ratio: 0.03
@@ -184,7 +171,6 @@ model_defaults:
     sparsity_ratio: 0.9
     batch_size: null
     block_sparse_attention: true
-    allow_triton_fallback: false
   cogvideox-i2v:
     dense_warmup_step_ratio: 0.1
     dense_warmup_layer_ratio: 0.03
@@ -197,7 +183,6 @@ model_defaults:
     sparsity_ratio: 0.9
     batch_size: null
     block_sparse_attention: true
-    allow_triton_fallback: false
   ltx-video:
     dense_warmup_step_ratio: 0.1
     dense_warmup_layer_ratio: 0.03
@@ -210,7 +195,6 @@ model_defaults:
     sparsity_ratio: 0.9
     batch_size: null
     block_sparse_attention: true
-    allow_triton_fallback: false
   ltx-video-i2v:
     dense_warmup_step_ratio: 0.1
     dense_warmup_layer_ratio: 0.03
@@ -223,7 +207,6 @@ model_defaults:
     sparsity_ratio: 0.9
     batch_size: null
     block_sparse_attention: true
-    allow_triton_fallback: false
   allegro:
     dense_warmup_step_ratio: 0.1
     dense_warmup_layer_ratio: 0.03
@@ -236,7 +219,6 @@ model_defaults:
     sparsity_ratio: 0.70
     batch_size: null
     block_sparse_attention: true
-    allow_triton_fallback: false
   mochi-1:
     dense_warmup_step_ratio: 0.1
     dense_warmup_layer_ratio: 0.03
@@ -249,7 +231,6 @@ model_defaults:
     sparsity_ratio: 0.9
     batch_size: null
     block_sparse_attention: true
-    allow_triton_fallback: false
   easyanimate-v5-t2v-12b:
     dense_warmup_step_ratio: 0.1
     dense_warmup_layer_ratio: 0.03
@@ -262,5 +243,4 @@ model_defaults:
     sparsity_ratio: 0.9
     batch_size: null
     block_sparse_attention: true
-    allow_triton_fallback: false
 aliases: {}

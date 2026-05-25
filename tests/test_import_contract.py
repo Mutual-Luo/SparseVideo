@@ -1103,13 +1103,6 @@ def test_sta_load_status_detects_h100_and_a100_apis(monkeypatch, tmp_path):
     from sparsevideo import _runtime
 
     owned_root = tmp_path / "repo" / "src" / "sparsevideo" / "kernels" / "native" / "sta_h100"
-    triton_source = owned_root / "python" / "fastvideo_kernel" / "triton_kernels" / "st_attn_triton.py"
-
-    def triton_fn():
-        return None
-
-    triton_fn.__code__ = (lambda: None).__code__.replace(co_filename=str(triton_source))
-    sta_ops = SimpleNamespace(_owned_fastvideo_sta_triton=lambda: triton_fn)
     h100_module = SimpleNamespace(
         __file__=str(owned_root / "__init__.py"),
         sta_fwd=lambda *args, **kwargs: None,
@@ -1118,8 +1111,6 @@ def test_sta_load_status_detects_h100_and_a100_apis(monkeypatch, tmp_path):
     real_import_module = _runtime.importlib.import_module
 
     def fake_import_module(name):
-        if name == "sparsevideo.methods.sta.ops":
-            return sta_ops
         if name == "sparsevideo.kernels.native.sta_h100":
             return h100_module
         return real_import_module(name)
@@ -1138,14 +1129,10 @@ def test_sta_load_status_detects_h100_and_a100_apis(monkeypatch, tmp_path):
 
     status = _runtime.sta_load_status()
 
-    assert status["triton_load_checked"] is False
-    assert status["triton_imported"] is False
-    assert status["triton_sliding_tile_attention_triton"] is False
     assert status["h100_package_imported"] is True
     assert status["h100_native_extension_imported"] is True
     assert status["h100_sta_fwd"] is True
     assert status["a100_block_sparse_ready"] is True
-    assert status["triton_import_error"] is None
     assert status["h100_import_error"] is None
 
 
@@ -1156,17 +1143,11 @@ def test_sta_load_status_reports_missing_h100_sta_fwd(monkeypatch, tmp_path):
     owned_root.mkdir(parents=True)
     (owned_root / "fastvideo_kernel_ops.cpython-312-x86_64-linux-gnu.so").write_bytes(b"not a real extension")
 
-    def triton_fn():
-        return None
-
-    sta_ops = SimpleNamespace(_owned_fastvideo_sta_triton=lambda: triton_fn)
     h100_module = SimpleNamespace(__file__=str(owned_root / "__init__.py"), sta_fwd=None)
 
     real_import_module = _runtime.importlib.import_module
 
     def fake_import_module(name):
-        if name == "sparsevideo.methods.sta.ops":
-            return sta_ops
         if name == "sparsevideo.kernels.native.sta_h100":
             return h100_module
         return real_import_module(name)

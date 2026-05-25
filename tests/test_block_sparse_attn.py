@@ -69,60 +69,6 @@ def test_variable_block_sparse_plan_chunks_respect_kv_budget():
     ]
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA/Triton")
-def test_block_sparse_attention_matches_pytorch_reference_cuda():
-    from sparsevideo.kernels.block_sparse_attn import block_sparse_attention
-
-    torch.manual_seed(0)
-    device = torch.device("cuda")
-    q = torch.randn(2, 10, 16, device=device, dtype=torch.float16)
-    k = torch.randn(2, 10, 16, device=device, dtype=torch.float16)
-    v = torch.randn(2, 10, 16, device=device, dtype=torch.float16)
-    q_sizes = torch.tensor([[4, 3, 3], [2, 5, 3]], device=device, dtype=torch.long)
-    k_sizes = torch.tensor([[5, 3, 2], [4, 4, 2]], device=device, dtype=torch.long)
-    dynamic_map = torch.tensor(
-        [
-            [[True, False, True], [False, True, False], [True, True, True]],
-            [[True, False, False], [False, True, True], [True, False, True]],
-        ],
-        device=device,
-        dtype=torch.bool,
-    )
-    scale = 16 ** -0.5
-
-    actual = block_sparse_attention(q, k, v, q_sizes, k_sizes, dynamic_map, scale)
-    expected = _reference_block_sparse_attention(q, k, v, q_sizes, k_sizes, dynamic_map, scale)
-
-    torch.testing.assert_close(actual, expected, rtol=2e-2, atol=2e-2)
-
-
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA/Triton")
-def test_block_sparse_attention_matches_reference_for_non_power_of_two_head_dim_cuda():
-    from sparsevideo.kernels.block_sparse_attn import block_sparse_attention
-
-    torch.manual_seed(2)
-    device = torch.device("cuda")
-    q = torch.randn(2, 12, 96, device=device, dtype=torch.float16)
-    k = torch.randn(2, 12, 96, device=device, dtype=torch.float16)
-    v = torch.randn(2, 12, 96, device=device, dtype=torch.float16)
-    q_sizes = torch.tensor([[5, 4, 3], [3, 5, 4]], device=device, dtype=torch.long)
-    k_sizes = torch.tensor([[4, 5, 3], [6, 2, 4]], device=device, dtype=torch.long)
-    dynamic_map = torch.tensor(
-        [
-            [[True, False, True], [True, True, False], [False, True, True]],
-            [[True, False, False], [False, True, True], [True, True, False]],
-        ],
-        device=device,
-        dtype=torch.bool,
-    )
-    scale = 96 ** -0.5
-
-    actual = block_sparse_attention(q, k, v, q_sizes, k_sizes, dynamic_map, scale)
-    expected = _reference_block_sparse_attention(q, k, v, q_sizes, k_sizes, dynamic_map, scale)
-
-    torch.testing.assert_close(actual, expected, rtol=3e-2, atol=3e-2)
-
-
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA/FlashInfer")
 def test_variable_block_sparse_flashinfer_matches_pytorch_reference_cuda():
     from sparsevideo.kernels.flashinfer_block_sparse import HAS_FLASHINFER, variable_block_sparse_attn

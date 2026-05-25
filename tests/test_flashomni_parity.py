@@ -25,6 +25,7 @@ from sparsevideo.methods.flashomni.method import (
     _flashomni_paper_mmdit_attention,
     _flashomni_paper_mmdit_effective_step,
     _flashomni_paper_mmdit_schedule,
+    _flashomni_hunyuan_attn_taylor_out,
     _flashomni_normalize_sparse_bits,
     _flashomni_sparse_o_gemm,
     _flashomni_sparse_o_gemm_cache_bias,
@@ -90,8 +91,9 @@ def test_flashomni_hunyuan_mean_tokens_matches_torch_when_available():
 
 
 def test_flashomni_default_requires_upstream_explicit_sparse_info():
-    with pytest.raises(NotImplementedError, match="sparse_pattern='explicit'"):
-        FlashOmniMethod(config={}, model_info=SimpleNamespace(model_type="wan"))
+    method = FlashOmniMethod(config={}, model_info=SimpleNamespace(model_type="wan"))
+    assert method.config["implementation"] == "upstream"
+    assert method.config["sparse_pattern"] == "paper_mmdit"
 
 
 def test_flashomni_explicit_path_requires_sparse_info_tensors():
@@ -550,6 +552,97 @@ def test_flashomni_hunyuan_taylor_cache_can_store_on_cpu_and_materialize_to_devi
     assert torch.equal(taylor_formula(cache_dic, current, device=feature.device), feature)
 
 
+def test_flashomni_hunyuan_sparse_attention_skips_empty_taylor_out():
+    model = SimpleNamespace(config=SimpleNamespace(num_layers=1, num_single_layers=0))
+    cache_dic, current = _flashomni_hunyuan_cache_init(
+        model,
+        {"num_inference_steps": 50},
+    )
+    current.update(
+        {
+            "stream": "double_stream",
+            "layer": 0,
+            "module": "attn",
+            "type": "Sparse",
+            "sparse_type": "flashomni",
+        }
+    )
+    cache_dic["cache"][-1]["double_stream"][0]["attn"] = {}
+
+    assert _flashomni_hunyuan_attn_taylor_out(cache_dic, current, device="cpu") is None
+
+
+def test_flashomni_paper_mmdit_attention_allows_empty_hunyuan_taylor_out(monkeypatch):
+    calls = {}
+
+    def fake_policy(*args, **kwargs):
+        return (
+            torch.ones(1, 1, 2, dtype=torch.uint8),
+            torch.ones(1, 1, 2, 2, dtype=torch.uint8),
+        )
+
+    def fake_upstream(q, k, v, block_mask_pattern, **kwargs):
+        calls["out"] = kwargs["out"]
+        return torch.zeros_like(q)
+
+    monkeypatch.setattr(
+        "sparsevideo.methods.flashomni.method.flashomni_paper_sparse_blocks",
+        fake_policy,
+    )
+    monkeypatch.setattr(
+        "sparsevideo.methods.flashomni.method._flashomni_upstream_attention",
+        fake_upstream,
+    )
+    monkeypatch.setattr(torch.Tensor, "is_cuda", property(lambda self: True))
+
+    cache_dic = {"cache": {-1: {"double_stream": {0: {"attn": {}}}}}}
+    current = {
+        "stream": "double_stream",
+        "layer": 0,
+        "module": "attn",
+        "type": "Sparse",
+        "sparse_type": "flashomni",
+        "step": 5,
+    }
+    query = torch.randn(1, 4, 1, 4)
+
+    _flashomni_paper_mmdit_attention(
+        query,
+        query,
+        query,
+        tau_q=0.5,
+        tau_kv=0.05,
+        N=6,
+        D=1,
+        S_q=0.3,
+        text_len=0,
+        sparse_block_size_for_q=2,
+        sparse_block_size_for_kv=2,
+        implementation="upstream",
+        backend="auto",
+        workspace_bytes=1,
+        state=_FlashOmniPaperMMDiTState(),
+        step=6,
+        cache_dic=cache_dic,
+        current=current,
+    )
+
+    assert calls["out"] is None
+
+
+def test_flashomni_hunyuan_taylor_formula_rejects_empty_cache():
+    model = SimpleNamespace(config=SimpleNamespace(num_layers=1, num_single_layers=0))
+    cache_dic, current = _flashomni_hunyuan_cache_init(
+        model,
+        {"num_inference_steps": 50},
+    )
+    current.update({"stream": "double_stream", "layer": 0, "module": "attn"})
+    cache_dic["cache"][-1]["double_stream"][0]["attn"] = {}
+
+    with pytest.raises(RuntimeError, match="Taylor cache is empty"):
+        taylor_formula(cache_dic, current)
+
+
 def test_flashomni_hunyuan_taylor_start_requires_saved_sparse_ratio():
     model = SimpleNamespace(config=SimpleNamespace(num_layers=1, num_single_layers=0))
     cache_dic, current = _flashomni_hunyuan_cache_init(
@@ -950,7 +1043,7 @@ def test_flashomni_paper_mmdit_trims_hunyuan_prefix_mask_before_native(monkeypat
         calls["native_k_len"] = k.shape[1]
         calls["native_attention_mask"] = kwargs["attention_mask"]
         calls["native_text_len"] = kwargs["text_len"]
-        calls["native_is_full"] = kwargs["is_full"]
+        calls["native_is_full"] = kwargs.get("is_full", False)
         return torch.zeros_like(q)
 
     monkeypatch.setattr(
@@ -994,7 +1087,7 @@ def test_flashomni_paper_mmdit_trims_hunyuan_prefix_mask_before_native(monkeypat
     assert calls["native_k_len"] == 3
     assert calls["native_attention_mask"] is None
     assert calls["native_text_len"] == 1
-    assert calls["native_is_full"] is True
+    assert calls["native_is_full"] is False
 
 
 def test_flashomni_cached_q_block_helper_checks_shapes():
@@ -1282,7 +1375,13 @@ def test_flashomni_global_random_processor_passes_q_and_kv_patterns(monkeypatch)
     )
     monkeypatch.setattr(torch.Tensor, "is_cuda", property(lambda self: True))
     method = FlashOmniMethod(
-        config={"sparse_pattern": "global_random", "spq_Q": 0.0, "spq_KV": 0.5},
+        config={
+            "sparse_pattern": "global_random",
+            "spq_Q": 0.0,
+            "spq_KV": 0.5,
+            "dense_warmup_step_ratio": 0.0,
+            "dense_warmup_layer_ratio": 0.0,
+        },
         model_info=SimpleNamespace(model_type="wan"),
     )
     processor = method.create_processor(layer_idx=0, total_layers=1, original_processor=None, step_tracker=None)
@@ -1298,8 +1397,8 @@ def test_flashomni_global_random_processor_passes_q_and_kv_patterns(monkeypatch)
     }
 
 
-def test_flashomni_flex_is_only_local_diagnostic_path():
-    with pytest.raises(NotImplementedError, match="local_qk_topk"):
+def test_flashomni_rejects_flex_implementation():
+    with pytest.raises(ValueError, match="implementation"):
         FlashOmniMethod(
             config={"implementation": "flex"},
             model_info=SimpleNamespace(model_type="wan"),

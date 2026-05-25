@@ -202,7 +202,7 @@ def sparsevideo_source_fingerprints(method: str) -> Dict[str, Any]:
     return fingerprints
 
 
-def validate_svoo_warmup_status(status: Dict[str, Any], *, strict_kernels: bool) -> Optional[str]:
+def validate_svoo_warmup_status(status: Dict[str, Any]) -> None:
     message = None
     if not status.get("enabled"):
         message = "SVOO kernel warmup is disabled; strict benchmark runs must precompile the owned kernel path."
@@ -212,10 +212,8 @@ def validate_svoo_warmup_status(status: Dict[str, Any], *, strict_kernels: bool)
         reason = status.get("reason") or "unknown"
         message = f"SVOO kernel warmup did not run: {reason}"
     if message is None:
-        return None
-    if strict_kernels:
-        raise RuntimeError(message)
-    return message
+        return
+    raise RuntimeError(message)
 
 
 def maybe_save_spargeattn_tuned_state(handle, method_config: Dict[str, Any]) -> Optional[str]:

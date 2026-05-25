@@ -92,7 +92,6 @@ from _infer_diffusers.utils import (
 def run(args: argparse.Namespace) -> int:
     spec = MODEL_SPECS[MODEL_ALIASES[args.model]]
     fps = args.fps if args.fps is not None else spec.fps
-    strict_kernels = args.strict_kernels or not args.allow_debug_fallbacks
     profile_method = args.profile_for_method or args.method
     if args.num_frames is not None:
         num_frames = args.num_frames
@@ -133,8 +132,6 @@ def run(args: argparse.Namespace) -> int:
             "vae_tiling": args.vae_tiling,
             "vae_slicing": args.vae_slicing,
             "vae_decoder_chunk_size": args.vae_decoder_chunk_size,
-            "strict_kernels": strict_kernels,
-            "allow_debug_fallbacks": args.allow_debug_fallbacks,
             "seed": args.seed,
             "output_file": str(output_file),
             "scheduler_flow_shift": None,
@@ -179,10 +176,6 @@ def run(args: argparse.Namespace) -> int:
             method_config["context_length"] = None
         if "prompt_length" not in user_method_config:
             method_config["prompt_length"] = None
-    if args.method == "radial" and not strict_kernels:
-        method_config["allow_flex_fallback"] = True
-    if args.method == "draft" and not strict_kernels:
-        method_config["allow_triton_fallback"] = True
     model_id = resolve_model_id(spec, args.model_root, args.model_path)
     output_file = make_output_file(args, spec.key, args.method, num_frames)
     scheduler_flow_shift = resolve_scheduler_flow_shift(spec, args.height, args.flow_shift)
@@ -228,8 +221,6 @@ def run(args: argparse.Namespace) -> int:
             "vae_tiling": args.vae_tiling,
             "vae_slicing": args.vae_slicing,
             "vae_decoder_chunk_size": args.vae_decoder_chunk_size,
-            "strict_kernels": strict_kernels,
-            "allow_debug_fallbacks": args.allow_debug_fallbacks,
             "seed": args.seed,
             "output_file": str(output_file),
             "scheduler_flow_shift": scheduler_flow_shift,
@@ -375,7 +366,6 @@ def run(args: argparse.Namespace) -> int:
             method_config,
             args.device,
             runtime_status,
-            strict_kernels=strict_kernels,
             model_family=spec.family,
         )
     if not unsupported and args.method == "draft":
@@ -389,14 +379,10 @@ def run(args: argparse.Namespace) -> int:
             spec, height, width, num_frames, method_config,
         )
         if radial_warning is not None:
-            if method_config.get("use_sage_attention") or strict_kernels:
-                runtime_status["preflight"]["errors"].append(radial_warning)
-            else:
-                runtime_status["preflight"]["warnings"].append(radial_warning)
+            runtime_status["preflight"]["errors"].append(radial_warning)
     if not unsupported and args.method == "sta":
         sta_messages = sta_layout_preflight_messages(
             spec, height, width, num_frames, method_config,
-            strict_kernels=strict_kernels,
         )
         runtime_status["preflight"]["errors"].extend(sta_messages["errors"])
         runtime_status["preflight"]["warnings"].extend(sta_messages["warnings"])
@@ -434,8 +420,6 @@ def run(args: argparse.Namespace) -> int:
         "output_type": "latent" if args.skip_decode else spec.output_type,
         "compatibility_label": spec.compatibility_label,
         "unsupported_reason": spec.unsupported_reason,
-        "strict_kernels": strict_kernels,
-        "allow_debug_fallbacks": args.allow_debug_fallbacks,
         "seed": args.seed,
         "negative_prompt": args.negative_prompt,
         "output_file": None if args.skip_decode else str(output_file),
@@ -546,14 +530,13 @@ def run(args: argparse.Namespace) -> int:
                 runtime_status["optional_kernels"]["svg_svoo_fused_kernels"].update(
                     native_kernel_load_status()
                 )
-            deferred_preflight = preflight_runtime(
-                args.method,
-                method_config,
-                args.device,
-                runtime_status,
-                strict_kernels=strict_kernels,
-                model_family=spec.family,
-            )
+                deferred_preflight = preflight_runtime(
+                    args.method,
+                    method_config,
+                    args.device,
+                    runtime_status,
+                    model_family=spec.family,
+                )
             runtime_status["preflight"]["warnings"].extend(deferred_preflight["warnings"])
             if deferred_preflight["errors"]:
                 runtime_status["preflight"]["errors"].extend(deferred_preflight["errors"])
@@ -594,11 +577,7 @@ def run(args: argparse.Namespace) -> int:
                 sync_if_cuda(torch, args.device)
             timings["svoo_kernel_warmup_sec"] = time.perf_counter() - t0
             base_metrics["svoo_kernel_warmup"] = warmup_status
-            warmup_warning = validate_svoo_warmup_status(
-                warmup_status, strict_kernels=strict_kernels,
-            )
-            if warmup_warning is not None:
-                runtime_status["preflight"]["warnings"].append(warmup_warning)
+            validate_svoo_warmup_status(warmup_status)
 
         stage = "generate"
         if not args.skip_decode:

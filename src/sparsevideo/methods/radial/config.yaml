@@ -7,7 +7,6 @@ defaults:
   decay_factor: 1 # Radial mask decay factor controlling sparsity by distance.
   block_size: 128 # Block size used by FlashInfer/Sage sparse mask construction.
   use_sage_attention: false # Route sparse attention through owned SageAttention instead of FlashInfer.
-  allow_flex_fallback: false # Allow local FlexAttention debug fallback when strict kernels are disabled.
 
 model_defaults:
   wan21-t2v-1.3b:
@@ -16,131 +15,112 @@ model_defaults:
     decay_factor: 0.2
     block_size: 128
     use_sage_attention: false
-    allow_flex_fallback: false
   wan21-t2v-14b:
     dense_warmup_step_ratio: 0.1
     dense_warmup_layer_ratio: 0.03
     decay_factor: 0.2
     block_size: 128
     use_sage_attention: false
-    allow_flex_fallback: false
   wan22-t2v-a14b:
     dense_warmup_step_ratio: 0.1
     dense_warmup_layer_ratio: 0.03
     decay_factor: 0.8
     block_size: 64
     use_sage_attention: false
-    allow_flex_fallback: false
   hunyuan-t2v:
     dense_warmup_step_ratio: 0.1
     dense_warmup_layer_ratio: 0.03
     decay_factor: 0.95
     block_size: 128
     use_sage_attention: false
-    allow_flex_fallback: false
   wan21-i2v-14b:
     dense_warmup_step_ratio: 0.1
     dense_warmup_layer_ratio: 0.03
     decay_factor: 0.2
     block_size: 128
     use_sage_attention: false
-    allow_flex_fallback: false
   wan22-i2v-a14b:
     dense_warmup_step_ratio: 0.1
     dense_warmup_layer_ratio: 0.03
     decay_factor: 0.2
     block_size: 128
     use_sage_attention: false
-    allow_flex_fallback: false
   hunyuan-i2v:
     dense_warmup_step_ratio: 0.1
     dense_warmup_layer_ratio: 0.03
     decay_factor: 0.95
     block_size: 128
     use_sage_attention: false
-    allow_flex_fallback: false
   skyreels-v2-t2v-14b:
     dense_warmup_step_ratio: 0.1
     dense_warmup_layer_ratio: 0.03
     decay_factor: 0.2
     block_size: 128
     use_sage_attention: false
-    allow_flex_fallback: false
   skyreels-v2-i2v-14b:
     dense_warmup_step_ratio: 0.1
     dense_warmup_layer_ratio: 0.03
     decay_factor: 0.2
     block_size: 128
     use_sage_attention: false
-    allow_flex_fallback: false
   wan22-animate-14b:
     dense_warmup_step_ratio: 0.1
     dense_warmup_layer_ratio: 0.03
     decay_factor: 0.2
     block_size: 128
     use_sage_attention: false
-    allow_flex_fallback: false
   wan21-vace-1.3b:
     dense_warmup_step_ratio: 0.1
     dense_warmup_layer_ratio: 0.03
     decay_factor: 0.2
     block_size: 128
     use_sage_attention: false
-    allow_flex_fallback: false
   wan21-vace-14b:
     dense_warmup_step_ratio: 0.1
     dense_warmup_layer_ratio: 0.03
     decay_factor: 0.2
     block_size: 128
     use_sage_attention: false
-    allow_flex_fallback: false
   cogvideox-t2v:
     dense_warmup_step_ratio: 0.1
     dense_warmup_layer_ratio: 0.03
     decay_factor: 1
     block_size: 128
     use_sage_attention: false
-    allow_flex_fallback: false
   cogvideox-i2v:
     dense_warmup_step_ratio: 0.1
     dense_warmup_layer_ratio: 0.03
     decay_factor: 1
     block_size: 128
     use_sage_attention: false
-    allow_flex_fallback: false
   ltx-video:
     dense_warmup_step_ratio: 0.1
     dense_warmup_layer_ratio: 0.03
     decay_factor: 1
     block_size: 128
     use_sage_attention: false
-    allow_flex_fallback: false
   ltx-video-i2v:
     dense_warmup_step_ratio: 0.1
     dense_warmup_layer_ratio: 0.03
     decay_factor: 1
     block_size: 128
     use_sage_attention: false
-    allow_flex_fallback: false
   allegro:
     dense_warmup_step_ratio: 0.1
     dense_warmup_layer_ratio: 0.03
     decay_factor: 1
     block_size: 128
     use_sage_attention: false
-    allow_flex_fallback: false
   mochi-1:
     dense_warmup_step_ratio: 0.1
     dense_warmup_layer_ratio: 0.03
     decay_factor: 1
     block_size: 128
     use_sage_attention: false
-    allow_flex_fallback: false
   easyanimate-v5-t2v-12b:
     dense_warmup_step_ratio: 0.1
     dense_warmup_layer_ratio: 0.03
     decay_factor: 1
     block_size: 128
     use_sage_attention: false
-    allow_flex_fallback: false
 aliases: {}

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from contextlib import nullcontext
 from pathlib import Path
 import sys
 from types import SimpleNamespace
@@ -152,6 +151,7 @@ def test_dense_warmup_ratio_zero_disables_svg_warmup(monkeypatch):
 def test_common_dense_warmup_routes_non_svg_methods_to_dense(monkeypatch):
     from sparsevideo.methods.adacluster import AdaClusterMethod
     from sparsevideo.methods.draft import DraftMethod
+    from sparsevideo.methods.flashomni import method as flashomni_method
     from sparsevideo.methods.flashomni import FlashOmniMethod
     from sparsevideo.methods.radial import method as radial_method
     from sparsevideo.methods.radial import RadialMethod
@@ -160,6 +160,11 @@ def test_common_dense_warmup_routes_non_svg_methods_to_dense(monkeypatch):
     from sparsevideo.methods.sta import STAMethod
 
     monkeypatch.setattr(radial_method, "_radial_attention", lambda query, *args, **kwargs: query)
+    monkeypatch.setattr(
+        flashomni_method,
+        "_flashomni_dense_warmup_attention",
+        lambda query, *args, **kwargs: query,
+    )
     monkeypatch.setattr(
         sparge_method,
         "_load_spas_sage_attn_functions",
@@ -173,10 +178,7 @@ def test_common_dense_warmup_routes_non_svg_methods_to_dense(monkeypatch):
     configs = {
         "adacluster": (AdaClusterMethod, {}),
         "draft": (DraftMethod, {}),
-        "flashomni": (
-            FlashOmniMethod,
-            {"implementation": "flex", "sparse_pattern": "local_qk_topk"},
-        ),
+        "flashomni": (FlashOmniMethod, {}),
         "radial": (RadialMethod, {}),
         "spargeattn": (SpargeAttnMethod, {"mode": "topk"}),
         "sta": (STAMethod, {}),
@@ -188,9 +190,7 @@ def test_common_dense_warmup_routes_non_svg_methods_to_dense(monkeypatch):
             "dense_warmup_layer_ratio": 0.0,
             **extra_config,
         }
-        context = pytest.warns(RuntimeWarning) if name == "flashomni" else nullcontext()
-        with context:
-            method = method_cls(config=config, model_info=SimpleNamespace(model_type="wan", model_key=None))
+        method = method_cls(config=config, model_info=SimpleNamespace(model_type="wan", model_key=None))
         processor = method.create_processor(
             layer_idx=5,
             total_layers=8,

@@ -56,7 +56,6 @@ EXPECTED_SPARSE_BACKENDS = {
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
-    strict_kernels = args.strict_kernels or not args.allow_debug_fallbacks
 
     if args.list_models:
         for line in diffsynth_model_list_lines():
@@ -83,8 +82,6 @@ def main(argv: list[str] | None = None) -> int:
                 "seed": args.seed,
                 "device": args.device,
                 "dtype": args.dtype,
-                "strict_kernels": strict_kernels,
-                "allow_debug_fallbacks": args.allow_debug_fallbacks,
             }
         )
         if args.dry_run:
@@ -127,7 +124,7 @@ def main(argv: list[str] | None = None) -> int:
 
         handle = None
         try:
-            method_config = _build_method_config(args, spec, strict_kernels=strict_kernels)
+            method_config = _build_method_config(args, spec)
             payload["method_config"] = method_config
             handle = apply_sparse_attention(pipe, method=args.method, config=method_config)
             apply_summary = handle.summary()
@@ -160,11 +157,7 @@ def main(argv: list[str] | None = None) -> int:
             payload["generate_summary"] = handle.summary()
             payload["sparse_attention_handle"] = payload["generate_summary"]
             _validate_sparse_generate_summary(args.method, payload["generate_summary"])
-            _validate_sparse_backend_summary(
-                args.method,
-                payload["generate_summary"],
-                strict_kernels=strict_kernels,
-            )
+            _validate_sparse_backend_summary(args.method, payload["generate_summary"])
 
             save_fps = args.fps or spec.default_fps
             output_metadata = save_diffsynth_output(
@@ -227,9 +220,6 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--vram-limit", type=float)
     parser.add_argument("--no-vram-management", action="store_true")
     parser.add_argument("--use-usp", action="store_true", help="Use DiffSynth USP. Sparse methods currently reject this.")
-    parser.add_argument("--strict-kernels", action="store_true", help="Require strict sparse backend evidence.")
-    parser.add_argument("--allow-debug-fallbacks", action="store_true", help="Allow debug fallback kernels and mark metrics non-strict.")
-
     parser.add_argument("--prompt", default=DEFAULT_PROMPT)
     parser.add_argument("--prompt-file", type=Path)
     parser.add_argument("--negative-prompt", default=DEFAULT_NEGATIVE_PROMPT)
@@ -473,10 +463,8 @@ def _validate_sparse_generate_summary(method: str, summary: Mapping[str, Any]) -
 def _validate_sparse_backend_summary(
     method: str,
     summary: Mapping[str, Any],
-    *,
-    strict_kernels: bool,
 ) -> None:
-    if method == "dense" or not strict_kernels:
+    if method == "dense":
         return
     runtime = summary.get("method_runtime") or {}
     backend_counts = runtime.get("backend_counts") or {}
@@ -744,7 +732,7 @@ def _parse_method_config(items: list[str]) -> Dict[str, Any]:
     return config
 
 
-def _build_method_config(args, spec, *, strict_kernels: bool) -> Dict[str, Any]:
+def _build_method_config(args, spec) -> Dict[str, Any]:
     user_config = _parse_method_config(args.method_config)
     method_config = default_method_config(
         args.method,
@@ -753,11 +741,6 @@ def _build_method_config(args, spec, *, strict_kernels: bool) -> Dict[str, Any]:
         model_key=spec.key,
     )
     method_config.update(normalize_method_config(args.method, user_config))
-    if not strict_kernels:
-        if args.method == "radial":
-            method_config["allow_flex_fallback"] = True
-        if args.method == "draft":
-            method_config["allow_triton_fallback"] = True
     return method_config
 
 

@@ -57,7 +57,6 @@ class RadialMethod(SparseMethod):
         decay_factor = self.config["decay_factor"]
         block_size = self.config["block_size"]
         use_sage_attention = self.config["use_sage_attention"]
-        allow_flex_fallback = self.config["allow_flex_fallback"]
         block_sparse_sage2_attn_fn = self._block_sparse_sage2_attn_fn
         sageattn_fn = self._sageattn_fn
         dense_warmup_layer_count = configured_dense_warmup_layer_count(self.config, total_layers)
@@ -86,7 +85,6 @@ class RadialMethod(SparseMethod):
                     text_len=text_len,
                     attention_mask=attention_mask,
                     use_sage_attention=use_sage_attention,
-                    allow_flex_fallback=allow_flex_fallback,
                     block_sparse_sage2_attn_fn=block_sparse_sage2_attn_fn,
                     sageattn_fn=sageattn_fn,
                     force_dense=True,
@@ -96,7 +94,6 @@ class RadialMethod(SparseMethod):
                     backend=_radial_backend_name(
                         query, block_size, model_type, text_len,
                         use_sage_attention=use_sage_attention,
-                        allow_flex_fallback=allow_flex_fallback,
                         force_dense=True,
                     ),
                     layer_idx=layer_idx,
@@ -120,7 +117,6 @@ class RadialMethod(SparseMethod):
                 text_len=text_len,
                 attention_mask=attention_mask,
                 use_sage_attention=use_sage_attention,
-                allow_flex_fallback=allow_flex_fallback,
                 block_sparse_sage2_attn_fn=block_sparse_sage2_attn_fn,
                 sageattn_fn=sageattn_fn,
             )
@@ -129,7 +125,6 @@ class RadialMethod(SparseMethod):
                 backend=_radial_backend_name(
                     query, block_size, model_type, text_len,
                     use_sage_attention=use_sage_attention,
-                    allow_flex_fallback=allow_flex_fallback,
                     force_dense=False,
                 ),
                 layer_idx=layer_idx,
@@ -173,7 +168,6 @@ def _radial_backend_name(
     text_len,
     *,
     use_sage_attention,
-    allow_flex_fallback,
     force_dense,
 ):
     if use_sage_attention:
@@ -186,14 +180,12 @@ def _radial_backend_name(
     layout = infer_video_token_layout(query.shape[1], model_type=model_type, text_len=text_len)
     if HAS_FLASHINFER and query.is_cuda and layout.context_len == 0:
         return "flashinfer"
-    if allow_flex_fallback:
-        return "flex_attention_debug_fallback"
     return "flashinfer"
 
 
 def _radial_attention(query, key, value, decay_factor, block_mask_cache, block_size=128,
                       model_type="wan", text_len=0, attention_mask=None,
-                      use_sage_attention=False, allow_flex_fallback=False,
+                      use_sage_attention=False,
                       block_sparse_sage2_attn_fn=None, sageattn_fn=None,
                       force_dense=False):
     """Radial attention with logarithmic band decay per frame-pair distance.
@@ -308,85 +300,16 @@ def _radial_attention(query, key, value, decay_factor, block_mask_cache, block_s
             query, key, value, bsr_2d, vid_len, tail_len, block_size, pre_defined_mask,
         )
 
-    if not allow_flex_fallback:
-        reasons = []
-        if not HAS_FLASHINFER:
-            reasons.append("FlashInfer is not available")
-        if context_len != 0:
-            reasons.append(f"context_len={context_len}")
-        reason_text = "; ".join(reasons) if reasons else "unsupported FlashInfer layout"
-        raise RuntimeError(
-            "radial sparse path requires the upstream FlashInfer block-sparse backend. "
-            f"{reason_text}. Set allow_flex_fallback=True only for explicit debug smoke runs."
-        )
-
-    # --- flex_attention fallback ---
-    from torch.nn.attention.flex_attention import flex_attention, create_block_mask
-
-    video_end = context_len + num_frames * frame_size
-    radial_model_type = _radial_model_type(model_type)
-    tpf_bits = frame_size.bit_length()
-
-    flex_cache_key = (N, context_len, tail_len, block_size, decay_factor, model_type, "flex")
-    use_cached_flex_mask = pre_defined_mask is None
-
-    def build_flex_block_mask():
-        def mask_mod(b, h, q_idx, kv_idx):
-            q_in_video = (q_idx >= context_len) & (q_idx < video_end)
-            kv_in_video = (kv_idx >= context_len) & (kv_idx < video_end)
-            both_video = q_in_video & kv_in_video
-
-            q_frame = (q_idx - context_len) // frame_size
-            kv_frame = (kv_idx - context_len) // frame_size
-
-            if radial_model_type == "wan":
-                is_sink = (kv_idx >= context_len) & (kv_idx < context_len + frame_size)
-            else:
-                is_sink = torch.zeros_like(kv_in_video)
-
-            dist = torch.abs(q_frame - kv_frame)
-            is_near = dist <= 1
-
-            safe_dist = torch.clamp(dist, min=2)
-            group = torch.floor(torch.log2(safe_dist.float())) + 1
-            decay_length = (2.0 ** tpf_bits) / (2.0 ** group) * decay_factor
-            window_width = torch.clamp(decay_length, min=float(block_size))
-
-            decay_raw = (2.0 ** tpf_bits) / (2.0 ** group)
-            below_thresh = decay_raw < 128.0
-            split_factor = torch.where(
-                below_thresh,
-                torch.floor(128.0 / decay_raw).to(dist.dtype),
-                torch.ones_like(dist),
-            )
-            split_ok = (dist % torch.clamp(split_factor, min=1)) == 0
-
-            q_local = (q_idx - context_len) % frame_size
-            kv_local = (kv_idx - context_len) % frame_size
-            in_band = torch.abs(q_local - kv_local).float() <= window_width
-
-            video_mask = is_sink | is_near | (in_band & split_ok)
-            allowed = (~both_video) | video_mask
-            if pre_defined_mask is not None:
-                allowed = allowed & pre_defined_mask[q_idx, kv_idx]
-            return allowed
-
-        return create_block_mask(
-            mask_mod, B=None, H=None, Q_LEN=N, KV_LEN=N, device=query.device,
-        )
-
-    if use_cached_flex_mask:
-        if flex_cache_key not in block_mask_cache:
-            block_mask_cache[flex_cache_key] = build_flex_block_mask()
-        bm = block_mask_cache[flex_cache_key]
-    else:
-        bm = build_flex_block_mask()
-
-    q = query.permute(0, 2, 1, 3)
-    k = key.permute(0, 2, 1, 3)
-    v = value.permute(0, 2, 1, 3)
-    out = flex_attention(q, k, v, block_mask=bm)
-    return out.permute(0, 2, 1, 3)
+    reasons = []
+    if not HAS_FLASHINFER:
+        reasons.append("FlashInfer is not available")
+    if context_len != 0:
+        reasons.append(f"context_len={context_len}")
+    reason_text = "; ".join(reasons) if reasons else "unsupported FlashInfer layout"
+    raise RuntimeError(
+        "radial sparse path requires the upstream FlashInfer block-sparse backend. "
+        f"{reason_text}."
+    )
 
 
 def _radial_flashinfer_attention(

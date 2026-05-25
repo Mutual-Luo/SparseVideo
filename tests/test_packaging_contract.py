@@ -197,10 +197,7 @@ def test_runtime_status_uses_sparsevideo_owned_paths_not_training_free():
 
     sta = status["sta_kernels"]
     assert sta["methods"] == ["sta"]
-    assert "training_free" not in sta["sparsevideo_fastvideo_triton"]["path"]
-    assert "src/sparsevideo/kernels/native/sta_h100/python/fastvideo_kernel/triton_kernels" in sta["sparsevideo_fastvideo_triton"]["path"]
-    assert sta["sparsevideo_fastvideo_triton"]["source_files"] is True
-    assert "sparsevideo_triton" not in sta
+    assert "sparsevideo_fastvideo_triton" not in sta
     assert "training_free" not in sta["sparsevideo_h100"]["source"]["path"]
     assert "src/sparsevideo/kernels/native/sta_h100" in sta["sparsevideo_h100"]["source"]["path"]
     assert sta["sparsevideo_h100"]["source"]["source_files"] is True
