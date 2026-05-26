@@ -84,13 +84,13 @@ model_defaults:
   cogvideox-t2v:
     dense_warmup_step_ratio: 0.1
     dense_warmup_layer_ratio: 0.03
-    decay_factor: 1
+    decay_factor: 0.3
     block_size: 128
     use_sage_attention: false
   cogvideox-i2v:
     dense_warmup_step_ratio: 0.1
     dense_warmup_layer_ratio: 0.03
-    decay_factor: 1
+    decay_factor: 0.3
     block_size: 128
     use_sage_attention: false
   ltx-video:
@@ -114,13 +114,12 @@ model_defaults:
   mochi-1:
     dense_warmup_step_ratio: 0.1
     dense_warmup_layer_ratio: 0.03
-    decay_factor: 1
+    decay_factor: 0.3
     block_size: 128
     use_sage_attention: false
   easyanimate-v5-t2v-12b:
     dense_warmup_step_ratio: 0.1
     dense_warmup_layer_ratio: 0.03
-    decay_factor: 1
+    decay_factor: 0.3
     block_size: 128
     use_sage_attention: false
-aliases: {}

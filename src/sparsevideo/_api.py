@@ -10,6 +10,7 @@ from ._model_info import ModelInfo, discover_model
 from ._step_tracker import install_step_tracker
 from ._support import (
     LIMITED_METHODS_BY_MODEL_TYPE,
+    MOCHI_SPARSE_ATTENTION_WARNING,
     unvalidated_method_reason,
     unsupported_method_model_reason,
 )
@@ -133,6 +134,7 @@ def apply_sparse_attention(
 
     model_info = discover_model(pipe)
     _validate_method_support(model_info, method)
+    _warn_if_mochi_sparse_attention(model_info, method)
     method_instance = method_cls(config=config, model_info=model_info)
     if method == "dense":
         return SparseAttentionHandle(
@@ -245,6 +247,12 @@ def _validate_method_support(model_info: ModelInfo, method: str) -> None:
         f"{method} is not implemented for {model_info.model_type}; "
         f"supported sparse methods: {list(supported_methods)}. {reason}"
     )
+
+
+def _warn_if_mochi_sparse_attention(model_info: ModelInfo, method: str) -> None:
+    if method == "dense" or model_info.model_type != "mochi":
+        return
+    print(f"\033[1;93m{MOCHI_SPARSE_ATTENTION_WARNING}\033[0m", file=sys.stderr)
 
 
 def _restore_active_handle(pipe) -> None:

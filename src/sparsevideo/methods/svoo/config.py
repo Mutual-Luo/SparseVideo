@@ -9,7 +9,7 @@ _YAML_CONFIG = load_method_config_yaml(__file__)
 CONFIG_DEFAULTS = _YAML_CONFIG["defaults"]
 T2V_720P_DEFAULTS = _YAML_CONFIG["model_defaults"]
 
-CONFIG_ALIASES = _YAML_CONFIG["aliases"]
+CONFIG_ALIASES = {}
 
 
 def _env_bool(name, default):

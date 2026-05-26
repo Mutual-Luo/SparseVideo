@@ -68,13 +68,13 @@ def test_method_default_configs_are_backed_by_yaml_files():
         data = yaml.safe_load(path.read_text(encoding="utf-8"))
         assert isinstance(data, dict)
         assert isinstance(data["defaults"], dict)
-        assert isinstance(data.get("aliases", {}), dict)
+        assert "aliases" not in data
         assert isinstance(data.get("model_defaults", {}), dict)
         assert isinstance(data.get("compat_keys", []), list)
 
         config_module = importlib.import_module(f"sparsevideo.methods.{method}.config")
         assert config_module.CONFIG_DEFAULTS == data["defaults"]
-        assert config_module.CONFIG_ALIASES == data.get("aliases", {})
+        assert isinstance(config_module.CONFIG_ALIASES, dict)
         assert set(getattr(config_module, "CONFIG_COMPAT_KEYS", set())) == set(
             data.get("compat_keys", [])
         )
@@ -306,6 +306,8 @@ def test_720p_token_layout_inference_matches_upstream_shapes():
     assert infer_video_frame_shape(13 * 60 * 90, model_type="cogvideox") == (13, 60, 90)
     assert infer_video_frame_shape(22 * 45 * 80, model_type="allegro") == (22, 45, 80)
     assert infer_video_frame_shape(8 * 45 * 80, model_type="allegro") == (8, 45, 80)
+    assert infer_video_frame_shape(4 * 45 * 80, model_type="mochi") == (4, 45, 80)
+    assert infer_video_frame_shape(4 * 30 * 53, model_type="mochi") == (4, 30, 53)
 
 
 def test_sta_seq_shape_override_must_match_video_tokens():

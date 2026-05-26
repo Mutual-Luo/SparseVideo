@@ -1834,6 +1834,30 @@ def test_apply_and_restore_mochi_sparse_processor_uses_processor_attribute(metho
     assert transformer.hooks[0][1].removed is True
 
 
+def test_apply_mochi_sparse_attention_prints_bright_yellow_quality_warning(capsys):
+    transformer = MochiTransformer3DModel()
+    pipe = _Pipe(transformer)
+
+    handle = sparsevideo.apply_sparse_attention(pipe, method="svg2")
+    try:
+        stderr = capsys.readouterr().err
+    finally:
+        handle.restore()
+
+    assert stderr.startswith("\033[1;93mMochi-specific sparse attention warning:")
+    assert stderr.endswith("\033[0m\n")
+    assert "\033[0m" not in stderr[:-5]
+    assert "sparse attention is not recommended for Mochi." in stderr
+    assert "On Mochi, sparse attention is not expected to provide a speedup over dense" in stderr
+    assert "Use dense attention for quality-sensitive Mochi runs." in stderr
+
+
+def test_apply_mochi_dense_does_not_print_sparse_attention_warning(capsys):
+    sparsevideo.apply_sparse_attention(_Pipe(MochiTransformer3DModel()), method="dense")
+
+    assert capsys.readouterr().err == ""
+
+
 def test_discover_model_enumerates_real_mochi_diffusers_class():
     from diffusers.models.transformers.transformer_mochi import MochiTransformer3DModel as DiffusersMochi
 

@@ -45,13 +45,6 @@ defaults:
   sparse_kv_info_indptr: null # Indptr tensor or path for key/value sparse-info.
   sparse_kv_budget: 0.5 # Budget used by the local diagnostic top-k sparse policy.
 
-aliases:
-  cdfthreshd: tau_kv # Older SpargeAttn-style name for tau_kv.
-  tau_c: tau_q # Older FlashOmni name for tau_q.
-  cache_interval: N # Cache interval alias for N.
-  cache_order: D # Cache order alias for D.
-  cache_threshold: S_q # Cache threshold alias for S_q.
-
 model_defaults:
   wan21-t2v-1.3b:
     implementation: upstream

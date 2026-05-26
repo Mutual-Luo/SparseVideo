@@ -162,4 +162,3 @@ model_defaults:
     sparsity: 0.3
     context_length: null
     prompt_length: null
-aliases: {}

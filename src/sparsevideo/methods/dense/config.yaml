@@ -1,6 +1,5 @@
 # Dense is the original attention baseline and has no sparse hyperparameters.
 defaults: {}
-aliases: {}
 model_defaults:
   wan21-t2v-1.3b: {}
   wan21-t2v-14b: {}

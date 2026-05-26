@@ -5,7 +5,13 @@ _YAML_CONFIG = load_method_config_yaml(__file__)
 
 CONFIG_DEFAULTS = _YAML_CONFIG["defaults"]
 MODEL_DEFAULTS = _YAML_CONFIG["model_defaults"]
-CONFIG_ALIASES = _YAML_CONFIG["aliases"]
+CONFIG_ALIASES = {
+    "cdfthreshd": "tau_kv",
+    "tau_c": "tau_q",
+    "cache_interval": "N",
+    "cache_order": "D",
+    "cache_threshold": "S_q",
+}
 
 SPARSE_INFO_KEYS = (
     "sparse_info",

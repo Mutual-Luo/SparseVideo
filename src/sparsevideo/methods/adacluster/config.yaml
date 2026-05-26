@@ -303,4 +303,3 @@ model_defaults:
     kv_distance_threshold: 5.5
     thresholded_kmeans_iter_time: 3
     thresholded_kmeans_max_iterations: 10
-aliases: {}

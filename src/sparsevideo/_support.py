@@ -9,6 +9,13 @@ STA_WAN21_T2V_13B_UNSUPPORTED_REASON = (
     "for this model."
 )
 
+MOCHI_SPARSE_ATTENTION_WARNING = (
+    "Mochi-specific sparse attention warning: sparse attention is not recommended for Mochi. "
+    "On Mochi, sparse attention is not expected to provide a speedup over "
+    "dense while preserving output quality. Use dense attention for "
+    "quality-sensitive Mochi runs."
+)
+
 UNSUPPORTED_METHODS_BY_MODEL_KEY: dict[tuple[str, str], str] = {
     ("sta", "wan21-t2v-1.3b"): STA_WAN21_T2V_13B_UNSUPPORTED_REASON,
 }

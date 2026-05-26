@@ -718,9 +718,58 @@ def test_infer_dry_run_allows_ltx_svg2_sparse_processor(tmp_path):
 
     assert payload["status"] == "dry_run"
     assert payload["model"] == "ltx-video"
+    assert payload["load_mode"] == "pretrained"
+    assert payload["checkpoint_file"] is None
     assert payload["method"] == "svg2"
     assert payload["num_frames"] == 161
     assert payload["fps"] == 25
+
+
+def test_infer_dry_run_resolves_ltx_13b_distilled_alias_to_single_file(tmp_path):
+    model_root = tmp_path / "models"
+    checkpoint = model_root / "ltx-video" / "ltxv-13b-0.9.8-distilled.safetensors"
+    checkpoint.parent.mkdir(parents=True)
+    checkpoint.write_bytes(b"")
+
+    payload = _run_infer_dry_run(
+        tmp_path,
+        "--model",
+        "ltx-13b-distilled",
+        "--model-root",
+        str(model_root),
+        "--method",
+        "svg2",
+    )
+
+    assert payload["status"] == "dry_run"
+    assert payload["model"] == "ltx-video"
+    assert payload["model_arg"] == "ltx-13b-distilled"
+    assert payload["load_mode"] == "single_file"
+    assert payload["checkpoint_file"] == "ltxv-13b-0.9.8-distilled.safetensors"
+    assert payload["model_id"] == str(checkpoint.resolve())
+    assert payload["model_load"]["checkpoint_source"] == str(checkpoint.resolve())
+    warnings = payload["runtime"]["preflight"]["warnings"]
+    assert any("from_single_file" in item for item in warnings)
+    assert any("checkpoint-specific sparse quality/speed parity is not established" in item for item in warnings)
+
+
+def test_infer_dry_run_resolves_ltx_i2v_13b_alias_to_i2v_spec(tmp_path):
+    payload = _run_infer_dry_run(
+        tmp_path,
+        "--model",
+        "ltx-i2v-13b-distilled",
+        "--method",
+        "svoo",
+    )
+
+    assert payload["status"] == "dry_run"
+    assert payload["model"] == "ltx-video-i2v"
+    assert payload["load_mode"] == "single_file"
+    assert payload["checkpoint_file"] == "ltxv-13b-0.9.8-distilled.safetensors"
+    assert (
+        payload["model_id"].endswith("ltxv-13b-0.9.8-distilled.safetensors")
+        or payload["model_id"] == "Lightricks/LTX-Video"
+    )
 
 
 def test_infer_dry_run_allows_ltx_i2v_svoo_sparse_processor(tmp_path):
@@ -743,6 +792,17 @@ def test_ltx_single_file_checkpoint_prefers_base_checkpoint(tmp_path):
     preferred.write_bytes(b"")
 
     assert infer._ltx_single_file_checkpoint(str(model_dir)) == preferred
+
+
+def test_ltx_single_file_checkpoint_honors_explicit_checkpoint_in_component_layout(tmp_path):
+    infer = _load_infer_module()
+    model_dir = tmp_path / "ltx-video"
+    (model_dir / "transformer").mkdir(parents=True)
+    (model_dir / "transformer" / "config.json").write_text("{}", encoding="utf-8")
+    checkpoint = model_dir / "ltxv-13b-0.9.8-distilled.safetensors"
+    checkpoint.write_bytes(b"")
+
+    assert infer._ltx_single_file_checkpoint(str(model_dir), checkpoint.name) == checkpoint
 
 
 def test_ltx_single_file_checkpoint_uses_component_layout_when_present(tmp_path):
@@ -778,6 +838,129 @@ def test_resolve_ltx_text_component_root_finds_compatible_sibling_t5(tmp_path):
     sibling_tokenizer.joinpath("spiece.model").write_bytes(b"")
 
     assert infer._resolve_ltx_text_component_root(str(model_dir)) == sibling
+
+
+def test_ltx_load_pipeline_uses_single_file_checkpoint_and_local_text_components(monkeypatch, tmp_path):
+    module = _load_infer_module()
+    captured = {}
+    model_dir = tmp_path / "ltx-video"
+    checkpoint = model_dir / "ltxv-13b-0.9.8-distilled.safetensors"
+    checkpoint.parent.mkdir(parents=True)
+    checkpoint.write_bytes(b"")
+    (model_dir / "text_encoder").mkdir()
+    (model_dir / "text_encoder" / "model.safetensors").write_bytes(b"")
+    (model_dir / "tokenizer").mkdir()
+    (model_dir / "tokenizer" / "spiece.model").write_bytes(b"")
+
+    class FakeTextEncoder:
+        @classmethod
+        def from_pretrained(cls, model_id, **kwargs):
+            captured["text_encoder_model_id"] = model_id
+            captured["text_encoder_kwargs"] = kwargs
+            return cls()
+
+    class FakeTokenizer:
+        @classmethod
+        def from_pretrained(cls, model_id, **kwargs):
+            captured["tokenizer_model_id"] = model_id
+            captured["tokenizer_kwargs"] = kwargs
+            return cls()
+
+    class FakeLTXPipeline:
+        @classmethod
+        def from_single_file(cls, model_id, **kwargs):
+            captured["single_file_model_id"] = model_id
+            captured["single_file_kwargs"] = kwargs
+            return cls()
+
+    monkeypatch.setitem(sys.modules, "diffusers", types.SimpleNamespace(LTXPipeline=FakeLTXPipeline))
+    monkeypatch.setitem(
+        sys.modules,
+        "transformers",
+        types.SimpleNamespace(T5EncoderModel=FakeTextEncoder, T5Tokenizer=FakeTokenizer),
+    )
+
+    pipe = module.load_pipeline(
+        module.MODEL_SPECS["ltx-video"],
+        str(checkpoint),
+        torch.bfloat16,
+        None,
+        local_files_only=True,
+        height=704,
+        flow_shift=None,
+        checkpoint_file=checkpoint.name,
+    )
+
+    assert isinstance(pipe, FakeLTXPipeline)
+    assert captured["single_file_model_id"] == str(checkpoint)
+    assert captured["text_encoder_model_id"] == model_dir / "text_encoder"
+    assert captured["tokenizer_model_id"] == model_dir / "tokenizer"
+    assert captured["single_file_kwargs"]["config"] == str(model_dir)
+    assert captured["single_file_kwargs"]["text_encoder"].__class__ is FakeTextEncoder
+    assert captured["single_file_kwargs"]["tokenizer"].__class__ is FakeTokenizer
+
+
+def test_ltx_single_file_config_root_matches_13b_checkpoint_metadata(tmp_path):
+    from safetensors.torch import save_file
+    from scripts._infer_diffusers.pipeline import _ltx_single_file_config_root
+
+    model_dir = tmp_path / "ltx-video"
+    (model_dir / "scheduler").mkdir(parents=True)
+    (model_dir / "transformer").mkdir()
+    (model_dir / "vae").mkdir()
+    (model_dir / "model_index.json").write_text(json.dumps({"_class_name": "LTXPipeline"}), encoding="utf-8")
+    (model_dir / "scheduler" / "scheduler_config.json").write_text(json.dumps({}), encoding="utf-8")
+    (model_dir / "vae" / "config.json").write_text(json.dumps({"_class_name": "AutoencoderKLLTXVideo"}), encoding="utf-8")
+    (model_dir / "transformer" / "config.json").write_text(
+        json.dumps(
+            {
+                "_class_name": "LTXVideoTransformer3DModel",
+                "attention_head_dim": 64,
+                "caption_channels": 4096,
+                "cross_attention_dim": 2048,
+                "in_channels": 128,
+                "num_attention_heads": 32,
+                "num_layers": 28,
+                "out_channels": 128,
+                "qk_norm": "rms_norm_across_heads",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    checkpoint = model_dir / "ltxv-13b-0.9.8-dev.safetensors"
+    save_file(
+        {"placeholder": torch.zeros(1)},
+        checkpoint,
+        metadata={
+            "config": json.dumps(
+                {
+                    "transformer": {
+                        "attention_head_dim": 128,
+                        "caption_channels": 4096,
+                        "cross_attention_dim": 4096,
+                        "in_channels": 128,
+                        "num_attention_heads": 32,
+                        "num_layers": 48,
+                        "out_channels": 128,
+                        "qk_norm": "rms_norm",
+                    }
+                }
+            )
+        },
+    )
+
+    config_root = _ltx_single_file_config_root(checkpoint, model_dir)
+    transformer_config = json.loads((config_root / "transformer" / "config.json").read_text(encoding="utf-8"))
+
+    assert config_root != model_dir
+    assert transformer_config["attention_head_dim"] == 128
+    assert transformer_config["cross_attention_dim"] == 4096
+    assert transformer_config["num_layers"] == 48
+    assert transformer_config["qk_norm"] == "rms_norm_across_heads"
+    assert (config_root / "model_index.json").exists()
+    assert (config_root / "scheduler" / "scheduler_config.json").exists()
+    assert (config_root / "vae" / "config.json").exists()
 
 
 def test_infer_dry_run_allows_allegro_svg2_sparse_processor(tmp_path):
@@ -988,7 +1171,7 @@ def test_infer_dry_run_marks_skip_decode_as_latent_smoke(tmp_path):
     assert payload["output_file"] is None
 
 
-def test_infer_dry_run_resolves_wan_svg2_upstream_defaults(tmp_path):
+def test_infer_dry_run_resolves_wan_svg2_defaults(tmp_path):
     payload = _run_infer_dry_run(tmp_path, "--model", "wan1.3b", "--method", "svg2")
     cfg = payload["method_config"]
 
@@ -1009,7 +1192,7 @@ def test_infer_dry_run_resolves_wan_svg2_upstream_defaults(tmp_path):
     assert svg2_runtime["variable_block_sparse_attn"] is True
 
 
-def test_infer_dry_run_resolves_hunyuan_svg2_upstream_defaults(tmp_path):
+def test_infer_dry_run_resolves_hunyuan_svg2_defaults(tmp_path):
     payload = _run_infer_dry_run(tmp_path, "--model", "hunyuan", "--method", "svg2")
     cfg = payload["method_config"]
 
@@ -1026,7 +1209,7 @@ def test_infer_dry_run_resolves_hunyuan_svg2_upstream_defaults(tmp_path):
     assert cfg["prompt_length"] is None
 
 
-def test_infer_dry_run_resolves_wan_svg1_upstream_defaults(tmp_path):
+def test_infer_dry_run_resolves_wan_svg1_defaults(tmp_path):
     payload = _run_infer_dry_run(tmp_path, "--model", "wan1.3b", "--method", "svg1")
     cfg = payload["method_config"]
 
@@ -1085,7 +1268,7 @@ def test_infer_dry_run_resolves_draft_defaults_for_default_target_shape(tmp_path
     assert cfg["latent_w"] == 80
     assert cfg["visual_len"] == 75_600
     errors = payload["runtime"]["preflight"]["errors"]
-    assert not any("draft upstream sparse path requires latent_h" in item for item in errors)
+    assert not any("draft latent_h config expects" in item for item in errors)
     if _draft_mit_backend_ready(payload):
         assert returncode == 0
         assert errors == []
@@ -1094,7 +1277,7 @@ def test_infer_dry_run_resolves_draft_defaults_for_default_target_shape(tmp_path
         assert any("MIT Han Lab Block-Sparse-Attention" in item for item in errors)
 
 
-def test_infer_dry_run_resolves_radial_upstream_defaults(tmp_path):
+def test_infer_dry_run_resolves_radial_defaults(tmp_path):
     payload = _run_infer_dry_run(tmp_path, "--model", "wan1.3b", "--method", "radial")
     cfg = payload["method_config"]
 
@@ -1106,17 +1289,17 @@ def test_infer_dry_run_resolves_radial_upstream_defaults(tmp_path):
     assert payload["runtime"]["preflight"]["errors"] == []
 
 
-def test_infer_dry_run_resolves_wan22_radial_upstream_defaults(tmp_path):
+def test_infer_dry_run_resolves_wan22_radial_defaults(tmp_path):
     payload = _run_infer_dry_run(tmp_path, "--model", "wan22", "--method", "radial")
     cfg = payload["method_config"]
 
     assert "dense_layers" not in cfg
     assert "dense_timesteps" not in cfg
-    assert cfg["decay_factor"] == 0.8
+    assert cfg["decay_factor"] == 0.3
     assert cfg["block_size"] == 64
 
 
-def test_infer_dry_run_resolves_hunyuan_radial_upstream_defaults(tmp_path):
+def test_infer_dry_run_resolves_hunyuan_radial_defaults(tmp_path):
     payload = _run_infer_dry_run(tmp_path, "--model", "hunyuan", "--method", "radial")
     cfg = payload["method_config"]
 
@@ -1127,7 +1310,7 @@ def test_infer_dry_run_resolves_hunyuan_radial_upstream_defaults(tmp_path):
     assert payload["runtime"]["preflight"]["errors"] == []
 
 
-def test_radial_upstream_shape_avoids_flex_fallback_warning(tmp_path):
+def test_radial_reference_shape_avoids_flex_fallback_warning(tmp_path):
     payload = _run_infer_dry_run(
         tmp_path,
         "--model", "wan14b",
@@ -2540,9 +2723,10 @@ def test_radial_use_sage_partial_block_shape_is_allowed_by_preflight():
     assert message is None
 
 
-def test_infer_dry_run_warns_for_sta_generalized_wan_shape(tmp_path):
-    payload = _run_infer_dry_run(tmp_path, "--model", "wan1.3b", "--method", "sta")
+def test_infer_dry_run_rejects_sta_wan13b_before_model_load(tmp_path):
+    payload = _run_infer_dry_run_preflight_failure(tmp_path, "--model", "wan1.3b", "--method", "sta")
     cfg = payload["method_config"]
+    errors = payload["runtime"]["preflight"]["errors"]
     warnings = payload["runtime"]["preflight"]["warnings"]
 
     assert cfg["tile_size"] == [6, 8, 8]
@@ -2550,13 +2734,11 @@ def test_infer_dry_run_warns_for_sta_generalized_wan_shape(tmp_path):
     assert cfg["has_text"] is False
     assert cfg["STA_mode"] == "STA_inference"
     assert cfg["mask_strategy_file_path"].endswith("mask_strategy_wan21_t2v_1_3b.json")
-    assert payload["runtime"]["preflight"]["errors"] == []
+    assert any("STA is temporarily unsupported for Wan2.1-T2V-1.3B" in item for item in errors)
     assert any("FastVideo STA native shapes" in item for item in warnings)
-    assert any("Current latent layout is 21x45x80" in item for item in warnings)
-    assert any("tile-padded canvas is 24x48x80" in item for item in warnings)
 
 
-def test_sta_wan13b_is_not_allowed_to_borrow_wan14b_strategy(tmp_path):
+def test_sta_wan13b_rejects_strategy_overrides_while_unsupported(tmp_path):
     payload = _run_infer_dry_run_preflight_failure(
         tmp_path,
         "--model", "wan1.3b",
@@ -2568,8 +2750,7 @@ def test_sta_wan13b_is_not_allowed_to_borrow_wan14b_strategy(tmp_path):
         "--method-config", "mask_strategy_file_path=src/sparsevideo/methods/sta/mask_strategies/mask_strategy_wan.json",
     )
 
-    assert any("expected wan21-t2v-1.3b strategy shape (50, 30, 12)" in item for item in payload["runtime"]["preflight"]["errors"])
-    assert any("steps/layers/heads=(50, 40, 40)" in item for item in payload["runtime"]["preflight"]["errors"])
+    assert any("STA is temporarily unsupported for Wan2.1-T2V-1.3B" in item for item in payload["runtime"]["preflight"]["errors"])
 
 
 def test_sta_preflight_rejects_training_free_mask_strategy_path(tmp_path):
@@ -2587,7 +2768,7 @@ def test_infer_dry_run_rejects_sta_seq_shape_mismatch(tmp_path):
     payload = _run_infer_dry_run_preflight_failure(
         tmp_path,
         "--model",
-        "wan1.3b",
+        "wan14b",
         "--method",
         "sta",
         "--method-config",

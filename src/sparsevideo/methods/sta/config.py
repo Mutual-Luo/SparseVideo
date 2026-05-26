@@ -14,7 +14,7 @@ _YAML_CONFIG = load_method_config_yaml(__file__)
 
 CONFIG_DEFAULTS = _YAML_CONFIG["defaults"]
 MODEL_DEFAULTS = _YAML_CONFIG["model_defaults"]
-CONFIG_ALIASES = _YAML_CONFIG["aliases"]
+CONFIG_ALIASES = {}
 
 
 def _owned_model_mask_strategy(model_key):

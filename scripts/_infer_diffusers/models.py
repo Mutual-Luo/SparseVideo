@@ -360,8 +360,22 @@ MODEL_ALIASES: dict[str, str] = {
     "cogvideox-5b-i2v": "cogvideox-i2v",
     "ltx": "ltx-video",
     "ltx-video": "ltx-video",
+    "ltx-2b-distilled": "ltx-video",
+    "ltx-2b-distilled-fp8": "ltx-video",
+    "ltx-13b": "ltx-video",
+    "ltx-13b-dev": "ltx-video",
+    "ltx-13b-dev-fp8": "ltx-video",
+    "ltx-13b-distilled": "ltx-video",
+    "ltx-13b-distilled-fp8": "ltx-video",
     "ltx-i2v": "ltx-video-i2v",
     "ltx-video-i2v": "ltx-video-i2v",
+    "ltx-i2v-2b-distilled": "ltx-video-i2v",
+    "ltx-i2v-2b-distilled-fp8": "ltx-video-i2v",
+    "ltx-i2v-13b": "ltx-video-i2v",
+    "ltx-i2v-13b-dev": "ltx-video-i2v",
+    "ltx-i2v-13b-dev-fp8": "ltx-video-i2v",
+    "ltx-i2v-13b-distilled": "ltx-video-i2v",
+    "ltx-i2v-13b-distilled-fp8": "ltx-video-i2v",
     "allegro": "allegro",
     "mochi": "mochi-1",
     "mochi-1": "mochi-1",
@@ -377,3 +391,24 @@ MODEL_ALIASES: dict[str, str] = {
     "kandinsky5": "kandinsky5-t2v",
     "kandinsky5-t2v": "kandinsky5-t2v",
 }
+
+LTX_CHECKPOINT_ALIASES: dict[str, str] = {
+    "ltx-2b-distilled": "ltxv-2b-0.9.8-distilled.safetensors",
+    "ltx-2b-distilled-fp8": "ltxv-2b-0.9.8-distilled-fp8.safetensors",
+    "ltx-13b": "ltxv-13b-0.9.8-distilled.safetensors",
+    "ltx-13b-dev": "ltxv-13b-0.9.8-dev.safetensors",
+    "ltx-13b-dev-fp8": "ltxv-13b-0.9.8-dev-fp8.safetensors",
+    "ltx-13b-distilled": "ltxv-13b-0.9.8-distilled.safetensors",
+    "ltx-13b-distilled-fp8": "ltxv-13b-0.9.8-distilled-fp8.safetensors",
+    "ltx-i2v-2b-distilled": "ltxv-2b-0.9.8-distilled.safetensors",
+    "ltx-i2v-2b-distilled-fp8": "ltxv-2b-0.9.8-distilled-fp8.safetensors",
+    "ltx-i2v-13b": "ltxv-13b-0.9.8-distilled.safetensors",
+    "ltx-i2v-13b-dev": "ltxv-13b-0.9.8-dev.safetensors",
+    "ltx-i2v-13b-dev-fp8": "ltxv-13b-0.9.8-dev-fp8.safetensors",
+    "ltx-i2v-13b-distilled": "ltxv-13b-0.9.8-distilled.safetensors",
+    "ltx-i2v-13b-distilled-fp8": "ltxv-13b-0.9.8-distilled-fp8.safetensors",
+}
+
+
+def model_checkpoint_file(model_arg: str) -> Optional[str]:
+    return LTX_CHECKPOINT_ALIASES.get(model_arg)

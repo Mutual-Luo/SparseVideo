@@ -13,7 +13,7 @@ def load_method_config_yaml(module_file: str) -> Dict[str, Any]:
         data = yaml.safe_load(handle) or {}
     if not isinstance(data, dict):
         raise ValueError(f"{path} must contain a YAML mapping")
-    for key in ("defaults", "aliases", "model_defaults"):
+    for key in ("defaults", "model_defaults"):
         if key not in data or data[key] is None:
             data[key] = {}
         value = data[key]

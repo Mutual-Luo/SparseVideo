@@ -705,4 +705,3 @@ model_defaults:
       - 1
     mask_search_output_dir: result/sta_mask_search
     mask_search_prompt_id: null
-aliases: {}

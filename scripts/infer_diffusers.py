@@ -45,6 +45,7 @@ from _infer_diffusers.models import (
     STA_STRATEGY_SHAPES,
     STA_UNSUPPORTED_STRATEGY_MODELS,
     is_hunyuan_pipeline,
+    model_checkpoint_file,
     sparsevideo_model_type,
     supports_sparsevideo_processor,
     uses_wan_components,
@@ -60,7 +61,7 @@ from _infer_diffusers.pipeline import (
     load_pipeline,
     parse_dtype,
     prepare_pipeline,
-    resolve_model_id,
+    resolve_model_load,
     resolve_scheduler_flow_shift,
     seed_everything,
     should_defer_fused_native_kernel_load,
@@ -128,7 +129,9 @@ def run(args: argparse.Namespace) -> int:
             method_config["context_length"] = None
         if "prompt_length" not in user_method_config:
             method_config["prompt_length"] = None
-    model_id = resolve_model_id(spec, args.model_root, args.model_path)
+    checkpoint_file = model_checkpoint_file(args.model)
+    model_load = resolve_model_load(spec, args.model_root, args.model_path, checkpoint_file)
+    model_id = model_load.model_id
     output_file = make_output_file(args, spec.key, args.method, num_frames)
     scheduler_flow_shift = resolve_scheduler_flow_shift(spec, args.height, args.flow_shift)
     wan_flow_shift = scheduler_flow_shift if uses_wan_components(spec) else None
@@ -153,6 +156,11 @@ def run(args: argparse.Namespace) -> int:
             "model": spec.key,
             "model_arg": args.model,
             "model_id": model_id,
+            "load_mode": model_load.load_mode,
+            "checkpoint_file": model_load.checkpoint_file,
+            "checkpoint_source": model_load.checkpoint_source,
+            "component_source": model_load.component_source,
+            "model_load": model_load.as_metrics(),
             "method": args.method,
             "method_config": method_config,
             "height": height,
@@ -341,10 +349,25 @@ def run(args: argparse.Namespace) -> int:
     runtime_status["preflight"]["warnings"].extend(
         model_quality_warnings(spec, height, width)
     )
+    if model_load.checkpoint_file and spec.key.startswith("ltx-video"):
+        runtime_status["preflight"]["warnings"].append(
+            "LTX single-file checkpoint loading uses Diffusers from_single_file; "
+            "the official LTX multi-scale/upscaler workflow is not enabled by this CLI path."
+        )
+        if args.method != "dense":
+            runtime_status["preflight"]["warnings"].append(
+                "SparseVideo LTX single-file variants reuse the ltx-video family method defaults; "
+                "checkpoint-specific sparse quality/speed parity is not established."
+            )
     base_metrics: Dict[str, Any] = {
         "model": spec.key,
         "model_arg": args.model,
         "model_id": model_id,
+        "load_mode": model_load.load_mode,
+        "checkpoint_file": model_load.checkpoint_file,
+        "checkpoint_source": model_load.checkpoint_source,
+        "component_source": model_load.component_source,
+        "model_load": model_load.as_metrics(),
         "method": args.method,
         "method_config": method_config,
         "height": height,
@@ -457,6 +480,7 @@ def run(args: argparse.Namespace) -> int:
                 args.local_files_only,
                 height=args.height,
                 flow_shift=scheduler_flow_shift,
+                checkpoint_file=model_load.checkpoint_file,
             )
             prepare_pipeline(
                 pipe,

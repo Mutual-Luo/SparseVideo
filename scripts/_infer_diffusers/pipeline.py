@@ -1,8 +1,13 @@
 from __future__ import annotations
 
+import hashlib
+import json
 import os
 import random
+import shutil
 import sys
+import tempfile
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -16,6 +21,19 @@ from .models import (
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
+@dataclass(frozen=True)
+class ResolvedModelLoad:
+    model_id: str
+    load_mode: str
+    checkpoint_file: Optional[str] = None
+    checkpoint_source: Optional[str] = None
+    component_source: Optional[str] = None
+    model_path_override: bool = False
+
+    def as_metrics(self) -> Dict[str, Any]:
+        return asdict(self)
+
+
 def resolve_model_id(spec, model_root: Path, model_path: Optional[str]) -> str:
     if model_path:
         return model_path
@@ -24,6 +42,67 @@ def resolve_model_id(spec, model_root: Path, model_path: Optional[str]) -> str:
         if local_path.exists():
             return str(local_path.resolve())
     return spec.hf_id
+
+
+def resolve_model_load(
+    spec,
+    model_root: Path,
+    model_path: Optional[str],
+    checkpoint_file: Optional[str] = None,
+) -> ResolvedModelLoad:
+    if model_path:
+        path = Path(model_path).expanduser()
+        checkpoint_name = (
+            path.name
+            if is_ltx_pipeline(spec) and path.suffix == ".safetensors"
+            else checkpoint_file
+        )
+        load_mode = "single_file" if checkpoint_name else "pretrained"
+        component_root = _resolve_ltx_text_component_root(str(path)) if checkpoint_name else None
+        component_source = None
+        if checkpoint_name:
+            component_source = str(component_root) if component_root is not None else spec.hf_id
+        return ResolvedModelLoad(
+            model_id=model_path,
+            load_mode=load_mode,
+            checkpoint_file=checkpoint_name,
+            checkpoint_source=model_path if checkpoint_name else None,
+            component_source=component_source,
+            model_path_override=True,
+        )
+    if checkpoint_file:
+        local_root = model_root / spec.local_dir if spec.local_dir else model_root
+        local_checkpoint = local_root / checkpoint_file
+        if local_checkpoint.exists():
+            component_root = _resolve_ltx_text_component_root(str(local_checkpoint))
+            return ResolvedModelLoad(
+                model_id=str(local_checkpoint.resolve()),
+                load_mode="single_file",
+                checkpoint_file=checkpoint_file,
+                checkpoint_source=str(local_checkpoint.resolve()),
+                component_source=str(component_root) if component_root is not None else spec.hf_id,
+            )
+        component_root = (
+            _resolve_ltx_text_component_root(str(local_root))
+            if local_root.exists()
+            else None
+        )
+        return ResolvedModelLoad(
+            model_id=str(local_root.resolve()) if component_root is not None else spec.hf_id,
+            load_mode="single_file",
+            checkpoint_file=checkpoint_file,
+            checkpoint_source=f"{spec.hf_id}:{checkpoint_file}",
+            component_source=str(component_root) if component_root is not None else spec.hf_id,
+        )
+    model_id = resolve_model_id(spec, model_root, model_path)
+    checkpoint = _ltx_single_file_checkpoint(model_id)
+    return ResolvedModelLoad(
+        model_id=model_id,
+        load_mode="single_file" if checkpoint is not None else "pretrained",
+        checkpoint_file=checkpoint.name if checkpoint is not None else None,
+        checkpoint_source=str(checkpoint) if checkpoint is not None else None,
+        component_source=None,
+    )
 
 
 def _has_component_weight(component_dir: Path) -> bool:
@@ -35,12 +114,15 @@ def _has_component_weight(component_dir: Path) -> bool:
     return False
 
 
-def _ltx_single_file_checkpoint(model_id: str) -> Optional[Path]:
+def _ltx_single_file_checkpoint(model_id: str, checkpoint_file: Optional[str] = None) -> Optional[Path]:
     path = Path(model_id).expanduser()
     if path.is_file() and path.suffix == ".safetensors":
         return path
     if not path.is_dir():
         return None
+    if checkpoint_file:
+        checkpoint = path / checkpoint_file
+        return checkpoint if checkpoint.exists() else None
     if (path / "transformer" / "config.json").exists():
         return None
     preferred = (
@@ -59,10 +141,139 @@ def _ltx_single_file_checkpoint(model_id: str) -> Optional[Path]:
 
 def _read_json_file(path: Path) -> Optional[Dict[str, Any]]:
     try:
-        import json
         return json.loads(path.read_text(encoding="utf-8"))
     except Exception:
         return None
+
+
+_LTX_TRANSFORMER_STRUCTURAL_KEYS = (
+    "activation_fn",
+    "attention_bias",
+    "attention_head_dim",
+    "caption_channels",
+    "cross_attention_dim",
+    "in_channels",
+    "norm_elementwise_affine",
+    "norm_eps",
+    "num_attention_heads",
+    "num_layers",
+    "out_channels",
+)
+
+
+def _ltx_checkpoint_transformer_overrides(checkpoint: Path) -> Optional[Dict[str, Any]]:
+    try:
+        from safetensors import safe_open
+
+        with safe_open(checkpoint, framework="pt", device="cpu") as handle:
+            metadata = handle.metadata() or {}
+            raw_config = metadata.get("config")
+            if raw_config:
+                try:
+                    config = json.loads(raw_config)
+                except json.JSONDecodeError:
+                    config = {}
+                transformer_config = config.get("transformer") if isinstance(config, dict) else None
+                if isinstance(transformer_config, dict):
+                    overrides = {
+                        key: transformer_config[key]
+                        for key in _LTX_TRANSFORMER_STRUCTURAL_KEYS
+                        if key in transformer_config
+                    }
+                    if overrides:
+                        return overrides
+
+            keys = list(handle.keys())
+
+            def shape_for_suffix(suffix: str) -> Optional[list[int]]:
+                for key in keys:
+                    if key.endswith(suffix):
+                        return list(handle.get_slice(key).get_shape())
+                return None
+
+            block_ids = []
+            for key in keys:
+                marker = "transformer_blocks."
+                if marker not in key:
+                    continue
+                block = key.split(marker, 1)[1].split(".", 1)[0]
+                if block.isdigit():
+                    block_ids.append(int(block))
+
+            q_shape = shape_for_suffix("transformer_blocks.0.attn1.to_q.weight")
+            cross_shape = shape_for_suffix("transformer_blocks.0.attn2.to_k.weight")
+            caption_shape = shape_for_suffix("caption_projection.linear_1.weight")
+            if not q_shape or len(q_shape) != 2:
+                return None
+
+            hidden_dim = int(q_shape[0])
+            num_attention_heads = 32
+            if hidden_dim % num_attention_heads != 0:
+                return None
+            overrides = {
+                "attention_head_dim": hidden_dim // num_attention_heads,
+                "num_attention_heads": num_attention_heads,
+            }
+            if block_ids:
+                overrides["num_layers"] = max(block_ids) + 1
+            if caption_shape and len(caption_shape) == 2:
+                overrides["caption_channels"] = int(caption_shape[1])
+            if cross_shape and len(cross_shape) == 2:
+                overrides["cross_attention_dim"] = int(cross_shape[1])
+            return overrides
+    except Exception:
+        return None
+
+
+def _ltx_transformer_overrides_match(base_config: Dict[str, Any], overrides: Dict[str, Any]) -> bool:
+    return all(base_config.get(key) == value for key, value in overrides.items())
+
+
+def _ltx_single_file_config_root(checkpoint: Path, component_root: Path) -> Path:
+    base_transformer_config = _read_json_file(component_root / "transformer" / "config.json")
+    if base_transformer_config is None:
+        return component_root
+
+    overrides = _ltx_checkpoint_transformer_overrides(checkpoint)
+    if not overrides or _ltx_transformer_overrides_match(base_transformer_config, overrides):
+        return component_root
+
+    transformer_config = dict(base_transformer_config)
+    transformer_config.update(overrides)
+    transformer_config["_class_name"] = base_transformer_config.get("_class_name", "LTXVideoTransformer3DModel")
+    transformer_config["qk_norm"] = base_transformer_config.get("qk_norm", "rms_norm_across_heads")
+
+    fingerprint = json.dumps(
+        {
+            "checkpoint": str(checkpoint.resolve()),
+            "mtime_ns": checkpoint.stat().st_mtime_ns,
+            "size": checkpoint.stat().st_size,
+            "overrides": overrides,
+        },
+        sort_keys=True,
+    )
+    digest = hashlib.sha1(fingerprint.encode("utf-8")).hexdigest()
+    config_root = Path(tempfile.gettempdir()) / "sparsevideo_ltx_single_file_configs" / digest
+    config_root.mkdir(parents=True, exist_ok=True)
+
+    for relative in (
+        "model_index.json",
+        "scheduler/scheduler_config.json",
+        "vae/config.json",
+    ):
+        source = component_root / relative
+        if source.exists():
+            target = config_root / relative
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source, target)
+
+    transformer_dir = config_root / "transformer"
+    transformer_dir.mkdir(parents=True, exist_ok=True)
+    (transformer_dir / "config.json").write_text(
+        json.dumps(transformer_config, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    return config_root
 
 
 def _compatible_t5_component_root(candidate: Path, reference_config: Optional[Dict[str, Any]]) -> bool:
@@ -219,9 +430,7 @@ def infer_hunyuan_prompt_length(pipe, prompt: str, max_sequence_length: int = 25
 
 
 def load_pipeline(spec, model_id: str, torch_dtype, vae_dtype, local_files_only: bool,
-                  height: int, flow_shift: Optional[float]):
-    import tempfile
-
+                  height: int, flow_shift: Optional[float], checkpoint_file: Optional[str] = None):
     def pipeline_load_kwargs(**kwargs):
         temp_root = REPO_ROOT / ".tmp_offload"
         temp_root.mkdir(parents=True, exist_ok=True)
@@ -287,20 +496,42 @@ def load_pipeline(spec, model_id: str, torch_dtype, vae_dtype, local_files_only:
         from diffusers import FlowMatchEulerDiscreteScheduler
         kwargs["scheduler"] = FlowMatchEulerDiscreteScheduler(shift=float(flow_shift))
     if spec.pipeline_class in ("LTXPipeline", "LTXImageToVideoPipeline"):
-        checkpoint = _ltx_single_file_checkpoint(model_id)
+        checkpoint = _ltx_single_file_checkpoint(model_id, checkpoint_file)
+        if checkpoint is None and checkpoint_file:
+            from huggingface_hub import hf_hub_download
+            checkpoint = Path(
+                hf_hub_download(
+                    spec.hf_id,
+                    filename=checkpoint_file,
+                    local_files_only=local_files_only,
+                )
+            )
         if checkpoint is not None:
             component_root = _resolve_ltx_text_component_root(model_id)
-            if component_root is None:
-                raise RuntimeError(
-                    "LTX local single-file checkpoint requires a compatible local T5 text_encoder "
-                    "and tokenizer because the checkpoint does not contain those weights."
-                )
             from transformers import T5EncoderModel, T5Tokenizer
-            text_encoder = T5EncoderModel.from_pretrained(
-                component_root / "text_encoder", torch_dtype=torch_dtype, local_files_only=local_files_only,
+            single_file_kwargs = dict(kwargs)
+            if component_root is not None:
+                text_encoder = T5EncoderModel.from_pretrained(
+                    component_root / "text_encoder", torch_dtype=torch_dtype, local_files_only=local_files_only,
+                )
+                tokenizer = T5Tokenizer.from_pretrained(
+                    component_root / "tokenizer", local_files_only=local_files_only,
+                )
+                config_root = _ltx_single_file_config_root(checkpoint, component_root)
+                single_file_kwargs["config"] = str(config_root)
+            else:
+                text_encoder = T5EncoderModel.from_pretrained(
+                    spec.hf_id, subfolder="text_encoder", torch_dtype=torch_dtype, local_files_only=local_files_only,
+                )
+                tokenizer = T5Tokenizer.from_pretrained(
+                    spec.hf_id, subfolder="tokenizer", local_files_only=local_files_only,
+                )
+            return cls.from_single_file(
+                str(checkpoint),
+                text_encoder=text_encoder,
+                tokenizer=tokenizer,
+                **single_file_kwargs,
             )
-            tokenizer = T5Tokenizer.from_pretrained(component_root / "tokenizer", local_files_only=local_files_only)
-            return cls.from_single_file(str(checkpoint), text_encoder=text_encoder, tokenizer=tokenizer, **kwargs)
     return cls.from_pretrained(model_id, **pipeline_load_kwargs(**kwargs))
 
 

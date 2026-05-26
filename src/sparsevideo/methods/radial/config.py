@@ -4,7 +4,7 @@ from .._config import apply_model_defaults, copy_config_defaults, load_method_co
 _YAML_CONFIG = load_method_config_yaml(__file__)
 
 CONFIG_DEFAULTS = _YAML_CONFIG["defaults"]
-CONFIG_ALIASES = _YAML_CONFIG["aliases"]
+CONFIG_ALIASES = {}
 T2V_DEFAULTS = _YAML_CONFIG["model_defaults"]
 
 

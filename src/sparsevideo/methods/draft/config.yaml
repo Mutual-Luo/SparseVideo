@@ -243,4 +243,3 @@ model_defaults:
     sparsity_ratio: 0.9
     batch_size: null
     block_sparse_attention: true
-aliases: {}
