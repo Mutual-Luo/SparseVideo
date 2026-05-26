@@ -199,14 +199,14 @@ CUDA_VISIBLE_DEVICES=7 python scripts/infer_diffusers.py --model cogvideox      
 # ---------------------------------------
 CUDA_VISIBLE_DEVICES=0 python scripts/infer_diffusers.py --model cogvideox-i2v     --method dense      --prompt-file example/i2v/1.txt --image example/i2v/1.jpg --height 480 --width 720 # 03:26
 CUDA_VISIBLE_DEVICES=1 python scripts/infer_diffusers.py --model cogvideox-i2v     --method svg1       --prompt-file example/i2v/1.txt --image example/i2v/1.jpg --height 480 --width 720 # 03:07
-CUDA_VISIBLE_DEVICES=2 python scripts/infer_diffusers.py --model cogvideox-i2v     --method svg2       --prompt-file example/i2v/1.txt --image example/i2v/1.jpg --height 480 --width 720 #
+CUDA_VISIBLE_DEVICES=2 python scripts/infer_diffusers.py --model cogvideox-i2v     --method svg2       --prompt-file example/i2v/1.txt --image example/i2v/1.jpg --height 480 --width 720 # 06:20
 CUDA_VISIBLE_DEVICES=3 python scripts/infer_diffusers.py --model cogvideox-i2v     --method spargeattn --prompt-file example/i2v/1.txt --image example/i2v/1.jpg --height 480 --width 720 # 03:06
-CUDA_VISIBLE_DEVICES=4 python scripts/infer_diffusers.py --model cogvideox-i2v     --method radial     --prompt-file example/i2v/1.txt --image example/i2v/1.jpg --height 480 --width 720
+CUDA_VISIBLE_DEVICES=4 python scripts/infer_diffusers.py --model cogvideox-i2v     --method radial     --prompt-file example/i2v/1.txt --image example/i2v/1.jpg --height 480 --width 720 # 04:15
 CUDA_VISIBLE_DEVICES=5 python scripts/infer_diffusers.py --model cogvideox-i2v     --method sta        --prompt-file example/i2v/1.txt --image example/i2v/1.jpg --height 480 --width 720
-CUDA_VISIBLE_DEVICES=5 python scripts/infer_diffusers.py --model cogvideox-i2v     --method draft      --prompt-file example/i2v/1.txt --image example/i2v/1.jpg --height 480 --width 720
-CUDA_VISIBLE_DEVICES=6 python scripts/infer_diffusers.py --model cogvideox-i2v     --method adacluster --prompt-file example/i2v/1.txt --image example/i2v/1.jpg --height 480 --width 720
-CUDA_VISIBLE_DEVICES=7 python scripts/infer_diffusers.py --model cogvideox-i2v     --method flashomni  --prompt-file example/i2v/1.txt --image example/i2v/1.jpg --height 480 --width 720
-CUDA_VISIBLE_DEVICES=0 python scripts/infer_diffusers.py --model cogvideox-i2v     --method svoo       --prompt-file example/i2v/1.txt --image example/i2v/1.jpg --height 480 --width 720
+CUDA_VISIBLE_DEVICES=5 python scripts/infer_diffusers.py --model cogvideox-i2v     --method draft      --prompt-file example/i2v/1.txt --image example/i2v/1.jpg --height 480 --width 720 # 03:48
+CUDA_VISIBLE_DEVICES=6 python scripts/infer_diffusers.py --model cogvideox-i2v     --method adacluster --prompt-file example/i2v/1.txt --image example/i2v/1.jpg --height 480 --width 720 # 03:35
+CUDA_VISIBLE_DEVICES=7 python scripts/infer_diffusers.py --model cogvideox-i2v     --method flashomni  --prompt-file example/i2v/1.txt --image example/i2v/1.jpg --height 480 --width 720 # 03:07 [not so good]
+CUDA_VISIBLE_DEVICES=0 python scripts/infer_diffusers.py --model cogvideox-i2v     --method svoo       --prompt-file example/i2v/1.txt --image example/i2v/1.jpg --height 480 --width 720 # 03:50
 
 # ---------------------------------------
 # ltx t2v (model: ltx)
