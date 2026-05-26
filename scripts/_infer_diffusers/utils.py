@@ -264,7 +264,7 @@ def unsupported_sparse_method_message(spec, method: str) -> str:
     reasons = [reason for reason in (spec.unsupported_reason, method_reason) if reason]
     reason = f" {' '.join(reasons)}" if reasons else ""
     return (
-        f"{method} is not implemented for {spec.family}; "
+        f"{method} is not implemented for {spec.pipeline_class}; "
         f"compatibility_label={spec.compatibility_label}; "
         f"supported sparse methods: {list(spec.sparse_methods or ()) or 'none'}.{reason}"
     )

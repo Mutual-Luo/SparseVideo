@@ -53,7 +53,6 @@ class SparseMethod(ABC):
         self.model_info = model_info
         self.config = {
             **self.default_config(
-                model_family=model_info.model_type,
                 model_key=getattr(model_info, "model_key", None),
             ),
             **normalized_config,

@@ -8,7 +8,6 @@ scripts/_infer so this script stays readable as a package usability test.
 from __future__ import annotations
 
 import argparse
-import copy
 import sys
 import time
 from contextlib import redirect_stdout
@@ -23,13 +22,13 @@ for path in (SCRIPT_DIR, SRC_ROOT):
     if path_text not in sys.path:
         sys.path.insert(0, path_text)
 
-from _infer_diffusers.args import METHODS, build_parser, parse_method_config, read_prompt
+from _infer_diffusers.args import METHODS, build_parser, finalize_runtime_defaults, parse_method_config, read_prompt
 from _infer_diffusers.config import (
     apply_draft_runtime_layout_defaults,
     apply_flashomni_hunyuan_quality_defaults,
     default_num_frames,
     default_svoo_sparsity_csv_path,
-    draft_upstream_layout_error,
+    draft_layout_error,
     materialize_method_config_values,
     model_quality_warnings,
     model_shape_preflight_errors,
@@ -45,6 +44,10 @@ from _infer_diffusers.models import (
     MODEL_SPECS,
     STA_STRATEGY_SHAPES,
     STA_UNSUPPORTED_STRATEGY_MODELS,
+    is_hunyuan_pipeline,
+    sparsevideo_model_type,
+    supports_sparsevideo_processor,
+    uses_wan_components,
 )
 from _infer_diffusers.pipeline import (
     _ltx_single_file_checkpoint,
@@ -64,12 +67,6 @@ from _infer_diffusers.pipeline import (
     should_preload_fused_native_kernels,
 )
 from _infer_diffusers.preflight import preflight_runtime
-from _infer_diffusers.profiles import (
-    UPSTREAM_INFERENCE_PROFILES,
-    apply_profile_runtime_defaults,
-    finalize_runtime_defaults,
-    resolve_inference_profile,
-)
 from _infer_diffusers.utils import (
     append_metrics,
     configure_torch_compile_logging,
@@ -91,8 +88,8 @@ from _infer_diffusers.utils import (
 
 def run(args: argparse.Namespace) -> int:
     spec = MODEL_SPECS[MODEL_ALIASES[args.model]]
+    model_type = sparsevideo_model_type(spec)
     fps = args.fps if args.fps is not None else spec.fps
-    profile_method = args.profile_for_method or args.method
     if args.num_frames is not None:
         num_frames = args.num_frames
     elif args.duration_seconds is not None:
@@ -100,57 +97,14 @@ def run(args: argparse.Namespace) -> int:
     else:
         num_frames = spec.default_frames
     steps = args.num_inference_steps if args.num_inference_steps is not None else spec.default_steps
-    try:
-        profile = resolve_inference_profile(args.profile, spec, profile_method)
-    except ValueError as exc:
-        finalize_runtime_defaults(args)
-        height = args.height if args.height is not None else DEFAULT_HEIGHT
-        width = args.width if args.width is not None else DEFAULT_WIDTH
-        model_id = resolve_model_id(spec, args.model_root, args.model_path)
-        output_file = make_output_file(args, spec.key, args.method, num_frames)
-        failed_metrics = {
-            "model": spec.key,
-            "model_arg": args.model,
-            "model_id": model_id,
-            "method": args.method,
-            "method_config": {},
-            "profile": args.profile,
-            "profile_method": profile_method,
-            "profile_overrides": {},
-            "height": height,
-            "width": width,
-            "num_frames": num_frames,
-            "fps": fps,
-            "duration_seconds": num_frames / fps,
-            "requested_duration_seconds": args.duration_seconds,
-            "num_inference_steps": steps,
-            "dtype": args.dtype,
-            "device": args.device,
-            "cpu_offload": args.cpu_offload,
-            "cpu_offload_mode": args.cpu_offload_mode,
-            "vae_dtype": args.vae_dtype,
-            "vae_tiling": args.vae_tiling,
-            "vae_slicing": args.vae_slicing,
-            "vae_decoder_chunk_size": args.vae_decoder_chunk_size,
-            "seed": args.seed,
-            "output_file": str(output_file),
-            "scheduler_flow_shift": None,
-            "wan_flow_shift": None,
-            "runtime": {"preflight": {"errors": [str(exc)], "warnings": []}},
-            "status": "failed",
-            "failed_stage": "profile",
-            "timings": {},
-            "error_type": type(exc).__name__,
-            "error": str(exc),
-        }
-        if not args.dry_run:
-            append_metrics(args.metrics_file, failed_metrics)
-        print_final_run_metrics(args, failed_metrics)
-        return 1
-    height, width, fps, num_frames, steps = apply_profile_runtime_defaults(
-        args, profile, fps, num_frames, steps,
-    )
-    if args.vae_dtype is None and spec.family == "wan":
+    height = args.height if args.height is not None else DEFAULT_HEIGHT
+    width = args.width if args.width is not None else DEFAULT_WIDTH
+    finalize_runtime_defaults(args)
+    args.height = height
+    args.width = width
+    if args.num_inference_steps is None:
+        args.num_inference_steps = steps
+    if args.vae_dtype is None and uses_wan_components(spec):
         args.vae_dtype = "fp32"
 
     configure_method_runtime_env(args.method)
@@ -158,10 +112,8 @@ def run(args: argparse.Namespace) -> int:
 
     user_method_config = parse_method_config(args)
     method_config = sparsevideo.default_method_config(
-        args.method, num_inference_steps=steps, model_family=spec.family, model_key=spec.key,
+        args.method, num_inference_steps=steps, model_key=spec.key,
     )
-    if profile_method == args.method:
-        method_config.update(copy.deepcopy(profile.get("method_config", {})))
     method_config.update(
         sparsevideo.normalize_method_config(args.method, user_method_config)
     )
@@ -179,7 +131,7 @@ def run(args: argparse.Namespace) -> int:
     model_id = resolve_model_id(spec, args.model_root, args.model_path)
     output_file = make_output_file(args, spec.key, args.method, num_frames)
     scheduler_flow_shift = resolve_scheduler_flow_shift(spec, args.height, args.flow_shift)
-    wan_flow_shift = scheduler_flow_shift if spec.family == "wan" else None
+    wan_flow_shift = scheduler_flow_shift if uses_wan_components(spec) else None
     unsupported = not sparse_method_supported(spec, args.method)
     try:
         if not unsupported:
@@ -195,7 +147,7 @@ def run(args: argparse.Namespace) -> int:
                 )
             ):
                 method_config["sparsity_csv_path"] = default_svoo_sparsity_csv_path(spec)
-            validate_method_config(args.method, method_config, model_family=spec.family)
+            validate_method_config(args.method, method_config, model_type=model_type)
     except (FileNotFoundError, NotImplementedError, TypeError, ValueError) as exc:
         failed_metrics = {
             "model": spec.key,
@@ -203,9 +155,6 @@ def run(args: argparse.Namespace) -> int:
             "model_id": model_id,
             "method": args.method,
             "method_config": method_config,
-            "profile": args.profile,
-            "profile_method": profile_method,
-            "profile_overrides": profile,
             "height": height,
             "width": width,
             "num_frames": num_frames,
@@ -269,7 +218,7 @@ def run(args: argparse.Namespace) -> int:
         not unsupported
         and (
             args.method == "draft"
-            or (args.method in ("svg1", "adacluster") and spec.family == "hunyuan_video")
+            or (args.method in ("svg1", "adacluster") and is_hunyuan_pipeline(spec))
         )
     )
     if needs_flash_attn_load:
@@ -366,10 +315,10 @@ def run(args: argparse.Namespace) -> int:
             method_config,
             args.device,
             runtime_status,
-            model_family=spec.family,
+            model_type=model_type,
         )
     if not unsupported and args.method == "draft":
-        draft_error = draft_upstream_layout_error(
+        draft_error = draft_layout_error(
             spec, height, width, num_frames, method_config,
         )
         if draft_error is not None:
@@ -398,9 +347,6 @@ def run(args: argparse.Namespace) -> int:
         "model_id": model_id,
         "method": args.method,
         "method_config": method_config,
-        "profile": args.profile,
-        "profile_method": profile_method,
-        "profile_overrides": profile,
         "height": height,
         "width": width,
         "num_frames": num_frames,
@@ -535,7 +481,7 @@ def run(args: argparse.Namespace) -> int:
                     method_config,
                     args.device,
                     runtime_status,
-                    model_family=spec.family,
+                    model_type=model_type,
                 )
             runtime_status["preflight"]["warnings"].extend(deferred_preflight["warnings"])
             if deferred_preflight["errors"]:
@@ -545,7 +491,7 @@ def run(args: argparse.Namespace) -> int:
         stage = "apply_sparse_attention"
         t0 = time.perf_counter()
         with redirect_stdout(sys.stderr):
-            if args.method in ("svg1", "svg2") and spec.family == "hunyuan_video":
+            if args.method in ("svg1", "svg2") and is_hunyuan_pipeline(spec):
                 hunyuan_i2v = spec.pipeline_class == "HunyuanVideoImageToVideoPipeline"
                 if method_config.get("context_length") is None and not hunyuan_i2v:
                     method_config["context_length"] = 256
@@ -566,7 +512,7 @@ def run(args: argparse.Namespace) -> int:
 
                 warmup_status = warmup_svoo_kernels_from_pipeline(
                     pipe,
-                    model_type=spec.family,
+                    model_type=model_type,
                     height=args.height,
                     width=args.width,
                     num_frames=num_frames,

@@ -502,19 +502,10 @@ def test_sta_strategy_shapes_cover_sparsevideo_backbones():
     infer = _load_infer_module()
     from sparsevideo.methods.sta.search import MODEL_STRATEGY_SHAPES
 
-    sta_families = (
-        "wan",
-        "hunyuan_video",
-        "cogvideox",
-        "ltx_video",
-        "allegro",
-        "mochi",
-        "easyanimate",
-    )
     expected = {
         key
         for key, spec in infer.MODEL_SPECS.items()
-        if spec.family in sta_families
+        if infer.supports_sparsevideo_processor(spec)
     }
 
     assert expected <= set(infer.STA_STRATEGY_SHAPES)
@@ -534,19 +525,10 @@ def test_sta_strategy_shapes_cover_sparsevideo_backbones():
 def test_inference_sh_has_runnable_sta_line_for_every_backbone():
     infer = _load_infer_module()
     script = REPO_ROOT / "scripts" / "inference_diffusers.sh"
-    sta_families = (
-        "wan",
-        "hunyuan_video",
-        "cogvideox",
-        "ltx_video",
-        "allegro",
-        "mochi",
-        "easyanimate",
-    )
     expected = {
         spec.key
         for spec in infer.MODEL_SPECS.values()
-        if spec.family in sta_families
+        if infer.supports_sparsevideo_processor(spec)
     }
     seen = set()
     missing_inputs = []
@@ -573,19 +555,10 @@ def test_inference_sh_has_runnable_sta_line_for_every_backbone():
 def test_inference_sh_has_runnable_inputs_for_every_command():
     infer = _load_infer_module()
     script = REPO_ROOT / "scripts" / "inference_diffusers.sh"
-    model_families = (
-        "wan",
-        "hunyuan_video",
-        "cogvideox",
-        "ltx_video",
-        "allegro",
-        "mochi",
-        "easyanimate",
-    )
     expected_models = {
         spec.key
         for spec in infer.MODEL_SPECS.values()
-        if spec.family in model_families
+        if infer.supports_sparsevideo_processor(spec)
     }
     expected_grid = {
         (model, method)
@@ -598,6 +571,8 @@ def test_inference_sh_has_runnable_inputs_for_every_command():
     for lineno, line in enumerate(script.read_text(encoding="utf-8").splitlines(), 1):
         stripped = line.strip()
         if not stripped or stripped.startswith("#"):
+            continue
+        if "scripts/infer_diffusers.py" not in line:
             continue
         assert "/path/to/" not in line
         tokens = shlex.split(line, comments=True, posix=True)
@@ -1051,40 +1026,6 @@ def test_infer_dry_run_resolves_hunyuan_svg2_upstream_defaults(tmp_path):
     assert cfg["prompt_length"] is None
 
 
-def test_svg2_upstream_profile_uses_sparse_videogen_wan14_shell(tmp_path):
-    payload = _run_infer_dry_run(
-        tmp_path,
-        "--model", "wan14b",
-        "--method", "svg2",
-        "--profile", "upstream",
-    )
-
-    assert payload["profile"] == "upstream"
-    assert payload["height"] == 720
-    assert payload["width"] == 1280
-    assert payload["num_frames"] == 81
-    assert payload["num_inference_steps"] == 50
-    assert payload["profile_overrides"]["source"].endswith(
-        "Sparse-VideoGen/scripts/wan/wan_t2v_720p_sap.sh"
-    )
-
-
-def test_svg2_upstream_profile_does_not_borrow_wan14_shell_for_wan13(tmp_path):
-    result = _run_infer(
-        tmp_path,
-        "--model", "wan1.3b",
-        "--method", "svg2",
-        "--profile", "upstream",
-    )
-    payload = json.loads(result.stdout)
-
-    assert result.returncode == 1
-    assert payload["failed_stage"] == "profile"
-    assert "No upstream inference profile" in payload["error"]
-    assert "method='svg2'" in payload["error"]
-    assert "model='wan21-t2v-1.3b'" in payload["error"]
-
-
 def test_infer_dry_run_resolves_wan_svg1_upstream_defaults(tmp_path):
     payload = _run_infer_dry_run(tmp_path, "--model", "wan1.3b", "--method", "svg1")
     cfg = payload["method_config"]
@@ -1103,61 +1044,6 @@ def test_infer_dry_run_resolves_wan_svg1_upstream_defaults(tmp_path):
     assert svg1_runtime["owned_runtime"] is True
     assert svg1_runtime["svg_attention"] is True
     assert svg1_runtime["sparse_head_placement"] is True
-
-
-def test_svg1_hunyuan_upstream_profile_uses_sparse_videogen_shell(tmp_path):
-    payload = _run_infer_dry_run(
-        tmp_path,
-        "--model", "hunyuan",
-        "--method", "svg1",
-        "--profile", "upstream",
-    )
-
-    assert payload["height"] == 720
-    assert payload["width"] == 1280
-    assert payload["num_frames"] == 129
-    assert payload["fps"] == 24
-    assert payload["method_config"]["context_length"] == 256
-    assert payload["method_config"]["prompt_length"] is None
-    assert payload["scheduler_flow_shift"] == 7.0
-    assert payload["vae_tiling"] is True
-    assert payload["vae_slicing"] is False
-    assert payload["negative_prompt"].startswith("Aerial view, aerial view")
-    assert payload["profile_overrides"]["flow_shift"] == 7.0
-    assert payload["profile_overrides"]["vae_tiling"] is True
-    assert payload["profile_overrides"]["vae_slicing"] is False
-    assert payload["profile_overrides"]["negative_prompt"].startswith("Aerial view, aerial view")
-    svg1_runtime = payload["runtime"]["optional_kernels"]["svg1_kernels"]["owned_triton_runtime"]
-    assert svg1_runtime["load_checked"] is True
-    assert svg1_runtime["svg1_hunyuan_flash_attn_varlen"] is True
-    assert payload["profile_overrides"]["source"].endswith(
-        "Sparse-VideoGen/scripts/hyvideo/hyvideo_t2v_720p_svg.sh"
-    )
-
-
-def test_svg2_hunyuan_upstream_profile_uses_sparse_videogen_shell(tmp_path):
-    payload = _run_infer_dry_run(
-        tmp_path,
-        "--model", "hunyuan",
-        "--method", "svg2",
-        "--profile", "upstream",
-    )
-
-    assert payload["height"] == 720
-    assert payload["width"] == 1280
-    assert payload["num_frames"] == 129
-    assert payload["fps"] == 24
-    assert payload["scheduler_flow_shift"] == 7.0
-    assert payload["vae_tiling"] is True
-    assert payload["vae_slicing"] is False
-    assert payload["negative_prompt"].startswith("Aerial view, aerial view")
-    assert payload["profile_overrides"]["flow_shift"] == 7.0
-    assert payload["profile_overrides"]["vae_tiling"] is True
-    assert payload["profile_overrides"]["vae_slicing"] is False
-    assert payload["profile_overrides"]["negative_prompt"].startswith("Aerial view, aerial view")
-    assert payload["profile_overrides"]["source"].endswith(
-        "Sparse-VideoGen/scripts/hyvideo/hyvideo_t2v_720p_sap.sh"
-    )
 
 
 def test_infer_dry_run_resolves_wan_adacluster_fixed_cluster_defaults(tmp_path):
@@ -1183,55 +1069,6 @@ def test_infer_dry_run_resolves_wan_adacluster_fixed_cluster_defaults(tmp_path):
     assert adacluster_runtime["flash_kmeans_single"] is True
     assert adacluster_runtime["triton_cluster_sparse_attn"] is True
     assert adacluster_runtime["triton_cluster_sparse_attn_topk"] is True
-
-
-def test_adacluster_upstream_profile_uses_wan_runwan_reference(tmp_path):
-    payload = _run_infer_dry_run(
-        tmp_path,
-        "--model", "wan1.3b",
-        "--method", "adacluster",
-        "--profile", "upstream",
-    )
-
-    assert payload["profile"] == "upstream"
-    assert payload["height"] == 480
-    assert payload["width"] == 832
-    assert payload["num_frames"] == 81
-    assert payload["num_inference_steps"] == 50
-    assert payload["fps"] == 16
-    assert payload["wan_flow_shift"] == 5.0
-    assert payload["runtime"]["preflight"]["errors"] == []
-    assert payload["negative_prompt"].startswith("色调艳丽")
-    assert payload["profile_overrides"]["negative_prompt"].startswith("色调艳丽")
-    assert payload["profile_overrides"]["source"].endswith("Adacluster/runwan/runwan.py")
-
-
-def test_adacluster_upstream_profile_uses_hunyuan_reference(tmp_path):
-    payload = _run_infer_dry_run(
-        tmp_path,
-        "--model", "hunyuan",
-        "--method", "adacluster",
-        "--profile", "upstream",
-    )
-    cfg = payload["method_config"]
-
-    assert payload["profile"] == "upstream"
-    assert payload["height"] == 720
-    assert payload["width"] == 1280
-    assert payload["num_frames"] == 81
-    assert payload["num_inference_steps"] == 30
-    assert payload["fps"] == 15
-    assert payload["cpu_offload"] is True
-    assert payload["cpu_offload_mode"] == "model"
-    assert payload["vae_tiling"] is True
-    assert payload["vae_slicing"] is False
-    assert payload["runtime"]["preflight"]["errors"] == []
-    assert cfg["topk_num"] == 94
-    assert cfg["q_kernel_num"] == 250
-    assert cfg["kv_kernel_num"] == 1243
-    assert payload["profile_overrides"]["vae_tiling"] is True
-    assert payload["profile_overrides"]["vae_slicing"] is False
-    assert payload["profile_overrides"]["source"].endswith("Adacluster/runhunyuan/run_hunyuan.py")
 
 
 def test_infer_dry_run_resolves_draft_defaults_for_default_target_shape(tmp_path):
@@ -1310,387 +1147,11 @@ def test_radial_upstream_shape_avoids_flex_fallback_warning(tmp_path):
     assert not any("FlexAttention fallback" in item for item in payload["runtime"]["preflight"]["warnings"])
 
 
-def test_radial_upstream_profile_resolves_benchmark_shape(tmp_path):
-    payload = _run_infer_dry_run(
-        tmp_path,
-        "--model", "wan14b",
-        "--method", "radial",
-        "--profile", "upstream",
-    )
-
-    assert payload["profile"] == "upstream"
-    assert payload["height"] == 768
-    assert payload["width"] == 1280
-    assert payload["num_frames"] == 69
-    assert payload["profile_overrides"]["source"].endswith("radial-attention/scripts/wan_t2v_inference.sh")
-    radial_runtime = payload["runtime"]["optional_kernels"]["radial_kernels"]["owned_runtime"]
-    assert radial_runtime["load_checked"] is True
-    assert radial_runtime["imported"] is True
-    assert radial_runtime["build_bsr_from_mask"] is True
-    assert not any("FlexAttention fallback" in item for item in payload["runtime"]["preflight"]["errors"])
-    assert not any("FlexAttention fallback" in item for item in payload["runtime"]["preflight"]["warnings"])
-
-
-def test_radial_wan22_upstream_profile_uses_reference_vae_policy(tmp_path):
-    payload = _run_infer_dry_run(
-        tmp_path,
-        "--model", "wan22",
-        "--method", "radial",
-        "--profile", "upstream",
-    )
-
-    assert payload["height"] == 768
-    assert payload["width"] == 1280
-    assert payload["num_frames"] == 77
-    assert payload["num_inference_steps"] == 40
-    assert payload["vae_tiling"] is True
-    assert payload["vae_slicing"] is False
-    assert payload["profile_overrides"]["vae_tiling"] is True
-    assert payload["profile_overrides"]["vae_slicing"] is False
-    assert payload["profile_overrides"]["source"].endswith("radial-attention/scripts/wan_22_t2v_inference.sh")
-
-
-def test_radial_hunyuan_upstream_profile_uses_reference_vae_policy(tmp_path):
-    payload = _run_infer_dry_run(
-        tmp_path,
-        "--model", "hunyuan",
-        "--method", "radial",
-        "--profile", "upstream",
-    )
-
-    assert payload["height"] == 768
-    assert payload["width"] == 1280
-    assert payload["num_frames"] == 117
-    assert payload["num_inference_steps"] == 50
-    assert payload["vae_tiling"] is True
-    assert payload["vae_slicing"] is False
-    assert payload["profile_overrides"]["vae_tiling"] is True
-    assert payload["profile_overrides"]["vae_slicing"] is False
-    assert payload["profile_overrides"]["source"].endswith("radial-attention/scripts/hunyuan_t2v_inference.sh")
-
-
-def test_radial_upstream_profile_is_not_claimed_for_wan13b(tmp_path):
-    code, payload = _run_infer_dry_run_unchecked(
-        tmp_path,
-        "--model", "wan1.3b",
-        "--method", "radial",
-        "--profile", "upstream",
-    )
-
-    assert code == 1
-    assert payload["status"] == "failed"
-    assert payload["failed_stage"] == "profile"
-    assert any("No upstream inference profile" in item for item in payload["runtime"]["preflight"]["errors"])
-
-
-def test_resolve_inference_profile_rejects_missing_upstream_profile():
-    infer = _load_infer_module()
-
-    with pytest.raises(ValueError, match="No upstream inference profile"):
-        infer.resolve_inference_profile(
-            "upstream",
-            infer.MODEL_SPECS["wan21-t2v-1.3b"],
-            "sta",
-        )
-
-
-def test_missing_upstream_profile_fails_before_model_load(tmp_path):
-    result = _run_infer(
-        tmp_path,
-        "--model", "wan1.3b",
-        "--method", "sta",
-        "--profile", "upstream",
-    )
-    payload = json.loads(result.stdout)
-
-    assert result.returncode == 1
-    assert payload["status"] == "failed"
-    assert payload["failed_stage"] == "profile"
-    assert "No upstream inference profile" in payload["error"]
-    assert "method='sta'" in payload["error"]
-    assert "model='wan21-t2v-1.3b'" in payload["error"]
-    assert payload["profile_overrides"] == {}
-    assert payload["runtime"]["preflight"]["errors"] == [payload["error"]]
-    assert payload["timings"] == {}
-
-
-def test_dense_can_use_sparse_method_upstream_profile_for_fair_baseline(tmp_path):
-    payload = _run_infer_dry_run(
-        tmp_path,
-        "--model", "wan14b",
-        "--method", "dense",
-        "--profile", "upstream",
-        "--profile-for-method", "draft",
-    )
-
-    assert payload["profile"] == "upstream"
-    assert payload["profile_method"] == "draft"
-    assert payload["method"] == "dense"
-    assert payload["method_config"] == {}
-    assert payload["height"] == 512
-    assert payload["width"] == 768
-    assert payload["num_frames"] == 81
-    assert payload["seed"] == 42
-    assert payload["wan_flow_shift"] == 5.0
-    assert payload["runtime"]["preflight"]["errors"] == []
-    assert payload["profile_overrides"]["source"].endswith(
-        "draft-attention/wan/run-single-inference.sh"
-    )
-
-
-def test_profile_for_method_does_not_apply_sparse_method_config_to_dense(tmp_path):
-    payload = _run_infer_dry_run(
-        tmp_path,
-        "--model", "wan14b",
-        "--method", "dense",
-        "--profile", "upstream",
-        "--profile-for-method", "sta",
-    )
-
-    assert payload["profile_method"] == "sta"
-    assert payload["method"] == "dense"
-    assert payload["method_config"] == {}
-    assert payload["height"] == 768
-    assert payload["width"] == 1280
-    assert payload["num_frames"] == 69
-    assert payload["profile_overrides"]["method_config"] == {"seq_shape": "18x48x80"}
-
-
-def test_all_upstream_profiles_resolve_for_dense_baselines_without_sparse_config():
-    infer = _load_infer_module()
-    import sparsevideo
-
-    expected_profiles = {
-        ("adacluster", "hunyuan_video"),
-        ("adacluster", "wan21-t2v-1.3b"),
-        ("draft", "hunyuan_video"),
-        ("draft", "wan21-t2v-14b"),
-        ("radial", "hunyuan_video"),
-        ("radial", "wan21-t2v-14b"),
-        ("radial", "wan22-t2v-a14b"),
-        ("spargeattn", "hunyuan_video"),
-        ("spargeattn", "wan21-t2v-1.3b"),
-        ("spargeattn", "wan21-t2v-14b"),
-        ("spargeattn", "wan22-t2v-a14b"),
-        ("sta", "hunyuan_video"),
-        ("sta", "wan21-t2v-14b"),
-        ("svg1", "hunyuan_video"),
-        ("svg1", "wan21-t2v-14b"),
-        ("svg2", "hunyuan_video"),
-        ("svg2", "wan21-t2v-14b"),
-        ("svoo", "hunyuan_video"),
-        ("svoo", "wan21-t2v-1.3b"),
-        ("svoo", "wan21-t2v-14b"),
-        ("svoo", "wan22-t2v-a14b"),
-    }
-    source_snippets = {
-        ("adacluster", "hunyuan_video"): [
-            "height=720, width=1280",
-            "num_frames=81, num_inference_steps=30",
-            "export_to_video(output, save_path, fps=15)",
-        ],
-        ("adacluster", "wan21-t2v-1.3b"): [
-            'task = "t2v-1.3B"',
-            'size = "832*480"',
-            '"--base_seed", "0"',
-            "args.sample_steps = 50",
-            'args.frame_num = 1 if "t2i" in args.task else 81',
-            "wan_shared_cfg.sample_fps = 16",
-        ],
-        ("draft", "hunyuan_video"): [
-            "seed 42 in 768p",
-            "pool_h=8",
-            "visual_len=126_720",
-            "sparsity_ratio=0.9",
-        ],
-        ("draft", "wan21-t2v-14b"): [
-            "--size 768*512",
-            "--task t2v-14B",
-            'args.sample_steps = 40 if "i2v" in args.task else 50',
-            'args.frame_num = 1 if "t2i" in args.task else 81',
-            "wan_shared_cfg.sample_fps = 16",
-        ],
-        ("radial", "hunyuan_video"): [
-            "dense_layers=0",
-            "dense_timesteps=12",
-            "--num_frames 117",
-            "--decay_factor 0.95",
-        ],
-        ("radial", "wan21-t2v-14b"): [
-            "dense_layers=1",
-            "dense_timesteps=12",
-            "--num_frames 69",
-            "--decay_factor 0.2",
-        ],
-        ("radial", "wan22-t2v-a14b"): [
-            "dense_timesteps=11",
-            "decay_factor=0.8",
-            "--num_frames 77",
-            "--guidance_scale 4.0",
-            "--guidance_scale_2 3.0",
-        ],
-        ("spargeattn", "hunyuan_video"): [
-            'default="full"',
-            "height=320",
-            "width=512",
-            "num_frames=61",
-            "manual_seed(42)",
-        ],
-        ("spargeattn", "wan21-t2v-1.3b"): [
-            'default="full"',
-            "height=480",
-            "width=832",
-            "num_frames=81",
-            "guidance_scale=5.0",
-        ],
-        ("spargeattn", "wan21-t2v-14b"): [
-            'default="full"',
-            "height=480",
-            "width=832",
-            "num_frames=81",
-            "guidance_scale=5.0",
-        ],
-        ("spargeattn", "wan22-t2v-a14b"): [
-            "--model wan2_2-14b",
-            "--mode topk --value 0.4",
-            "Memory helpers enabled",
-            "height=720",
-            "width=1280",
-            "num_frames=81",
-            "num_inference_steps=40",
-            "guidance_scale=4.0",
-            "guidance_scale_2=3.0",
-        ],
-        ("sta", "hunyuan_video"): [
-            "# Sliding Tile Attention (STA)",
-            "sta_do_not_delete",
-            "STA_inference",
-        ],
-        ("sta", "wan21-t2v-14b"): [
-            "Wan-AI/Wan2.1-T2V-14B-Diffusers",
-            "--height 768",
-            "--width 1280",
-            "--num-frames 69",
-            "--num-inference-steps 50",
-        ],
-        ("svg1", "hunyuan_video"): [
-            "infer_step=50",
-            "first_times_fp=0.1",
-            "sparsity=0.25",
-            "--height 720",
-            "--width 1280",
-        ],
-        ("svg1", "wan21-t2v-14b"): [
-            "infer_step=50",
-            "first_times_fp=0.2",
-            "sparsity=0.3",
-            "--height 720",
-            "--width 1280",
-        ],
-        ("svg2", "hunyuan_video"): [
-            "qc_kmeans=400",
-            "kc_kmeans=1000",
-            "--zero_step_kmeans_init",
-            "--height 720",
-            "--width 1280",
-        ],
-        ("svg2", "wan21-t2v-14b"): [
-            "qc_kmeans=300",
-            "kc_kmeans=1000",
-            "kmeans_iter_init=50",
-            "--height 720",
-            "--width 1280",
-        ],
-        ("svoo", "hunyuan_video"): [
-            "num_inference_steps=50",
-            "first_times_fp=0.1",
-            "top_p_kmeans=0.88",
-            "num_frames=\"${NUM_FRAMES:-129}\"",
-            "torch_dtype\": torch.bfloat16",
-            "flow_shift = 7.0",
-            "pipe.vae.enable_tiling()",
-        ],
-        ("svoo", "wan21-t2v-1.3b"): [
-            "model_size=\"${MODEL_SIZE:-1.3B}\"",
-            "num_inference_steps=50",
-            "first_times_fp=0.2",
-            "start_reuse_step=11",
-            "WanPipeline.from_pretrained(model_id, torch_dtype=torch.bfloat16)",
-            "export_to_video(output, args.output_file, fps=16)",
-        ],
-        ("svoo", "wan21-t2v-14b"): [
-            "14B|14b|wan21_14b|wan21_t2v_14b)",
-            "num_inference_steps=50",
-            "start_reuse_step=11",
-            "sparsity_profiles/sparsity_wan_14B_t2v.csv",
-            "WanPipeline.from_pretrained(model_id, torch_dtype=torch.bfloat16)",
-        ],
-        ("svoo", "wan22-t2v-a14b"): [
-            "A14B|a14b|wan22|wan22_t2v_a14b)",
-            "num_inference_steps=40",
-            "start_reuse_step=9",
-            "sparsity_profiles/sparsity_wan22_A14B_t2v.csv",
-            "WanPipeline.from_pretrained(model_id, torch_dtype=torch.bfloat16)",
-            "guidance_scale_2=3.0",
-        ],
-    }
-    assert set(infer.UPSTREAM_INFERENCE_PROFILES) == expected_profiles
-    assert set(source_snippets) == expected_profiles
-
-    for profile_method, selector in sorted(expected_profiles):
-        model_arg = "hunyuan" if selector == "hunyuan_video" else selector
-        args = infer.build_parser().parse_args(
-            [
-                "--model",
-                model_arg,
-                "--method",
-                "dense",
-                "--profile",
-                "upstream",
-                "--profile-for-method",
-                profile_method,
-                "--dry-run",
-            ]
-        )
-        spec = infer.MODEL_SPECS[infer.MODEL_ALIASES[args.model]]
-        fps = args.fps if args.fps is not None else spec.fps
-        num_frames = spec.default_frames
-        steps = spec.default_steps
-
-        profile = infer.resolve_inference_profile(args.profile, spec, args.profile_for_method)
-        height, width, fps, num_frames, steps = infer.apply_profile_runtime_defaults(
-            args, profile, fps, num_frames, steps,
-        )
-
-        profile_sources = [profile["source"], *profile.get("evidence_sources", [])]
-        assert len(profile_sources) == len(set(profile_sources))
-        for source in profile_sources:
-            assert source.startswith("training_free/")
-            assert (REPO_ROOT / source).exists()
-        source_text = "\n".join(
-            (REPO_ROOT / source).read_text(encoding="utf-8")
-            for source in profile_sources
-        )
-        for snippet in source_snippets[(profile_method, selector)]:
-            assert snippet in source_text, (profile_method, selector, snippet, profile["source"])
-        assert height == profile["height"]
-        assert width == profile["width"]
-        assert num_frames == profile["num_frames"]
-        assert steps == profile.get("num_inference_steps", spec.default_steps)
-        assert fps == profile.get("fps", spec.fps)
-        assert sparsevideo.default_method_config(
-            "dense",
-            num_inference_steps=steps,
-            model_family=spec.family,
-            model_key=spec.key,
-        ) == {}
-
-
-def test_draft_layout_preflight_accepts_upstream_wan_shape():
+def test_draft_layout_preflight_accepts_reference_wan_shape():
     infer = _load_infer_module()
     spec = infer.MODEL_SPECS["wan21-t2v-14b"]
 
-    error = infer.draft_upstream_layout_error(
+    error = infer.draft_layout_error(
         spec,
         height=768,
         width=1280,
@@ -1699,59 +1160,6 @@ def test_draft_layout_preflight_accepts_upstream_wan_shape():
     )
 
     assert error is None
-
-
-def test_draft_upstream_profile_uses_wan_shell_shape(tmp_path):
-    payload = _run_infer_dry_run(
-        tmp_path,
-        "--model", "wan14b",
-        "--method", "draft",
-        "--upstream-profile",
-    )
-
-    assert payload["profile"] == "upstream"
-    assert payload["height"] == 512
-    assert payload["width"] == 768
-    assert payload["num_frames"] == 81
-    assert payload["seed"] == 42
-    assert payload["method_config"]["latent_h"] == 32
-    assert payload["method_config"]["latent_w"] == 48
-    assert payload["method_config"]["visual_len"] == 32_256
-    assert payload["method_config"]["text_len"] == 0
-    assert payload["method_config"]["batch_size"] == 1
-    if _draft_mit_backend_ready(payload):
-        assert not any("MIT Han Lab Block-Sparse-Attention" in item for item in payload["runtime"]["preflight"]["errors"])
-    else:
-        assert any("MIT Han Lab Block-Sparse-Attention" in item for item in payload["runtime"]["preflight"]["errors"])
-    assert not any("draft upstream sparse path requires latent_h" in item for item in payload["runtime"]["preflight"]["errors"])
-    assert payload["profile_overrides"]["source"].endswith("draft-attention/wan/run-single-inference.sh")
-
-
-def test_upstream_profile_seed_keeps_user_override(tmp_path):
-    payload = _run_infer_dry_run(
-        tmp_path,
-        "--model", "wan14b",
-        "--method", "draft",
-        "--profile", "upstream",
-        "--seed", "0",
-    )
-
-    assert payload["seed"] == 0
-    assert payload["profile_overrides"]["seed"] == 42
-
-
-def test_draft_upstream_profile_is_not_claimed_for_wan13b(tmp_path):
-    code, payload = _run_infer_dry_run_unchecked(
-        tmp_path,
-        "--model", "wan1.3b",
-        "--method", "draft",
-        "--profile", "upstream",
-    )
-
-    assert code == 1
-    assert payload["status"] == "failed"
-    assert payload["failed_stage"] == "profile"
-    assert any("No upstream inference profile" in item for item in payload["runtime"]["preflight"]["errors"])
 
 
 def test_infer_dry_run_resolves_hunyuan_draft_defaults_for_default_target_shape(tmp_path):
@@ -1768,7 +1176,7 @@ def test_infer_dry_run_resolves_hunyuan_draft_defaults_for_default_target_shape(
     assert cfg["latent_w"] == 80
     assert cfg["visual_len"] == 118_800
     errors = payload["runtime"]["preflight"]["errors"]
-    assert not any("draft upstream latent_h config expects 48" in item for item in errors)
+    assert not any("draft latent_h config expects 48" in item for item in errors)
     if _draft_mit_backend_ready(payload):
         assert returncode == 0
         assert errors == []
@@ -1803,11 +1211,11 @@ def test_infer_dry_run_leaves_hunyuan_i2v_draft_text_len_runtime_resolved(tmp_pa
         assert any("MIT Han Lab Block-Sparse-Attention" in item for item in errors)
 
 
-def test_draft_layout_preflight_accepts_upstream_hunyuan_diffusers_shape():
+def test_draft_layout_preflight_accepts_reference_hunyuan_diffusers_shape():
     infer = _load_infer_module()
     spec = infer.MODEL_SPECS["hunyuan-t2v"]
 
-    error = infer.draft_upstream_layout_error(
+    error = infer.draft_layout_error(
         spec,
         height=768,
         width=1280,
@@ -1823,14 +1231,14 @@ def test_draft_layout_preflight_keeps_hunyuan_t2v_text_gate_but_allows_i2v_tail(
     t2v_spec = infer.MODEL_SPECS["hunyuan-t2v"]
     i2v_spec = infer.MODEL_SPECS["hunyuan-i2v"]
 
-    t2v_error = infer.draft_upstream_layout_error(
+    t2v_error = infer.draft_layout_error(
         t2v_spec,
         height=768,
         width=1280,
         num_frames=129,
         config={"pool_h": 8, "pool_w": 16, "block_sparse_attention": True, "text_len": 396},
     )
-    i2v_error = infer.draft_upstream_layout_error(
+    i2v_error = infer.draft_layout_error(
         i2v_spec,
         height=720,
         width=1280,
@@ -1841,31 +1249,6 @@ def test_draft_layout_preflight_keeps_hunyuan_t2v_text_gate_but_allows_i2v_tail(
     assert t2v_error is not None
     assert "text_len=256" in t2v_error
     assert i2v_error is None
-
-
-def test_hunyuan_draft_upstream_profile_uses_768p_demo_shape(tmp_path):
-    payload = _run_infer_dry_run(
-        tmp_path,
-        "--model", "hunyuan",
-        "--method", "draft",
-        "--profile", "upstream",
-    )
-
-    assert payload["height"] == 768
-    assert payload["width"] == 1280
-    assert payload["num_frames"] == 129
-    assert payload["seed"] == 42
-    assert payload["cpu_offload"] is True
-    assert payload["cpu_offload_mode"] == "sequential"
-    assert payload["method_config"]["latent_h"] == 48
-    assert payload["method_config"]["latent_w"] == 80
-    assert payload["method_config"]["visual_len"] == 126_720
-    assert payload["method_config"]["text_len"] == 256
-    if _draft_mit_backend_ready(payload):
-        assert not any("MIT Han Lab Block-Sparse-Attention" in item for item in payload["runtime"]["preflight"]["errors"])
-    else:
-        assert any("MIT Han Lab Block-Sparse-Attention" in item for item in payload["runtime"]["preflight"]["errors"])
-    assert not any("draft upstream sparse path requires latent_h" in item for item in payload["runtime"]["preflight"]["errors"])
 
 
 def test_infer_dry_run_resolves_hunyuan_svoo_defaults(tmp_path):
@@ -1881,124 +1264,6 @@ def test_infer_dry_run_resolves_hunyuan_svoo_defaults(tmp_path):
     assert "prompt_length" not in cfg
     assert cfg["reuse_interval"] == 20
     assert cfg["sparsity_csv_path"].endswith("sparsity_hunyuan10_13B_t2v.csv")
-
-
-def test_svoo_wan13_upstream_profile_uses_reference_shell(tmp_path):
-    payload = _run_infer_dry_run(
-        tmp_path,
-        "--model", "wan1.3b",
-        "--method", "svoo",
-        "--profile", "upstream",
-    )
-    cfg = payload["method_config"]
-
-    assert payload["height"] == 720
-    assert payload["width"] == 1280
-    assert payload["num_frames"] == 81
-    assert payload["num_inference_steps"] == 50
-    assert payload["scheduler_flow_shift"] == 3.0
-    assert payload["profile_overrides"]["flow_shift"] == 3.0
-    assert payload["vae_tiling"] is False
-    assert payload["vae_slicing"] is False
-    assert payload["profile_overrides"]["vae_tiling"] is False
-    assert payload["profile_overrides"]["vae_slicing"] is False
-    assert cfg["num_q_centroids"] == 256
-    assert cfg["num_k_centroids"] == 1024
-    assert "start_reuse_step" not in cfg
-    assert payload["profile_overrides"]["source"].endswith(
-        "SVOO/scripts/inference/wan/wan_t2v_720p_svoo.sh"
-    )
-
-
-def test_svoo_wan14_upstream_profile_keeps_reference_scheduler(tmp_path):
-    payload = _run_infer_dry_run(
-        tmp_path,
-        "--model", "wan14b",
-        "--method", "svoo",
-        "--profile", "upstream",
-    )
-
-    assert payload["height"] == 720
-    assert payload["width"] == 1280
-    assert payload["num_frames"] == 81
-    assert payload["num_inference_steps"] == 50
-    assert payload["scheduler_flow_shift"] == 3.0
-    assert payload["vae_dtype"] == "bf16"
-    assert payload["profile_overrides"]["flow_shift"] == 3.0
-    assert payload["profile_overrides"]["vae_dtype"] == "bf16"
-    assert payload["profile_overrides"]["source"].endswith(
-        "SVOO/scripts/inference/wan/wan_t2v_720p_svoo.sh"
-    )
-
-
-def test_dense_baseline_for_svoo_wan14_keeps_reference_scheduler(tmp_path):
-    payload = _run_infer_dry_run(
-        tmp_path,
-        "--model", "wan14b",
-        "--method", "dense",
-        "--profile", "upstream",
-        "--profile-for-method", "svoo",
-    )
-
-    assert payload["method"] == "dense"
-    assert payload["profile_method"] == "svoo"
-    assert payload["scheduler_flow_shift"] == 3.0
-    assert payload["vae_dtype"] == "bf16"
-    assert payload["profile_overrides"]["flow_shift"] == 3.0
-    assert payload["profile_overrides"]["vae_dtype"] == "bf16"
-
-
-def test_svoo_wan22_upstream_profile_uses_a14b_steps(tmp_path):
-    payload = _run_infer_dry_run(
-        tmp_path,
-        "--model", "wan22",
-        "--method", "svoo",
-        "--profile", "upstream",
-    )
-    cfg = payload["method_config"]
-
-    assert payload["num_inference_steps"] == 40
-    assert payload["scheduler_flow_shift"] == 3.0
-    assert payload["vae_dtype"] == "bf16"
-    assert payload["profile_overrides"]["flow_shift"] == 3.0
-    assert payload["profile_overrides"]["vae_dtype"] == "bf16"
-    assert payload["profile_overrides"]["guidance_scale"] == 5.0
-    assert payload["profile_overrides"]["guidance_scale_2"] == 3.0
-    assert payload["vae_tiling"] is False
-    assert payload["vae_slicing"] is False
-    assert "start_reuse_step" not in cfg
-    assert cfg["sparsity_csv_path"].endswith("sparsity_wan22_A14B_t2v.csv")
-
-
-def test_svoo_hunyuan_upstream_profile_uses_reference_shell(tmp_path):
-    payload = _run_infer_dry_run(
-        tmp_path,
-        "--model", "hunyuan",
-        "--method", "svoo",
-        "--profile", "upstream",
-    )
-    cfg = payload["method_config"]
-
-    assert payload["height"] == 720
-    assert payload["width"] == 1280
-    assert payload["num_frames"] == 129
-    assert payload["fps"] == 24
-    assert payload["seed"] == 23
-    assert payload["scheduler_flow_shift"] == 7.0
-    assert payload["vae_tiling"] is True
-    assert payload["vae_slicing"] is False
-    assert payload["profile_overrides"]["seed"] == 23
-    assert payload["profile_overrides"]["flow_shift"] == 7.0
-    assert payload["profile_overrides"]["vae_tiling"] is True
-    assert payload["profile_overrides"]["vae_slicing"] is False
-    assert payload["profile_overrides"]["negative_prompt"].startswith("Aerial view, aerial view")
-    assert payload["negative_prompt"].startswith("Aerial view, aerial view")
-    assert cfg["top_p_kmeans"] == 0.88
-    assert "start_reuse_step" not in cfg
-    assert cfg["reuse_interval"] == 20
-    assert payload["profile_overrides"]["source"].endswith(
-        "SVOO/scripts/inference/hunyuan10/hunyuan10_t2v_720p_svoo.sh"
-    )
 
 
 def test_hunyuan_load_pipeline_uses_profile_flow_shift(monkeypatch):
@@ -2322,88 +1587,6 @@ def test_infer_dry_run_spargeattn_defaults_to_sparse_topk(tmp_path):
     assert payload["method_config"]["topk"] == 0.5
 
 
-def test_spargeattn_wan21_upstream_profile_uses_diffusers_example_shape(tmp_path):
-    payload = _run_infer_dry_run(
-        tmp_path,
-        "--model", "wan1.3b",
-        "--method", "spargeattn",
-        "--profile", "upstream",
-    )
-
-    assert payload["height"] == 480
-    assert payload["width"] == 832
-    assert payload["num_frames"] == 81
-    assert payload["fps"] == 15
-    assert payload["seed"] == 42
-    assert payload["cpu_offload"] is True
-    assert payload["cpu_offload_mode"] == "sequential"
-    assert payload["vae_tiling"] is True
-    assert payload["vae_slicing"] is True
-    assert payload["vae_decoder_chunk_size"] == 1
-    assert payload["profile_overrides"]["guidance_scale"] == 5.0
-    assert payload["method_config"]["mode"] == "topk"
-    assert "method_config" not in payload["profile_overrides"]
-    assert payload["profile_overrides"]["source"].endswith(
-        "SpargeAttn/inference_examples/wan_infer.py"
-    )
-
-
-def test_spargeattn_wan22_upstream_profile_uses_readme_topk_value(tmp_path):
-    payload = _run_infer_dry_run(
-        tmp_path,
-        "--model", "wan22",
-        "--method", "spargeattn",
-        "--profile", "upstream",
-    )
-
-    assert payload["height"] == 720
-    assert payload["width"] == 1280
-    assert payload["num_inference_steps"] == 40
-    assert payload["seed"] == 42
-    assert payload["cpu_offload"] is True
-    assert payload["cpu_offload_mode"] == "sequential"
-    assert payload["vae_tiling"] is True
-    assert payload["vae_slicing"] is True
-    assert payload["vae_decoder_chunk_size"] == 1
-    assert payload["profile_overrides"]["guidance_scale"] == 4.0
-    assert payload["profile_overrides"]["guidance_scale_2"] == 3.0
-    assert payload["method_config"]["mode"] == "topk"
-    assert payload["method_config"]["value"] == 0.4
-    assert payload["profile_overrides"]["source"].endswith(
-        "SpargeAttn/inference_examples/README.md"
-    )
-
-
-def test_spargeattn_hunyuan_upstream_profile_uses_diffusers_example_shape(tmp_path):
-    payload = _run_infer_dry_run(
-        tmp_path,
-        "--model", "hunyuan",
-        "--method", "spargeattn",
-        "--profile", "upstream",
-    )
-
-    assert payload["height"] == 320
-    assert payload["width"] == 512
-    assert payload["num_frames"] == 61
-    assert payload["num_inference_steps"] == 30
-    assert payload["fps"] == 8
-    assert payload["seed"] == 42
-    assert payload["cpu_offload"] is True
-    assert payload["cpu_offload_mode"] == "sequential"
-    assert payload["vae_tiling"] is True
-    assert payload["vae_slicing"] is True
-    assert payload["vae_decoder_chunk_size"] == 1
-    assert payload["method_config"]["mode"] == "topk"
-    assert "method_config" not in payload["profile_overrides"]
-    assert payload["method_config"]["l1"] == 0.07
-    assert payload["method_config"]["pv_l1"] == 0.08
-    assert payload["method_config"]["tune_pv"] is True
-    assert payload["runtime"]["preflight"]["errors"] == []
-    assert payload["profile_overrides"]["source"].endswith(
-        "SpargeAttn/inference_examples/hunyuan_infer.py"
-    )
-
-
 def test_spargeattn_hunyuan_sparse_mode_passes_preflight_with_owned_forward_patch(tmp_path):
     payload = _run_infer_dry_run(
         tmp_path,
@@ -2413,19 +1596,6 @@ def test_spargeattn_hunyuan_sparse_mode_passes_preflight_with_owned_forward_patc
     )
 
     assert payload["runtime"]["preflight"]["errors"] == []
-
-
-def test_upstream_profile_cpu_offload_keeps_user_override(tmp_path):
-    payload = _run_infer_dry_run(
-        tmp_path,
-        "--model", "wan1.3b",
-        "--method", "spargeattn",
-        "--profile", "upstream",
-        "--no-cpu-offload",
-    )
-
-    assert payload["cpu_offload"] is False
-    assert payload["profile_overrides"]["cpu_offload"] is True
 
 
 def test_infer_dry_run_rejects_spargeattn_mode_full(tmp_path):
@@ -2660,7 +1830,7 @@ def test_preflight_rejects_hunyuan_spargeattn_without_owned_forward_patch():
         {"mode": "topk", "value": 0.5},
         "cuda",
         runtime,
-        model_family="hunyuan_video",
+        model_type="hunyuan_video",
     )
 
     assert any(
@@ -2699,7 +1869,7 @@ def test_preflight_allows_hunyuan_spargeattn_with_owned_forward_patch():
         {"mode": "topk", "value": 0.5},
         "cuda",
         runtime,
-        model_family="hunyuan_video",
+        model_type="hunyuan_video",
     )
 
     assert preflight == {"errors": [], "warnings": []}
@@ -3102,7 +2272,7 @@ def test_strict_preflight_requires_flash_attn_varlen_for_svg1_hunyuan():
     }
 
     preflight = infer.preflight_runtime(
-        "svg1", {"dense_warmup_step_ratio": 0.1}, "cuda", runtime, model_family="hunyuan_video",
+        "svg1", {"dense_warmup_step_ratio": 0.1}, "cuda", runtime, model_type="hunyuan_video",
     )
 
     assert any("FlashAttention varlen" in error for error in preflight["errors"])
@@ -3386,44 +2556,6 @@ def test_infer_dry_run_warns_for_sta_generalized_wan_shape(tmp_path):
     assert any("tile-padded canvas is 24x48x80" in item for item in warnings)
 
 
-def test_sta_upstream_profile_sets_native_wan_shape(tmp_path):
-    payload = _run_infer_dry_run(
-        tmp_path,
-        "--model", "wan14b",
-        "--method", "sta",
-        "--profile", "upstream",
-    )
-    cfg = payload["method_config"]
-
-    assert payload["height"] == 768
-    assert payload["width"] == 1280
-    assert payload["num_frames"] == 69
-    assert cfg["seq_shape"] == "18x48x80"
-    assert cfg["mask_strategy_file_path"].endswith("mask_strategy_wan21_t2v_14b.json")
-    assert payload["profile_overrides"]["source"].endswith("FastVideo/docs/attention/sta/index.md")
-    assert not any("Current latent layout is 21x45x80" in item for item in payload["runtime"]["preflight"]["errors"])
-    assert not any("seq_shape is not set" in item for item in payload["runtime"]["preflight"]["errors"])
-    assert not any("FastVideo STA native path only covers" in item for item in payload["runtime"]["preflight"]["errors"])
-
-
-def test_sta_hunyuan_upstream_profile_sets_archive_strategy(tmp_path):
-    payload = _run_infer_dry_run(
-        tmp_path,
-        "--model", "hunyuan",
-        "--method", "sta",
-        "--profile", "upstream",
-    )
-    cfg = payload["method_config"]
-
-    assert payload["height"] == 768
-    assert payload["width"] == 1280
-    assert payload["num_frames"] == 117
-    assert cfg["seq_shape"] == "30x48x80"
-    assert cfg["mask_strategy_file_path"].endswith("mask_strategy_hunyuan_t2v.json")
-    assert payload["profile_overrides"]["source"].endswith("FastVideo/docs/attention/sta/index.md")
-    assert not payload["runtime"]["preflight"]["errors"]
-
-
 def test_sta_wan13b_is_not_allowed_to_borrow_wan14b_strategy(tmp_path):
     payload = _run_infer_dry_run_preflight_failure(
         tmp_path,
@@ -3445,7 +2577,6 @@ def test_sta_preflight_rejects_training_free_mask_strategy_path(tmp_path):
         tmp_path,
         "--model", "wan14b",
         "--method", "sta",
-        "--profile", "upstream",
         "--method-config", "mask_strategy_file_path=training_free/FastVideo/docs/attention/sta/index.md",
     )
 
@@ -3630,7 +2761,7 @@ def test_preflight_requires_flash_attn_for_hunyuan_adacluster_dense_warmup():
     }
 
     preflight = infer.preflight_runtime(
-        "adacluster", {"dense_warmup_step_ratio": 0.1}, "cuda", runtime, model_family="hunyuan_video",
+        "adacluster", {"dense_warmup_step_ratio": 0.1}, "cuda", runtime, model_type="hunyuan_video",
     )
 
     assert any("Hunyuan dense warmup requires FlashAttention" in error for error in preflight["errors"])
@@ -4326,11 +3457,11 @@ def test_validate_resolves_svoo_dynamic_sparsity_csv_path():
     )
 
 
-def test_default_svoo_sparsity_csv_rejects_unprofiled_models():
+def test_default_svoo_sparsity_csv_rejects_models_without_csv():
     infer = _load_infer_module()
     spec = infer.MODEL_SPECS["cogvideox-t2v"]
 
-    with pytest.raises(ValueError, match="no owned offline sparsity profile"):
+    with pytest.raises(ValueError, match="no owned offline sparsity CSV"):
         infer.default_svoo_sparsity_csv_path(spec)
 
 

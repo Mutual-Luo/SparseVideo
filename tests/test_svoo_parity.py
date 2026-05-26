@@ -1035,7 +1035,7 @@ def test_svoo_flashinfer_sparse_path_smoke_on_cuda():
         pytest.skip("FlashInfer sparse JIT requires nvcc")
 
     torch.manual_seed(0)
-    cfg = default_config(model_family="wan", model_key="wan21-t2v-1.3b")
+    cfg = default_config(model_key="wan21-t2v-1.3b")
     cfg.update(
         {
             "num_q_centroids": 16,
@@ -1163,7 +1163,7 @@ def test_svoo_flashinfer_attention_matches_upstream_manual_wan_cuda():
     )
     expected = upstream_inverse_permute(expected, q_sorted_idx, dim=2).permute(0, 2, 1, 3)
 
-    cfg = default_config(model_family="wan", model_key="wan21-t2v-1.3b")
+    cfg = default_config(model_key="wan21-t2v-1.3b")
     cfg.update(
         {
             "num_q_centroids": nqc,

@@ -2,7 +2,7 @@
 # Download DiffSynth-Studio-native model bundles for SparseVideo integration.
 # Usage:
 #   bash scripts/download_diffsynth_models.sh [--list]
-#   bash scripts/download_diffsynth_models.sh [--source auto|modelscope-first|huggingface-first|hf-first|huggingface|modelscope] [--hf-endpoint URL] [--proxy URL|--no-proxy] [--link-root PATH] [--tier 1|2|3] [--family wan|mova|ltx2] [--all] [--dry-run] [KEY ...]
+#   bash scripts/download_diffsynth_models.sh [--source auto|modelscope-first|huggingface-first|hf-first|huggingface|modelscope] [--hf-endpoint URL] [--proxy URL|--no-proxy] [--link-root PATH] [--tier 1|2|3] [--kind wan|mova|ltx2] [--all] [--dry-run] [KEY ...]
 #
 # Examples:
 #   bash scripts/download_diffsynth_models.sh --list
@@ -41,7 +41,7 @@ LIST=0
 ALL=0
 SKIP_PROXY=1
 TIER_FILTER=
-FAMILY_FILTER=
+KIND_FILTER=
 EXPLICIT_KEYS=()
 
 WAN_TOKENIZER="Wan-AI/Wan2.1-T2V-1.3B::google/umt5-xxl/tokenizer.json;;Wan-AI/Wan2.1-T2V-1.3B::google/umt5-xxl/tokenizer_config.json;;Wan-AI/Wan2.1-T2V-1.3B::google/umt5-xxl/spiece.model;;Wan-AI/Wan2.1-T2V-1.3B::google/umt5-xxl/special_tokens_map.json"
@@ -57,7 +57,7 @@ LTX2_GEMMA="Lightricks/gemma-3-12b-it-qat-q4_0-unquantized::tokenizer.json;;Ligh
 S2V_WAV2VEC="Wan-AI/Wan2.2-S2V-14B::wav2vec2-large-xlsr-53-english/model.safetensors;;Wan-AI/Wan2.2-S2V-14B::wav2vec2-large-xlsr-53-english/preprocessor_config.json;;Wan-AI/Wan2.2-S2V-14B::wav2vec2-large-xlsr-53-english/vocab.json;;Wan-AI/Wan2.2-S2V-14B::wav2vec2-large-xlsr-53-english/special_tokens_map.json"
 MOVA_TOKENIZER="openmoss/MOVA-720p::tokenizer/tokenizer.json;;openmoss/MOVA-720p::tokenizer/tokenizer_config.json;;openmoss/MOVA-720p::tokenizer/special_tokens_map.json"
 
-# Format: "KEY|TIER|FAMILY|DESCRIPTION|REPO::PATTERN;;REPO::PATTERN"
+# Format: "KEY|TIER|KIND|DESCRIPTION|REPO::PATTERN;;REPO::PATTERN"
 CATALOGUE=(
     "wan21-t2v-1.3b|1|wan|DiffSynth Wan2.1 text-to-video 1.3B|${WAN_COMMON_21};;Wan-AI/Wan2.1-T2V-1.3B::diffusion_pytorch_model*.safetensors"
     "wan21-speedcontrol-1.3b|1|wan|DiffSynth Wan2.1 1.3B speed-control motion controller|${WAN_COMMON_21};;Wan-AI/Wan2.1-T2V-1.3B::diffusion_pytorch_model*.safetensors;;DiffSynth-Studio/Wan2.1-1.3b-speedcontrol-v1::model.safetensors"
@@ -149,15 +149,15 @@ include_pattern_for_cli() {
 }
 
 print_catalog() {
-    local entry key tier family description components
+    local entry key tier pipeline_kind description components
     echo "Available DiffSynth-Studio bundles:"
     for entry in "${CATALOGUE[@]}"; do
-        IFS='|' read -r key tier family description components <<< "$entry"
-        printf '  %-30s tier=%s family=%-5s %s\n' "$key" "$tier" "$family" "$description"
+        IFS='|' read -r key tier pipeline_kind description components <<< "$entry"
+        printf '  %-30s tier=%s kind=%-5s %s\n' "$key" "$tier" "$pipeline_kind" "$description"
     done
     echo
     echo "Deferred/local-only DiffSynth models (not downloaded by this script):"
-    printf '  %-30s family=%-5s %s origin=%s:%s\n' \
+    printf '  %-30s kind=%-5s %s origin=%s:%s\n' \
         "wan22-dancer-14b" \
         "wan" \
         "DiffSynth Wan2.2-Dancer 14B WanToDance global model" \
@@ -166,19 +166,19 @@ print_catalog() {
 }
 
 print_available_keys() {
-    local entry key tier family description components
+    local entry key tier pipeline_kind description components
     echo "Available keys:" >&2
     for entry in "${CATALOGUE[@]}"; do
-        IFS='|' read -r key tier family description components <<< "$entry"
+        IFS='|' read -r key tier pipeline_kind description components <<< "$entry"
         echo "  $key" >&2
     done
 }
 
 is_known_key() {
     local requested=$1
-    local entry key tier family description components
+    local entry key tier pipeline_kind description components
     for entry in "${CATALOGUE[@]}"; do
-        IFS='|' read -r key tier family description components <<< "$entry"
+        IFS='|' read -r key tier pipeline_kind description components <<< "$entry"
         [[ "$requested" == "$key" ]] && return 0
     done
     return 1
@@ -186,9 +186,9 @@ is_known_key() {
 
 print_bundle() {
     local entry=$1
-    local key tier family description components component repo pattern display
+    local key tier pipeline_kind description components component repo pattern display
     local -A seen=()
-    IFS='|' read -r key tier family description components <<< "$entry"
+    IFS='|' read -r key tier pipeline_kind description components <<< "$entry"
     echo
     echo "[$key] $description"
     while IFS= read -r component; do
@@ -662,9 +662,9 @@ parse_args() {
                 esac
                 shift 2
                 ;;
-            --family)
-                [[ $# -ge 2 && "$2" != -* ]] || die "--family requires one of: wan, mova, ltx2"
-                FAMILY_FILTER=$2
+            --kind)
+                [[ $# -ge 2 && "$2" != -* ]] || die "--kind requires one of: wan, mova, ltx2"
+                KIND_FILTER=$2
                 shift 2
                 ;;
             --model-root)
@@ -725,8 +725,8 @@ if [[ $LIST -eq 1 ]]; then
     exit 0
 fi
 
-if [[ $ALL -eq 1 && ( ${#EXPLICIT_KEYS[@]} -gt 0 || -n "$TIER_FILTER" || -n "$FAMILY_FILTER" ) ]]; then
-    die "--all cannot be combined with --tier, --family, or explicit keys"
+if [[ $ALL -eq 1 && ( ${#EXPLICIT_KEYS[@]} -gt 0 || -n "$TIER_FILTER" || -n "$KIND_FILTER" ) ]]; then
+    die "--all cannot be combined with --tier, --kind, or explicit keys"
 fi
 
 declare -A EXPLICIT_MAP=()
@@ -741,17 +741,17 @@ done
 
 SELECTED_ENTRIES=()
 for entry in "${CATALOGUE[@]}"; do
-    IFS='|' read -r key tier family description components <<< "$entry"
+    IFS='|' read -r key tier pipeline_kind description components <<< "$entry"
     if [[ $ALL -eq 1 ||
           -n "${EXPLICIT_MAP[$key]:-}" ||
           ( -n "$TIER_FILTER" && "$tier" == "$TIER_FILTER" ) ||
-          ( -n "$FAMILY_FILTER" && "$family" == "$FAMILY_FILTER" ) ]]; then
+          ( -n "$KIND_FILTER" && "$pipeline_kind" == "$KIND_FILTER" ) ]]; then
         SELECTED_ENTRIES+=("$entry")
     fi
 done
 
 if [[ ${#SELECTED_ENTRIES[@]} -eq 0 ]]; then
-    die "refusing to download by default; pass --all, --tier N, --family NAME, or explicit keys"
+    die "refusing to download by default; pass --all, --tier N, --kind NAME, or explicit keys"
 fi
 
 if [[ $SKIP_PROXY -eq 0 ]]; then
@@ -785,7 +785,7 @@ fi
 
 declare -A SEEN_COMPONENTS=()
 for entry in "${SELECTED_ENTRIES[@]}"; do
-    IFS='|' read -r key tier family description components <<< "$entry"
+    IFS='|' read -r key tier pipeline_kind description components <<< "$entry"
     print_bundle "$entry"
     while IFS= read -r component; do
         repo=${component%%::*}

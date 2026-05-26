@@ -38,15 +38,15 @@ def test_clear_dense_warmup_ratio_names_are_supported_by_sparse_methods():
 def test_dense_warmup_defaults_are_uniform_across_model_contexts():
     contexts = [
         {},
-        {"model_family": "wan", "model_key": "wan21-t2v-1.3b"},
-        {"model_family": "wan", "model_key": "wan21-t2v-14b"},
-        {"model_family": "wan", "model_key": "wan22-t2v-a14b"},
-        {"model_family": "hunyuan_video", "model_key": "hunyuan-t2v"},
-        {"model_family": "cogvideox", "model_key": "cogvideox-t2v"},
-        {"model_family": "ltx_video", "model_key": "ltx-video"},
-        {"model_family": "allegro", "model_key": "allegro"},
-        {"model_family": "mochi", "model_key": "mochi-1"},
-        {"model_family": "easyanimate", "model_key": "easyanimate-v5-t2v-12b"},
+        {"model_key": "wan21-t2v-1.3b"},
+        {"model_key": "wan21-t2v-14b"},
+        {"model_key": "wan22-t2v-a14b"},
+        {"model_key": "hunyuan-t2v"},
+        {"model_key": "cogvideox-t2v"},
+        {"model_key": "ltx-video"},
+        {"model_key": "allegro"},
+        {"model_key": "mochi-1"},
+        {"model_key": "easyanimate-v5-t2v-12b"},
     ]
 
     for method in SPARSE_METHODS:
@@ -58,7 +58,7 @@ def test_dense_warmup_defaults_are_uniform_across_model_contexts():
 
 def test_legacy_svg_warmup_names_are_rejected():
     for method in ("svg1", "svg2", "svoo"):
-        config = sparsevideo.default_method_config(method, model_family="wan", model_key="wan21-t2v-1.3b")
+        config = sparsevideo.default_method_config(method, model_key="wan21-t2v-1.3b")
         assert "first_times_fp" not in config
         assert "first_layers_fp" not in config
         with pytest.raises(ValueError, match="Unknown config keys"):

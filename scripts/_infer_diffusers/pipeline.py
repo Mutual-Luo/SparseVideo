@@ -6,6 +6,13 @@ import sys
 from pathlib import Path
 from typing import Any, Dict, Optional
 
+from .models import (
+    is_cogvideox_pipeline,
+    is_hunyuan_pipeline,
+    is_ltx_pipeline,
+    uses_wan_components,
+)
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
@@ -97,9 +104,9 @@ def resolve_wan_flow_shift(height: int, override: Optional[float]) -> float:
 
 
 def resolve_scheduler_flow_shift(spec, height: int, override: Optional[float]) -> Optional[float]:
-    if spec.family == "wan":
+    if uses_wan_components(spec):
         return resolve_wan_flow_shift(height, override)
-    if spec.family == "hunyuan_video" and override is not None:
+    if is_hunyuan_pipeline(spec) and override is not None:
         return float(override)
     return None
 
@@ -236,11 +243,8 @@ def load_pipeline(spec, model_id: str, torch_dtype, vae_dtype, local_files_only:
     if spec.pipeline_class == "UnavailablePipeline":
         raise RuntimeError(spec.unsupported_reason or f"{spec.key} has no configured pipeline class")
 
-    # Wan-family pipelines share the same VAE/scheduler setup pattern.
-    if spec.pipeline_class in (
-        "WanPipeline", "WanImageToVideoPipeline", "WanAnimatePipeline", "WanVACEPipeline",
-        "SkyReelsV2Pipeline", "SkyReelsV2ImageToVideoPipeline",
-    ):
+    # Wan and SkyReels pipelines share the same VAE/scheduler setup pattern.
+    if uses_wan_components(spec):
         import torch
         from diffusers import AutoencoderKLWan
         from diffusers.schedulers.scheduling_unipc_multistep import UniPCMultistepScheduler
@@ -374,11 +378,11 @@ def build_call_kwargs(args, spec, prompt: str, negative_prompt: str, generator, 
             kwargs["mask"] = _load_video_frames(args.mask_video)
     if spec.key in ("wan22-t2v-a14b", "wan22-i2v-a14b"):
         kwargs["guidance_scale_2"] = args.guidance_scale_2
-    if spec.family == "hunyuan_video":
+    if is_hunyuan_pipeline(spec):
         kwargs["true_cfg_scale"] = args.true_cfg_scale
-    if spec.family == "cogvideox":
+    if is_cogvideox_pipeline(spec):
         kwargs["use_dynamic_cfg"] = False
-    if spec.family == "ltx_video":
+    if is_ltx_pipeline(spec):
         kwargs["frame_rate"] = fps
     return kwargs
 
@@ -451,10 +455,10 @@ def _load_video_frames(video_path: str):
 def should_preload_fused_native_kernels(spec, method: str) -> bool:
     if method not in ("svg1", "svg2", "svoo"):
         return False
-    if spec.family in ("wan", "hunyuan_video"):
+    if uses_wan_components(spec) or is_hunyuan_pipeline(spec):
         return True
     return os.environ.get("SPARSEVIDEO_FUSED_KERNEL_BACKEND") == "native"
 
 
 def should_defer_fused_native_kernel_load(spec, method: str, *, dry_run: bool) -> bool:
-    return (not dry_run) and spec.family == "hunyuan_video" and method in ("svg2", "svoo")
+    return (not dry_run) and is_hunyuan_pipeline(spec) and method in ("svg2", "svoo")

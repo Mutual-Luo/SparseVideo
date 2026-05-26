@@ -1526,6 +1526,13 @@ def test_discover_model_treats_skyreels_v2_as_wan_family():
     ]
 
 
+def test_discover_model_uses_hunyuan_t2v_model_key():
+    model_info = discover_model(_Pipe(HunyuanVideoTinyTransformer()))
+
+    assert model_info.model_type == "hunyuan_video"
+    assert model_info.model_key == "hunyuan-t2v"
+
+
 @pytest.mark.parametrize(
     ("transformer_cls", "name_or_path", "expected_key"),
     [

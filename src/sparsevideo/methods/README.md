@@ -36,7 +36,7 @@ behavior.
 
 Each method has `methods/<name>/config.yaml`. Edit `defaults` for generic
 settings and `model_defaults` for concrete backbone keys such as
-`wan21-t2v-1.3b` or `cogvideox-i2v`. Do not add family-wide groups such as
+`wan21-t2v-1.3b` or `cogvideox-i2v`. Do not add runtime-type-wide groups such as
 `wan` or `hunyuan_video`; config resolution only applies exact `model_key`
 entries. `config.py` should only keep alias validation and dynamic values such
 as local asset paths.

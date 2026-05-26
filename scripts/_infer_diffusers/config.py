@@ -6,7 +6,21 @@ from typing import Any, Dict, Optional
 
 from sparsevideo._support import unsupported_method_model_reason
 
-from .models import FLASHOMNI_SPARSE_INFO_KEYS, STA_NATIVE_SEQ_SHAPES, STA_STRATEGY_SHAPES, STA_UNSUPPORTED_STRATEGY_MODELS, ModelSpec
+from .models import (
+    FLASHOMNI_SPARSE_INFO_KEYS,
+    STA_NATIVE_SEQ_SHAPES,
+    STA_STRATEGY_SHAPES,
+    STA_UNSUPPORTED_STRATEGY_MODELS,
+    ModelSpec,
+    is_allegro_pipeline,
+    is_cogvideox_pipeline,
+    is_easyanimate_pipeline,
+    is_hunyuan_pipeline,
+    is_ltx_pipeline,
+    is_mochi_pipeline,
+    sparsevideo_model_type,
+    supports_sparsevideo_processor,
+)
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SRC_ROOT = REPO_ROOT / "src"
@@ -77,7 +91,7 @@ def sync_flashomni_config_aliases(config: Dict[str, Any]) -> None:
 def apply_flashomni_hunyuan_quality_defaults(
     spec: ModelSpec, config: Dict[str, Any], user_config: Dict[str, Any],
 ) -> None:
-    if spec.family != "hunyuan_video":
+    if not is_hunyuan_pipeline(spec):
         return
     if config.get("sparse_pattern") != "paper_mmdit":
         return
@@ -88,8 +102,8 @@ def apply_flashomni_hunyuan_quality_defaults(
         config["use_sparse_gemm"] = False
 
 
-def validate_flashomni_hunyuan_quality_lock(config: Dict[str, Any], model_family: Optional[str]) -> None:
-    if model_family != "hunyuan_video":
+def validate_flashomni_hunyuan_quality_lock(config: Dict[str, Any], model_type: Optional[str]) -> None:
+    if model_type != "hunyuan_video":
         return
     if config.get("sparse_pattern") != "paper_mmdit":
         return
@@ -107,26 +121,26 @@ def validate_flashomni_hunyuan_quality_lock(config: Dict[str, Any], model_family
 
 
 def default_svoo_sparsity_csv_path(spec: ModelSpec) -> str:
-    profile_dir = SRC_ROOT / "sparsevideo" / "methods" / "svoo" / "sparsity_profiles"
+    sparsity_dir = SRC_ROOT / "sparsevideo" / "methods" / "svoo" / "sparsity_profiles"
     if spec.key == "hunyuan-i2v":
-        sparsity_csv = profile_dir / "sparsity_hunyuan10_13B_i2v.csv"
-    elif spec.family == "hunyuan_video":
-        sparsity_csv = profile_dir / "sparsity_hunyuan10_13B_t2v.csv"
+        sparsity_csv = sparsity_dir / "sparsity_hunyuan10_13B_i2v.csv"
+    elif is_hunyuan_pipeline(spec):
+        sparsity_csv = sparsity_dir / "sparsity_hunyuan10_13B_t2v.csv"
     elif spec.key == "wan22-i2v-a14b":
-        sparsity_csv = profile_dir / "sparsity_wan22_A14B_i2v.csv"
+        sparsity_csv = sparsity_dir / "sparsity_wan22_A14B_i2v.csv"
     elif spec.key == "wan22-t2v-a14b":
-        sparsity_csv = profile_dir / "sparsity_wan22_A14B_t2v.csv"
+        sparsity_csv = sparsity_dir / "sparsity_wan22_A14B_t2v.csv"
     elif spec.key == "wan21-i2v-14b":
-        sparsity_csv = profile_dir / "sparsity_wan_14B_i2v.csv"
+        sparsity_csv = sparsity_dir / "sparsity_wan_14B_i2v.csv"
     elif spec.key == "wan21-t2v-14b":
-        sparsity_csv = profile_dir / "sparsity_wan_14B_t2v.csv"
+        sparsity_csv = sparsity_dir / "sparsity_wan_14B_t2v.csv"
     elif spec.key == "wan21-t2v-1.3b":
-        sparsity_csv = profile_dir / "sparsity_wan_1.3B_t2v.csv"
+        sparsity_csv = sparsity_dir / "sparsity_wan_1.3B_t2v.csv"
     else:
         raise ValueError(
-            f"SVOO has no owned offline sparsity profile for {spec.key}; "
+            f"SVOO has no owned offline sparsity CSV for {spec.key}; "
             "leave use_dynamic_min_kc_ratio=false to skip the offline sparsity "
-            "profile stage and use online co-clustering with the fixed "
+            "CSV stage and use online co-clustering with the fixed "
             "min_kc_ratio, or provide an explicit owned sparsity_csv_path."
         )
     return str(sparsity_csv)
@@ -144,7 +158,7 @@ def normalize_spargeattn_model_out_path(config: Dict[str, Any], output_file: Pat
     config["model_out_path"] = str(path)
 
 
-def validate_method_config(method: str, config: Dict[str, Any], model_family: Optional[str] = None) -> None:
+def validate_method_config(method: str, config: Dict[str, Any], model_type: Optional[str] = None) -> None:
     if method == "spargeattn":
         if config.get("mode", "topk") not in ("cdfthreshd", "topk", "block_sparse"):
             raise ValueError("spargeattn mode must be cdfthreshd, topk, or block_sparse")
@@ -197,7 +211,7 @@ def validate_method_config(method: str, config: Dict[str, Any], model_family: Op
         if config.get("sparse_pattern") == "global_random":
             config["sparse_block_size_for_q"] = int(config.get("sparse_size", 128))
             config["sparse_block_size_for_kv"] = int(config.get("sparse_size", 128))
-        validate_flashomni_hunyuan_quality_lock(config, model_family)
+        validate_flashomni_hunyuan_quality_lock(config, model_type)
         from .utils import is_torch_tensor
         bad = [key for key in FLASHOMNI_SPARSE_INFO_KEYS if config.get(key) is not None and not is_torch_tensor(config.get(key))]
         if bad:
@@ -294,27 +308,27 @@ def _sta_mask_strategy_shape(path) -> tuple:
 
 
 def _radial_estimated_latent_shape(spec: ModelSpec, height: int, width: int, num_frames: int) -> tuple:
-    if spec.family == "cogvideox":
+    if is_cogvideox_pipeline(spec):
         latent_t = (num_frames - 1) // 4 + 1
         latent_h = height // 8
         latent_w = width // 8
         if spec.key == "cogvideox-i2v":
             latent_t = ((num_frames - 1) // 4 + 1) * 2
         return latent_t, latent_h // 2, latent_w // 2
-    if spec.family == "ltx_video":
+    if is_ltx_pipeline(spec):
         return (num_frames - 1) // 8 + 1, height // 32, width // 32
-    if spec.family == "allegro":
+    if is_allegro_pipeline(spec):
         latent_t = ((num_frames + 3) // 4) if num_frames % 2 == 0 else ((num_frames - 1 + 3) // 4 + 1)
         return latent_t, height // 16, width // 16
-    if spec.family == "mochi":
+    if is_mochi_pipeline(spec):
         return (num_frames - 1) // 6 + 1, height // 16, width // 16
-    if spec.family == "easyanimate":
+    if is_easyanimate_pipeline(spec):
         return (num_frames - 1) // 4 + 1, height // 16, width // 16
     return (num_frames - 1) // 4 + 1, height // 16, width // 16
 
 
 def _draft_estimated_latent_shape(spec: ModelSpec, height: int, width: int, num_frames: int) -> tuple:
-    if spec.family == "cogvideox":
+    if is_cogvideox_pipeline(spec):
         return (num_frames - 1) // 4 + 1, height // 16, width // 16
     return _radial_estimated_latent_shape(spec, height, width, num_frames)
 
@@ -330,7 +344,7 @@ def apply_draft_runtime_layout_defaults(
             config[key] = value
 
 
-def draft_upstream_layout_error(
+def draft_layout_error(
     spec: ModelSpec, height: int, width: int, num_frames: int, config: Dict[str, Any],
 ) -> Optional[str]:
     if not config.get("block_sparse_attention", True):
@@ -342,20 +356,21 @@ def draft_upstream_layout_error(
     if pool_h * pool_w != 128:
         return (
             "draft MIT Block-Sparse-Attention backend requires pool_h * pool_w == 128 "
-            f"to form upstream 128-token blocks; got pool_h={pool_h}, pool_w={pool_w}."
+            f"to form 128-token blocks; got pool_h={pool_h}, pool_w={pool_w}."
         )
     for key, actual in (("latent_h", latent_h), ("latent_w", latent_w), ("visual_len", video_len)):
         configured = config.get(key)
         if configured is not None and int(configured) != int(actual):
             return (
-                f"draft upstream {key} config expects {int(configured)}, "
+                f"draft {key} config expects {int(configured)}, "
                 f"but the requested layout has {key}={int(actual)}."
             )
     configured_text_len = config.get("text_len")
     expected_text_len = None
-    if spec.family == "hunyuan_video" and spec.pipeline_class != "HunyuanVideoImageToVideoPipeline":
+    model_type = sparsevideo_model_type(spec)
+    if is_hunyuan_pipeline(spec) and spec.pipeline_class != "HunyuanVideoImageToVideoPipeline":
         expected_text_len = 256
-    elif spec.family in ("wan", "ltx_video", "allegro"):
+    elif model_type in ("wan", "ltx_video", "allegro"):
         expected_text_len = 0
     if (
         configured_text_len is not None
@@ -363,23 +378,22 @@ def draft_upstream_layout_error(
         and int(configured_text_len) != expected_text_len
     ):
         return (
-            f"draft upstream text_len config expects {int(configured_text_len)}, "
-            f"but {spec.family} upstream path expects text_len={expected_text_len}."
+            f"draft text_len config expects {int(configured_text_len)}, "
+            f"but {spec.pipeline_class} expects text_len={expected_text_len}."
         )
-    if spec.family not in ("wan", "hunyuan_video", "cogvideox", "ltx_video", "allegro", "mochi", "easyanimate"):
-        return f"draft is not implemented for {spec.family}."
+    if not supports_sparsevideo_processor(spec):
+        return f"draft is not implemented for {spec.pipeline_class}."
     return None
 
 
 def radial_flashinfer_layout_warning(
     spec: ModelSpec, height: int, width: int, num_frames: int, config: Dict[str, Any],
 ) -> Optional[str]:
-    radial_families = ("wan", "hunyuan_video", "cogvideox", "ltx_video", "allegro", "mochi", "easyanimate")
-    if spec.family not in radial_families:
-        return f"radial is not implemented for {spec.family}."
+    if not supports_sparsevideo_processor(spec):
+        return f"radial is not implemented for {spec.pipeline_class}."
     if height % 16 != 0 or width % 16 != 0:
         return (
-            "radial upstream FlashInfer path expects height and width divisible by 16 "
+            "radial FlashInfer path expects height and width divisible by 16 "
             f"for video patch tokens; got {height}x{width}."
         )
     return None
@@ -390,16 +404,15 @@ def sta_layout_preflight_messages(
 ) -> Dict[str, list]:
     errors: list = []
     warnings: list = []
-    sta_families = ("wan", "hunyuan_video", "cogvideox", "ltx_video", "allegro", "mochi", "easyanimate")
-    if spec.family not in sta_families:
-        return {"errors": [f"sta is not implemented for {spec.family}."], "warnings": warnings}
+    if not supports_sparsevideo_processor(spec):
+        return {"errors": [f"sta is not implemented for {spec.pipeline_class}."], "warnings": warnings}
     model_reason = unsupported_method_model_reason("sta", spec.key)
     if model_reason is not None:
         return {"errors": [model_reason], "warnings": warnings}
     if height % 16 != 0 or width % 16 != 0:
         return {
             "errors": [
-                "sta upstream FastVideo path expects height and width divisible by 16 "
+                "sta FastVideo path expects height and width divisible by 16 "
                 f"for video patch tokens; got {height}x{width}."
             ],
             "warnings": warnings,
@@ -423,7 +436,7 @@ def sta_layout_preflight_messages(
             expected_shape = STA_STRATEGY_SHAPES.get(spec.key)
             if expected_shape is None and spec.key in STA_UNSUPPORTED_STRATEGY_MODELS:
                 message = (
-                    f"sta has no upstream sparse inference mask strategy for {spec.key}. "
+                    f"sta has no sparse inference mask strategy for {spec.key}. "
                     f"{STA_UNSUPPORTED_STRATEGY_MODELS[spec.key]} "
                     f"Provided strategy has shape steps/layers/heads={strategy_shape}."
                 )
@@ -456,18 +469,18 @@ def sta_layout_preflight_messages(
     )
     padded_seq_shape = "x".join(str(part) for part in padded_shape)
     if padded_seq_shape not in STA_NATIVE_SEQ_SHAPES:
-        if spec.family not in ("wan", "hunyuan_video"):
+        if sparsevideo_model_type(spec) not in ("wan", "hunyuan_video"):
             warnings.append(
                 f"sta will use generalized STA A100 block-sparse CUDA for tile-padded canvas {padded_seq_shape} "
                 f"from latent layout {latent_seq_shape}."
             )
             return {"errors": errors, "warnings": warnings}
         message = (
-            "sta upstream FastVideo native path only covers latent layouts "
+            "sta FastVideo native path only covers latent layouts "
             f"{sorted(STA_NATIVE_SEQ_SHAPES)}. Current latent layout is {latent_seq_shape} "
             f"and tile-padded canvas is {padded_seq_shape}, so SparseVideo will use the "
             "generalized STA A100 block-sparse CUDA path with partial-border valid-token masking for this target shape. "
-            "Do not treat this as native FastVideo profile parity unless the requested target has matching "
+            "Do not treat this as native FastVideo parity unless the requested target has matching "
             "quality and speed evidence."
         )
         warnings.append(message)
@@ -487,7 +500,7 @@ def model_quality_warnings(spec: ModelSpec, height: int, width: int) -> list:
 
 
 def model_shape_preflight_errors(spec: ModelSpec, height: int, width: int) -> list:
-    if spec.family == "allegro" and (int(height) % 16 != 0 or int(width) % 16 != 0):
+    if is_allegro_pipeline(spec) and (int(height) % 16 != 0 or int(width) % 16 != 0):
         return [
             "allegro requires height and width divisible by 16 for the VAE/transformer "
             f"patch grid; got {int(height)}x{int(width)}. Use a nearby shape such as "

@@ -737,7 +737,6 @@ def _build_method_config(args, spec) -> Dict[str, Any]:
     method_config = default_method_config(
         args.method,
         num_inference_steps=args.num_inference_steps,
-        model_family=spec.family,
         model_key=spec.key,
     )
     method_config.update(normalize_method_config(args.method, user_config))

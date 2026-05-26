@@ -111,7 +111,7 @@ model_defaults:
   hunyuan-i2v:
     dense_warmup_step_ratio: 0.1
     dense_warmup_layer_ratio: 0.03
-    topk_num: 94
+    topk_num: 384
     q_kernel_num: 250
     kv_kernel_num: 1243
     kmeans_iter_init: 3

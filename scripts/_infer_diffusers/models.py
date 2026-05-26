@@ -64,7 +64,6 @@ DEFAULT_NEGATIVE_PROMPT = (
 @dataclass(frozen=True)
 class ModelSpec:
     key: str
-    family: str
     pipeline_class: str
     hf_id: str
     local_dir: Optional[str]
@@ -79,111 +78,202 @@ class ModelSpec:
     unsupported_reason: Optional[str] = None
 
 
+WAN_COMPONENT_PIPELINES = frozenset(
+    {
+        "WanPipeline",
+        "WanImageToVideoPipeline",
+        "WanAnimatePipeline",
+        "WanVACEPipeline",
+        "SkyReelsV2Pipeline",
+        "SkyReelsV2ImageToVideoPipeline",
+    }
+)
+HUNYUAN_PIPELINES = frozenset(
+    {
+        "HunyuanVideoPipeline",
+        "HunyuanVideoImageToVideoPipeline",
+    }
+)
+COGVIDEOX_PIPELINES = frozenset(
+    {
+        "CogVideoXPipeline",
+        "CogVideoXImageToVideoPipeline",
+    }
+)
+LTX_PIPELINES = frozenset(
+    {
+        "LTXPipeline",
+        "LTXImageToVideoPipeline",
+    }
+)
+SPARSEVIDEO_PROCESSOR_PIPELINES = frozenset(
+    {
+        *WAN_COMPONENT_PIPELINES,
+        *HUNYUAN_PIPELINES,
+        *COGVIDEOX_PIPELINES,
+        *LTX_PIPELINES,
+        "AllegroPipeline",
+        "MochiPipeline",
+        "EasyAnimatePipeline",
+    }
+)
+
+
+def uses_wan_components(spec: ModelSpec) -> bool:
+    return spec.pipeline_class in WAN_COMPONENT_PIPELINES
+
+
+def is_hunyuan_pipeline(spec: ModelSpec) -> bool:
+    return spec.pipeline_class in HUNYUAN_PIPELINES
+
+
+def is_cogvideox_pipeline(spec: ModelSpec) -> bool:
+    return spec.pipeline_class in COGVIDEOX_PIPELINES
+
+
+def is_ltx_pipeline(spec: ModelSpec) -> bool:
+    return spec.pipeline_class in LTX_PIPELINES
+
+
+def is_allegro_pipeline(spec: ModelSpec) -> bool:
+    return spec.pipeline_class == "AllegroPipeline"
+
+
+def is_mochi_pipeline(spec: ModelSpec) -> bool:
+    return spec.pipeline_class == "MochiPipeline"
+
+
+def is_easyanimate_pipeline(spec: ModelSpec) -> bool:
+    return spec.pipeline_class == "EasyAnimatePipeline"
+
+
+def supports_sparsevideo_processor(spec: ModelSpec) -> bool:
+    return spec.pipeline_class in SPARSEVIDEO_PROCESSOR_PIPELINES
+
+
+def sparsevideo_model_type(spec: ModelSpec) -> Optional[str]:
+    if uses_wan_components(spec):
+        return "wan"
+    if is_hunyuan_pipeline(spec):
+        return "hunyuan_video"
+    if is_cogvideox_pipeline(spec):
+        return "cogvideox"
+    if is_ltx_pipeline(spec):
+        return "ltx_video"
+    if is_allegro_pipeline(spec):
+        return "allegro"
+    if is_mochi_pipeline(spec):
+        return "mochi"
+    if is_easyanimate_pipeline(spec):
+        return "easyanimate"
+    return None
+
+
 MODEL_SPECS: dict[str, ModelSpec] = {
     "wan21-t2v-1.3b": ModelSpec(
-        key="wan21-t2v-1.3b", family="wan", pipeline_class="WanPipeline",
+        key="wan21-t2v-1.3b", pipeline_class="WanPipeline",
         hf_id="Wan-AI/Wan2.1-T2V-1.3B-Diffusers", local_dir="Wan2.1-T2V-1.3B-Diffusers",
         fps=16, default_frames=81, default_steps=50, guidance_scale=5.0, output_type="np",
     ),
     "wan21-t2v-14b": ModelSpec(
-        key="wan21-t2v-14b", family="wan", pipeline_class="WanPipeline",
+        key="wan21-t2v-14b", pipeline_class="WanPipeline",
         hf_id="Wan-AI/Wan2.1-T2V-14B-Diffusers", local_dir="Wan2.1-T2V-14B-Diffusers",
         fps=16, default_frames=81, default_steps=50, guidance_scale=5.0, output_type="np",
     ),
     "wan22-t2v-a14b": ModelSpec(
-        key="wan22-t2v-a14b", family="wan", pipeline_class="WanPipeline",
+        key="wan22-t2v-a14b", pipeline_class="WanPipeline",
         hf_id="Wan-AI/Wan2.2-T2V-A14B-Diffusers", local_dir="Wan2.2-T2V-A14B-Diffusers",
         fps=16, default_frames=81, default_steps=40, guidance_scale=5.0, output_type="np",
     ),
     "hunyuan-t2v": ModelSpec(
-        key="hunyuan-t2v", family="hunyuan_video", pipeline_class="HunyuanVideoPipeline",
+        key="hunyuan-t2v", pipeline_class="HunyuanVideoPipeline",
         hf_id="tencent/HunyuanVideo", local_dir="HunyuanVideo-Diffusers",
         fps=24, default_frames=129, default_steps=50, guidance_scale=6.0, output_type="pil",
     ),
     "wan21-i2v-14b": ModelSpec(
-        key="wan21-i2v-14b", family="wan", pipeline_class="WanImageToVideoPipeline",
+        key="wan21-i2v-14b", pipeline_class="WanImageToVideoPipeline",
         hf_id="Wan-AI/Wan2.1-I2V-14B-720P-Diffusers", local_dir="Wan2.1-I2V-14B-720P-Diffusers",
         fps=16, default_frames=81, default_steps=50, guidance_scale=5.0, output_type="np",
     ),
     "wan22-i2v-a14b": ModelSpec(
-        key="wan22-i2v-a14b", family="wan", pipeline_class="WanImageToVideoPipeline",
+        key="wan22-i2v-a14b", pipeline_class="WanImageToVideoPipeline",
         hf_id="Wan-AI/Wan2.2-I2V-A14B-Diffusers", local_dir="Wan2.2-I2V-A14B-Diffusers",
         fps=16, default_frames=81, default_steps=40, guidance_scale=5.0, output_type="np",
     ),
     "hunyuan-i2v": ModelSpec(
-        key="hunyuan-i2v", family="hunyuan_video", pipeline_class="HunyuanVideoImageToVideoPipeline",
+        key="hunyuan-i2v", pipeline_class="HunyuanVideoImageToVideoPipeline",
         hf_id="hunyuanvideo-community/HunyuanVideo-I2V", local_dir="HunyuanVideo-I2V-Diffusers",
         fps=24, default_frames=129, default_steps=50, guidance_scale=6.0, output_type="pil",
     ),
     "skyreels-v2-t2v-14b": ModelSpec(
-        key="skyreels-v2-t2v-14b", family="wan", pipeline_class="SkyReelsV2Pipeline",
+        key="skyreels-v2-t2v-14b", pipeline_class="SkyReelsV2Pipeline",
         hf_id="Skywork/SkyReels-V2-T2V-14B-720P-Diffusers", local_dir="skyreels-v2-t2v-14b",
         fps=24, default_frames=97, default_steps=50, guidance_scale=6.0, output_type="np",
     ),
     "skyreels-v2-i2v-14b": ModelSpec(
-        key="skyreels-v2-i2v-14b", family="wan", pipeline_class="SkyReelsV2ImageToVideoPipeline",
+        key="skyreels-v2-i2v-14b", pipeline_class="SkyReelsV2ImageToVideoPipeline",
         hf_id="Skywork/SkyReels-V2-I2V-14B-720P-Diffusers", local_dir="skyreels-v2-i2v-14b",
         fps=24, default_frames=97, default_steps=50, guidance_scale=5.0, output_type="np",
     ),
     "wan22-animate-14b": ModelSpec(
-        key="wan22-animate-14b", family="wan", pipeline_class="WanAnimatePipeline",
+        key="wan22-animate-14b", pipeline_class="WanAnimatePipeline",
         hf_id="Wan-AI/Wan2.2-Animate-14B-Diffusers", local_dir="Wan2.2-Animate-14B-Diffusers",
         fps=16, default_frames=77, default_steps=20, guidance_scale=1.0, output_type="np",
     ),
     "wan21-vace-1.3b": ModelSpec(
-        key="wan21-vace-1.3b", family="wan", pipeline_class="WanVACEPipeline",
+        key="wan21-vace-1.3b", pipeline_class="WanVACEPipeline",
         hf_id="Wan-AI/Wan2.1-VACE-1.3B-diffusers", local_dir="Wan2.1-VACE-1.3B-diffusers",
         fps=16, default_frames=81, default_steps=50, guidance_scale=5.0, output_type="np",
     ),
     "wan21-vace-14b": ModelSpec(
-        key="wan21-vace-14b", family="wan", pipeline_class="WanVACEPipeline",
+        key="wan21-vace-14b", pipeline_class="WanVACEPipeline",
         hf_id="Wan-AI/Wan2.1-VACE-14B-diffusers", local_dir="Wan2.1-VACE-14B-diffusers",
         fps=16, default_frames=81, default_steps=50, guidance_scale=5.0, output_type="np",
     ),
     "cogvideox-t2v": ModelSpec(
-        key="cogvideox-t2v", family="cogvideox", pipeline_class="CogVideoXPipeline",
+        key="cogvideox-t2v", pipeline_class="CogVideoXPipeline",
         hf_id="THUDM/CogVideoX-5b", local_dir="CogVideoX-5b",
         fps=8, default_frames=49, default_steps=50, guidance_scale=6.0, output_type="pil",
         sparse_supported=True,
     ),
     "cogvideox-i2v": ModelSpec(
-        key="cogvideox-i2v", family="cogvideox", pipeline_class="CogVideoXImageToVideoPipeline",
+        key="cogvideox-i2v", pipeline_class="CogVideoXImageToVideoPipeline",
         hf_id="THUDM/CogVideoX-5b-I2V", local_dir="CogVideoX-5b-I2V",
         fps=8, default_frames=49, default_steps=50, guidance_scale=6.0, output_type="pil",
         sparse_supported=True,
     ),
     "ltx-video": ModelSpec(
-        key="ltx-video", family="ltx_video", pipeline_class="LTXPipeline",
+        key="ltx-video", pipeline_class="LTXPipeline",
         hf_id="Lightricks/LTX-Video", local_dir="ltx-video",
         fps=25, default_frames=161, default_steps=50, guidance_scale=3.0, output_type="pil",
         sparse_supported=True,
     ),
     "ltx-video-i2v": ModelSpec(
-        key="ltx-video-i2v", family="ltx_video", pipeline_class="LTXImageToVideoPipeline",
+        key="ltx-video-i2v", pipeline_class="LTXImageToVideoPipeline",
         hf_id="Lightricks/LTX-Video", local_dir="ltx-video",
         fps=25, default_frames=161, default_steps=50, guidance_scale=3.0, output_type="pil",
         sparse_supported=True,
     ),
     "allegro": ModelSpec(
-        key="allegro", family="allegro", pipeline_class="AllegroPipeline",
+        key="allegro", pipeline_class="AllegroPipeline",
         hf_id="rhymes-ai/Allegro", local_dir="allegro",
         fps=15, default_frames=88, default_steps=100, guidance_scale=7.5, output_type="pil",
         sparse_supported=True,
     ),
     "mochi-1": ModelSpec(
-        key="mochi-1", family="mochi", pipeline_class="MochiPipeline",
+        key="mochi-1", pipeline_class="MochiPipeline",
         hf_id="genmo/mochi-1-preview", local_dir="mochi-1",
         fps=8, default_frames=19, default_steps=64, guidance_scale=4.5, output_type="pil",
         sparse_supported=True,
     ),
     "easyanimate-v5-t2v-12b": ModelSpec(
-        key="easyanimate-v5-t2v-12b", family="easyanimate", pipeline_class="EasyAnimatePipeline",
+        key="easyanimate-v5-t2v-12b", pipeline_class="EasyAnimatePipeline",
         hf_id="alibaba-pai/EasyAnimateV5.1-12b-zh-diffusers", local_dir="easyanimate-v5-t2v-12b",
         fps=8, default_frames=49, default_steps=50, guidance_scale=5.0, output_type="pil",
         sparse_supported=True,
     ),
     "sana-video": ModelSpec(
-        key="sana-video", family="sana_video", pipeline_class="SanaVideoPipeline",
+        key="sana-video", pipeline_class="SanaVideoPipeline",
         hf_id="Efficient-Large-Model/SANA-Video_2B_480p_diffusers", local_dir="sana-video",
         fps=24, default_frames=17, default_steps=20, guidance_scale=5.0, output_type="pil",
         sparse_supported=False, sparse_methods=(), compatibility_label="incompatible",
@@ -194,7 +284,7 @@ MODEL_SPECS: dict[str, ModelSpec] = {
         ),
     ),
     "motif-video": ModelSpec(
-        key="motif-video", family="motif_video", pipeline_class="UnavailablePipeline",
+        key="motif-video", pipeline_class="UnavailablePipeline",
         hf_id="", local_dir=None,
         fps=24, default_frames=1, default_steps=1, guidance_scale=1.0, output_type="pil",
         sparse_supported=False, sparse_methods=(), compatibility_label="unknown",
@@ -205,7 +295,7 @@ MODEL_SPECS: dict[str, ModelSpec] = {
         ),
     ),
     "ltx-video-2": ModelSpec(
-        key="ltx-video-2", family="ltx_video_2", pipeline_class="UnavailablePipeline",
+        key="ltx-video-2", pipeline_class="UnavailablePipeline",
         hf_id="", local_dir=None,
         fps=24, default_frames=1, default_steps=1, guidance_scale=1.0, output_type="pil",
         sparse_supported=False, sparse_methods=(), compatibility_label="unknown",
@@ -216,7 +306,7 @@ MODEL_SPECS: dict[str, ModelSpec] = {
         ),
     ),
     "kandinsky5-t2v": ModelSpec(
-        key="kandinsky5-t2v", family="kandinsky5", pipeline_class="Kandinsky5T2VPipeline",
+        key="kandinsky5-t2v", pipeline_class="Kandinsky5T2VPipeline",
         hf_id="ai-forever/Kandinsky-5.0-T2V", local_dir="kandinsky5-t2v",
         fps=12, default_frames=49, default_steps=50, guidance_scale=5.0, output_type="pil",
         sparse_supported=False, sparse_methods=(), compatibility_label="native-N/A",

@@ -32,7 +32,7 @@ export https_proxy=$PROXY
 # ── Model catalogue ───────────────────────────────────────────────────────────
 # Format: "KEY|REPO_ID|TIER|LOCAL_DIR"
 CATALOGUE=(
-    # Tier 1 — Wan family / same SkyReelsV2Transformer3DModel block (reuse wan processor)
+    # Tier 1 — Wan-compatible / same SkyReelsV2Transformer3DModel block (reuse wan processor)
     # Using 720P Diffusers-format repos (WanPipeline + SkyReelsV2Transformer3DModel)
     "skyreels-v2-t2v-14b|Skywork/SkyReels-V2-T2V-14B-720P-Diffusers|1|skyreels-v2-t2v-14b"
     "skyreels-v2-i2v-14b|Skywork/SkyReels-V2-I2V-14B-720P-Diffusers|1|skyreels-v2-i2v-14b"

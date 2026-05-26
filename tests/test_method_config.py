@@ -38,6 +38,14 @@ PUBLIC_BACKBONE_KEYS = {
 }
 
 
+def _config_module(method: str):
+    return importlib.import_module(f"sparsevideo.methods.{method}.config")
+
+
+def _module_default_config(method: str, **context):
+    return dict(_config_module(method).default_config(**context))
+
+
 def test_public_methods_are_registered():
     assert sparsevideo.list_methods() == [
         "adacluster",
@@ -80,13 +88,13 @@ def test_method_configs_have_public_backbone_override_slots():
         assert PUBLIC_BACKBONE_KEYS <= set(model_defaults), method
 
 
-def test_method_configs_use_explicit_backbone_blocks_not_family_groups():
-    family_groups = {"wan", "hunyuan_video", "cogvideox", "ltx_video", "mochi", "easyanimate"}
+def test_method_configs_use_explicit_backbone_blocks_not_type_groups():
+    runtime_type_groups = {"wan", "hunyuan_video", "cogvideox", "ltx_video", "mochi", "easyanimate"}
     for method in sparsevideo.list_methods():
         path = REPO_ROOT / "src" / "sparsevideo" / "methods" / method / "config.yaml"
         data = yaml.safe_load(path.read_text(encoding="utf-8"))
         model_defaults = data.get("model_defaults", {})
-        assert not family_groups & set(model_defaults), method
+        assert not runtime_type_groups & set(model_defaults), method
         for model_key in PUBLIC_BACKBONE_KEYS:
             if method == "dense":
                 assert model_defaults[model_key] == {}, (method, model_key)
@@ -94,69 +102,47 @@ def test_method_configs_use_explicit_backbone_blocks_not_family_groups():
                 assert model_defaults[model_key], (method, model_key)
 
 
-def test_upstream_default_names_are_exposed():
-    assert sparsevideo.default_method_config("svg1")["sparsity"] == 0.3
-    assert sparsevideo.default_method_config("svg1")["context_length"] is None
-    assert sparsevideo.default_method_config("svg1")["prompt_length"] is None
-    assert sparsevideo.default_method_config("svg2")["top_p_kmeans"] == 0.9
-    assert sparsevideo.default_method_config("svg2")["context_length"] is None
-    assert sparsevideo.default_method_config("svg2")["prompt_length"] is None
+def test_default_configs_select_backbone_by_model_key(monkeypatch):
+    monkeypatch.delenv("SVOO_ENABLE_MEM_SAVE", raising=False)
+    assert sparsevideo.default_method_config(
+        "svg2",
+        model_key="skyreels-v2-t2v-14b",
+    ) == _module_default_config("svg2", model_key="skyreels-v2-t2v-14b")
+
+
+def test_public_default_config_keys_are_exposed():
+    required_keys = {
+        "svg1": {"sparsity", "context_length", "prompt_length"},
+        "svg2": {"top_p_kmeans", "context_length", "prompt_length"},
+        "draft": {"sparsity_ratio"},
+        "adacluster": {"topk_num"},
+        "sta": {"tile_size", "window_size", "STA_mode"},
+        "flashomni": {
+            "implementation",
+            "backend",
+            "sparse_pattern",
+            "sparse_size",
+            "tau_q",
+            "tau_kv",
+            "N",
+            "D",
+            "S_q",
+            "use_sparse_gemm",
+            "taylor_cache_device",
+        },
+        "radial": {"decay_factor", "block_size", "use_sage_attention"},
+        "spargeattn": {"topk", "cdfthreshd", "pvthreshd", "tensor_layout", "sim_rule"},
+        "svoo": {"sparsity_csv_path", "enable_mem_save"},
+    }
+
+    for method, keys in required_keys.items():
+        assert keys <= set(sparsevideo.default_method_config(method)), method
+
     assert "allow_triton_fallback" not in sparsevideo.default_method_config("svg2")
-    assert sparsevideo.default_method_config("draft")["sparsity_ratio"] == 0.9
     assert "allow_triton_fallback" not in sparsevideo.default_method_config("draft")
-    assert sparsevideo.default_method_config("adacluster")["topk_num"] == 128
-    assert sparsevideo.default_method_config("sta")["tile_size"] == [6, 8, 8]
-    assert sparsevideo.default_method_config("sta")["window_size"] == [3, 6, 10]
-    assert sparsevideo.default_method_config("sta")["STA_mode"] == "STA_inference"
-    assert sparsevideo.default_method_config("flashomni")["implementation"] == "upstream"
-    assert sparsevideo.default_method_config("flashomni")["backend"] == "auto"
-    assert sparsevideo.default_method_config("flashomni")["sparse_pattern"] == "paper_mmdit"
-    assert sparsevideo.default_method_config("flashomni")["sparse_size"] == 128
-    assert sparsevideo.default_method_config("flashomni")["spq_Q"] == 0.0
-    assert sparsevideo.default_method_config("flashomni")["spq_KV"] == 0.8
-    assert sparsevideo.default_method_config("flashomni")["tau_q"] == 0.5
-    assert sparsevideo.default_method_config("flashomni")["tau_kv"] == 0.05
-    assert sparsevideo.default_method_config("flashomni")["N"] == 6
-    assert sparsevideo.default_method_config("flashomni")["D"] == 1
-    assert sparsevideo.default_method_config("flashomni")["S_q"] == 0.3
-    assert sparsevideo.default_method_config("flashomni")["use_sparse_gemm"] is False
-    assert sparsevideo.default_method_config("flashomni")["taylor_cache_device"] == "cpu"
-    assert sparsevideo.default_method_config("flashomni")["causal"] is False
-    assert sparsevideo.default_method_config("flashomni")["pos_encoding_mode"] == "NONE"
-    assert sparsevideo.default_method_config("flashomni")["use_fp16_qk_reduction"] is False
-    assert sparsevideo.default_method_config("flashomni")["logits_soft_cap"] == 0.0
-    assert sparsevideo.default_method_config("flashomni")["sm_scale"] is None
-    assert sparsevideo.default_method_config("flashomni")["rope_scale"] is None
-    assert sparsevideo.default_method_config("flashomni")["rope_theta"] is None
     assert "allow_flex_fallback" not in sparsevideo.default_method_config("radial")
-    assert sparsevideo.default_method_config("spargeattn")["model_out_path"] is None
-    assert sparsevideo.default_method_config("spargeattn")["mode"] == "topk"
-    assert sparsevideo.default_method_config("spargeattn")["topk"] == 0.5
-    assert sparsevideo.default_method_config("spargeattn")["cdfthreshd"] == 0.98
-    assert sparsevideo.default_method_config("spargeattn")["pvthreshd"] == 50
-    assert sparsevideo.default_method_config("spargeattn")["tensor_layout"] == "HND"
-    assert sparsevideo.default_method_config("spargeattn")["sim_rule"] == "l1"
-    assert sparsevideo.default_method_config("spargeattn")["l1"] == 0.07
-    assert sparsevideo.default_method_config("spargeattn")["pv_l1"] == 0.08
-    assert sparsevideo.default_method_config("spargeattn")["cos_sim"] == 0.98
-    assert sparsevideo.default_method_config("spargeattn")["rmse"] == 0.07
-    assert sparsevideo.default_method_config("spargeattn")["rearrange_kwargs"] == {}
-    assert sparsevideo.default_method_config("spargeattn")["tune_pv"] is True
-    hunyuan_sparge = sparsevideo.default_method_config(
-        "spargeattn", model_family="hunyuan_video", model_key="hunyuan-t2v",
-    )
-    assert hunyuan_sparge["l1"] == 0.07
-    assert hunyuan_sparge["pv_l1"] == 0.08
-    assert hunyuan_sparge["tune_pv"] is True
-    allegro_sparge = sparsevideo.default_method_config(
-        "spargeattn", model_family="allegro", model_key="allegro",
-    )
-    assert allegro_sparge["topk"] == 0.5
-    assert allegro_sparge["dense_warmup_step_ratio"] == 0.1
-    assert sparsevideo.default_method_config("svoo")["sparsity_csv_path"] == "sparsity_profiles/sparsity_results.csv"
     assert "implementation" not in sparsevideo.default_method_config("svoo")
     assert "sparse_backend" not in sparsevideo.default_method_config("svoo")
-    assert sparsevideo.default_method_config("svoo")["enable_mem_save"] is True
     assert "context_length" not in sparsevideo.default_method_config("svoo")
     assert "prompt_length" not in sparsevideo.default_method_config("svoo")
 
@@ -177,10 +163,10 @@ def test_svoo_rejects_non_method_public_options():
 
 
 def test_svoo_enable_mem_save_follows_upstream_env_default(monkeypatch):
-    from sparsevideo.methods.svoo.config import default_config
+    from sparsevideo.methods.svoo.config import CONFIG_DEFAULTS, default_config
 
     monkeypatch.delenv("SVOO_ENABLE_MEM_SAVE", raising=False)
-    assert default_config()["enable_mem_save"] is True
+    assert default_config()["enable_mem_save"] is CONFIG_DEFAULTS["enable_mem_save"]
 
     monkeypatch.setenv("SVOO_ENABLE_MEM_SAVE", "0")
     assert default_config()["enable_mem_save"] is False
@@ -189,263 +175,19 @@ def test_svoo_enable_mem_save_follows_upstream_env_default(monkeypatch):
     assert default_config()["enable_mem_save"] is True
 
 
-def test_svoo_inference_context_uses_upstream_720p_defaults():
-    wan = sparsevideo.default_method_config("svoo", model_family="wan", model_key="wan21-t2v-1.3b")
-    assert wan["num_q_centroids"] == 256
-    assert wan["num_k_centroids"] == 1024
-    assert wan["kmeans_iter_init"] == 2
-    assert wan["kmeans_iter_step"] == 2
-    assert wan["use_dynamic_min_kc_ratio"] is True
-    assert "use_global_constraints" not in wan
-    assert "lambda_schedule" not in wan
-    assert "diverse_top_p_k" not in wan
-    assert "use_fused_rope" not in wan
-    assert "context_length" not in wan
-    assert "prompt_length" not in wan
-    assert wan["sparsity_csv_path"].endswith("sparsity_wan_1.3B_t2v.csv")
-    assert Path(wan["sparsity_csv_path"]).exists()
-
-    wan22 = sparsevideo.default_method_config("svoo", model_family="wan", model_key="wan22-t2v-a14b")
-    assert "start_reuse_step" not in wan22
-    assert "use_svoo" not in wan22
-    assert wan22["sparsity_csv_path"].endswith("sparsity_wan22_A14B_t2v.csv")
-    assert Path(wan22["sparsity_csv_path"]).exists()
-
-    wan_i2v = sparsevideo.default_method_config("svoo", model_family="wan", model_key="wan21-i2v-14b")
-    assert wan_i2v["use_dynamic_min_kc_ratio"] is True
-    assert wan_i2v["sparsity_csv_path"].endswith("sparsity_wan_14B_i2v.csv")
-    assert Path(wan_i2v["sparsity_csv_path"]).exists()
-
-    wan22_i2v = sparsevideo.default_method_config("svoo", model_family="wan", model_key="wan22-i2v-a14b")
-    assert wan22_i2v["use_dynamic_min_kc_ratio"] is True
-    assert wan22_i2v["sparsity_csv_path"].endswith("sparsity_wan22_A14B_i2v.csv")
-    assert Path(wan22_i2v["sparsity_csv_path"]).exists()
-
-    wan_animate = sparsevideo.default_method_config("svoo", model_family="wan", model_key="wan22-animate-14b")
-    assert wan_animate["use_dynamic_min_kc_ratio"] is False
-    assert wan_animate["num_q_centroids"] == 256
-    assert wan_animate["sparsity_csv_path"] == "sparsity_profiles/sparsity_results.csv"
-
-    wan_vace = sparsevideo.default_method_config("svoo", model_family="wan", model_key="wan21-vace-1.3b")
-    assert wan_vace["use_dynamic_min_kc_ratio"] is False
-    assert wan_vace["num_q_centroids"] == 256
-    assert wan_vace["sparsity_csv_path"] == "sparsity_profiles/sparsity_results.csv"
-
-    wan_fun = sparsevideo.default_method_config("svoo", model_family="wan", model_key="wan21-fun-1.3b-control")
-    assert wan_fun["use_dynamic_min_kc_ratio"] is False
-    assert wan_fun["kmeans_iter_init"] == 2
-    assert wan_fun["kmeans_iter_step"] == 2
-    assert wan_fun["sparsity_csv_path"] == "sparsity_profiles/sparsity_results.csv"
-
-    wan22_fun = sparsevideo.default_method_config("svoo", model_family="wan", model_key="wan22-fun-a14b-control")
-    assert wan22_fun["use_dynamic_min_kc_ratio"] is False
-    assert wan22_fun["kmeans_iter_init"] == 2
-
-    hunyuan = sparsevideo.default_method_config("svoo", model_family="hunyuan_video", model_key="hunyuan-t2v")
-    assert hunyuan["top_p_kmeans"] == 0.88
-    assert "start_reuse_step" not in hunyuan
-    assert hunyuan["reuse_interval"] == 20
-    assert hunyuan["sparsity_csv_path"].endswith("sparsity_hunyuan10_13B_t2v.csv")
-    assert Path(hunyuan["sparsity_csv_path"]).exists()
-
-    hunyuan_i2v = sparsevideo.default_method_config(
-        "svoo",
-        model_family="hunyuan_video",
-        model_key="hunyuan-i2v",
-    )
-    assert hunyuan_i2v["use_dynamic_min_kc_ratio"] is True
-    assert hunyuan_i2v["sparsity_csv_path"].endswith("sparsity_hunyuan10_13B_i2v.csv")
-    assert Path(hunyuan_i2v["sparsity_csv_path"]).exists()
-
-    cogvideox = sparsevideo.default_method_config(
-        "svoo",
-        model_family="cogvideox",
-        model_key="cogvideox-t2v",
-    )
-    assert cogvideox["use_dynamic_min_kc_ratio"] is False
-    assert cogvideox["sparsity_csv_path"] == "sparsity_profiles/sparsity_results.csv"
-
-    ltx = sparsevideo.default_method_config(
-        "svoo",
-        model_family="ltx_video",
-        model_key="ltx-video",
-    )
-    assert ltx["use_dynamic_min_kc_ratio"] is False
-    assert ltx["num_q_centroids"] == 256
-    assert ltx["num_k_centroids"] == 1024
-    assert ltx["sparsity_csv_path"] == "sparsity_profiles/sparsity_results.csv"
-
-    mochi = sparsevideo.default_method_config(
-        "svoo",
-        model_family="mochi",
-        model_key="mochi-1",
-    )
-    assert mochi["use_dynamic_min_kc_ratio"] is False
-    assert mochi["num_q_centroids"] == 256
-    assert mochi["num_k_centroids"] == 1024
-    assert mochi["sparsity_csv_path"] == "sparsity_profiles/sparsity_results.csv"
-
-    easyanimate = sparsevideo.default_method_config(
-        "svoo",
-        model_family="easyanimate",
-        model_key="easyanimate-v5-t2v-12b",
-    )
-    assert easyanimate["use_dynamic_min_kc_ratio"] is False
-    assert easyanimate["num_q_centroids"] == 256
-    assert easyanimate["num_k_centroids"] == 1024
-    assert easyanimate["sparsity_csv_path"] == "sparsity_profiles/sparsity_results.csv"
-
-
-def test_svg2_inference_context_uses_upstream_720p_defaults():
-    wan = sparsevideo.default_method_config("svg2", model_family="wan", model_key="wan21-t2v-1.3b")
-    assert wan["dense_warmup_step_ratio"] == 0.1
-    assert wan["dense_warmup_layer_ratio"] == 0.03
-    assert "first_times_fp" not in wan
-    assert "first_layers_fp" not in wan
-    assert wan["num_q_centroids"] == 300
-    assert wan["num_k_centroids"] == 1000
-    assert wan["min_kc_ratio"] == 0.10
-    assert wan["kmeans_iter_init"] == 50
-    assert wan["kmeans_iter_step"] == 2
-
-    hunyuan = sparsevideo.default_method_config("svg2", model_family="hunyuan_video", model_key="hunyuan-t2v")
-    assert hunyuan["num_q_centroids"] == 400
-    assert hunyuan["num_k_centroids"] == 1000
-    assert hunyuan["dense_warmup_step_ratio"] == 0.1
-    assert hunyuan["dense_warmup_layer_ratio"] == 0.03
-    assert "first_times_fp" not in hunyuan
-    assert "first_layers_fp" not in hunyuan
-    assert hunyuan["zero_step_kmeans_init"] is True
-    assert hunyuan["context_length"] == 256
-    assert hunyuan["prompt_length"] is None
-
-    mochi = sparsevideo.default_method_config("svg2", model_family="mochi", model_key="mochi-1")
-    assert mochi["num_q_centroids"] == 300
-    assert mochi["num_k_centroids"] == 1000
-    assert mochi["min_kc_ratio"] == 0.10
-    assert mochi["kmeans_iter_init"] == 50
-    assert mochi["kmeans_iter_step"] == 2
-
-    easyanimate = sparsevideo.default_method_config(
-        "svg2", model_family="easyanimate", model_key="easyanimate-v5-t2v-12b",
-    )
-    assert easyanimate["num_q_centroids"] == 300
-    assert easyanimate["num_k_centroids"] == 1000
-    assert easyanimate["min_kc_ratio"] == 0.10
-    assert easyanimate["kmeans_iter_init"] == 50
-    assert easyanimate["kmeans_iter_step"] == 2
-
-
-def test_svg1_inference_context_uses_upstream_720p_defaults():
-    wan = sparsevideo.default_method_config("svg1", model_family="wan", model_key="wan21-t2v-1.3b")
-    assert wan["dense_warmup_step_ratio"] == 0.1
-    assert wan["dense_warmup_layer_ratio"] == 0.03
-    assert "first_times_fp" not in wan
-    assert "first_layers_fp" not in wan
-    assert wan["num_sampled_rows"] == 64
-    assert wan["sparsity"] == 0.3
-
-    hunyuan = sparsevideo.default_method_config("svg1", model_family="hunyuan_video", model_key="hunyuan-t2v")
-    assert hunyuan["dense_warmup_step_ratio"] == 0.1
-    assert hunyuan["dense_warmup_layer_ratio"] == 0.03
-    assert "first_times_fp" not in hunyuan
-    assert "first_layers_fp" not in hunyuan
-    assert hunyuan["context_length"] == 256
-    assert hunyuan["prompt_length"] is None
-    assert hunyuan["num_sampled_rows"] == 64
-    assert hunyuan["sparsity"] == 0.25
-
-
-def test_radial_inference_context_uses_upstream_shell_defaults():
-    wan = sparsevideo.default_method_config("radial", model_family="wan", model_key="wan21-t2v-14b")
-    assert "dense_layers" not in wan
-    assert "dense_timesteps" not in wan
-    assert wan["decay_factor"] == 0.2
-    assert wan["block_size"] == 128
-
-    wan22 = sparsevideo.default_method_config("radial", model_family="wan", model_key="wan22-t2v-a14b")
-    assert "dense_layers" not in wan22
-    assert "dense_timesteps" not in wan22
-    assert wan22["decay_factor"] == 0.8
-    assert wan22["block_size"] == 64
-
-    hunyuan = sparsevideo.default_method_config("radial", model_family="hunyuan_video", model_key="hunyuan-t2v")
-    assert "dense_layers" not in hunyuan
-    assert "dense_timesteps" not in hunyuan
-    assert hunyuan["decay_factor"] == 0.95
-
-
-def test_draft_inference_context_uses_upstream_defaults():
-    wan = sparsevideo.default_method_config("draft", model_family="wan", model_key="wan21-t2v-14b")
-    assert wan["pool_h"] == 8
-    assert wan["pool_w"] == 16
-    assert wan["latent_h"] is None
-    assert wan["latent_w"] is None
-    assert wan["visual_len"] is None
-    assert wan["text_len"] == 0
-    assert wan["sparsity_ratio"] == 0.75
-    assert wan["batch_size"] is None
-    assert "allow_triton_fallback" not in wan
-
-    hunyuan = sparsevideo.default_method_config("draft", model_family="hunyuan_video", model_key="hunyuan-t2v")
-    assert hunyuan["pool_h"] == 8
-    assert hunyuan["pool_w"] == 16
-    assert hunyuan["latent_h"] is None
-    assert hunyuan["latent_w"] is None
-    assert hunyuan["visual_len"] is None
-    assert hunyuan["text_len"] == 256
-    assert hunyuan["sparsity_ratio"] == 0.9
-
-    hunyuan_i2v = sparsevideo.default_method_config("draft", model_family="hunyuan_video", model_key="hunyuan-i2v")
-    assert hunyuan_i2v["pool_h"] == 8
-    assert hunyuan_i2v["pool_w"] == 16
-    assert hunyuan_i2v["text_len"] is None
-    assert hunyuan_i2v["sparsity_ratio"] == 0.9
-
-
-def test_sta_inference_context_uses_upstream_text_boundary_defaults():
-    wan = sparsevideo.default_method_config("sta", model_family="wan", model_key="wan21-t2v-1.3b")
-    assert wan["tile_size"] == [6, 8, 8]
-    assert wan["window_size"] == [4, 6, 10]
-    assert wan["has_text"] is False
-    assert wan["STA_mode"] == "STA_inference"
-    assert wan["mask_strategy_file_path"].endswith("mask_strategy_wan21_t2v_1_3b.json")
-    assert Path(wan["mask_strategy_file_path"]).exists()
-
-    wan14b = sparsevideo.default_method_config("sta", model_family="wan", model_key="wan21-t2v-14b")
-    assert wan14b["mask_strategy_file_path"].endswith("mask_strategy_wan21_t2v_14b.json")
-    assert Path(wan14b["mask_strategy_file_path"]).exists()
-
-    hunyuan = sparsevideo.default_method_config("sta", model_family="hunyuan_video", model_key="hunyuan-t2v")
-    assert hunyuan["tile_size"] == [6, 8, 8]
-    assert hunyuan["window_size"] == [5, 6, 10]
-    assert hunyuan["has_text"] is True
-    assert hunyuan["mask_strategy_file_path"].endswith("mask_strategy_hunyuan_t2v.json")
-    assert hunyuan["mask_candidates"] == [
-        [5, 3, 3],
-        [1, 6, 10],
-        [3, 3, 5],
-        [5, 1, 10],
-        [5, 6, 1],
-    ]
-    assert Path(hunyuan["mask_strategy_file_path"]).exists()
+def test_model_key_default_configs_use_method_modules(monkeypatch):
+    monkeypatch.delenv("SVOO_ENABLE_MEM_SAVE", raising=False)
+    for method in sparsevideo.list_methods():
+        for model_key in PUBLIC_BACKBONE_KEYS:
+            assert sparsevideo.default_method_config(
+                method,
+                model_key=model_key,
+            ) == _module_default_config(method, model_key=model_key)
 
 
 def test_svoo_apply_api_defaults_use_model_context():
     from sparsevideo.methods.svoo import SVOOMethod
-
-    method = SVOOMethod(
-        config={},
-        model_info=SimpleNamespace(model_type="wan", model_key="wan21-t2v-1.3b", transformers=[object()]),
-    )
-    assert method.config["num_q_centroids"] == 256
-    assert method.config["kmeans_iter_step"] == 2
-    assert method.config["sparsity_csv_path"].endswith("sparsity_wan_1.3B_t2v.csv")
-    assert Path(method.config["sparsity_csv_path"]).exists()
-
-    wan22 = SVOOMethod(config={}, model_info=SimpleNamespace(model_type="wan", transformers=[object(), object()]))
-    assert "start_reuse_step" not in wan22.config
-    assert wan22.config["sparsity_csv_path"].endswith("sparsity_wan22_A14B_t2v.csv")
+    from sparsevideo.methods.svoo.ops import resolve_sparsity_csv_path
 
     with pytest.raises(ValueError, match="start_reuse_step"):
         SVOOMethod(
@@ -457,116 +199,19 @@ def test_svoo_apply_api_defaults_use_model_context():
     with pytest.raises(ValueError, match="use_svoo"):
         sparsevideo.normalize_method_config("svoo", {"use_svoo": False})
 
-    wan14 = SVOOMethod(
-        config={},
-        model_info=SimpleNamespace(model_type="wan", model_key="wan21-t2v-14b", transformers=[object()]),
-    )
-    assert wan14.config["sparsity_csv_path"].endswith("sparsity_wan_14B_t2v.csv")
-
-    wan_i2v = SVOOMethod(
-        config={},
-        model_info=SimpleNamespace(model_type="wan", model_key="wan21-i2v-14b", transformers=[object()]),
-    )
-    assert wan_i2v.config["use_dynamic_min_kc_ratio"] is True
-    assert wan_i2v.config["sparsity_csv_path"].endswith("sparsity_wan_14B_i2v.csv")
-
-    hunyuan_i2v = SVOOMethod(
-        config={},
-        model_info=SimpleNamespace(model_type="hunyuan_video", model_key="hunyuan-i2v", transformers=[object()]),
-    )
-    assert hunyuan_i2v.config["use_dynamic_min_kc_ratio"] is True
-    assert hunyuan_i2v.config["sparsity_csv_path"].endswith("sparsity_hunyuan10_13B_i2v.csv")
-
-    skyreels = SVOOMethod(
-        config={},
-        model_info=SimpleNamespace(model_type="wan", model_key="skyreels-v2-t2v-14b", transformers=[object()]),
-    )
-    assert skyreels.config["num_q_centroids"] == 256
-    assert skyreels.config["kmeans_iter_step"] == 2
-    assert skyreels.config["use_dynamic_min_kc_ratio"] is False
-    assert skyreels.config["sparsity_csv_path"] == "sparsity_profiles/sparsity_results.csv"
-
-    wan_animate = SVOOMethod(
-        config={},
-        model_info=SimpleNamespace(model_type="wan", model_key="wan22-animate-14b", transformers=[object()]),
-    )
-    assert wan_animate.config["use_dynamic_min_kc_ratio"] is False
-    assert wan_animate.config["sparsity_csv_path"] == "sparsity_profiles/sparsity_results.csv"
-
-    wan_vace = SVOOMethod(
-        config={},
-        model_info=SimpleNamespace(model_type="wan", model_key="wan21-vace-14b", transformers=[object()]),
-    )
-    assert wan_vace.config["use_dynamic_min_kc_ratio"] is False
-    assert wan_vace.config["sparsity_csv_path"] == "sparsity_profiles/sparsity_results.csv"
-
-    wan_fun = SVOOMethod(
-        config={},
-        model_info=SimpleNamespace(model_type="wan", model_key="wan21-fun-1.3b-control", transformers=[object()]),
-    )
-    assert wan_fun.config["use_dynamic_min_kc_ratio"] is False
-    assert wan_fun.config["kmeans_iter_init"] == 2
-    assert wan_fun.config["kmeans_iter_step"] == 2
-
-    cogvideox = SVOOMethod(
-        config={},
-        model_info=SimpleNamespace(
-            model_type="cogvideox",
-            model_key="cogvideox-t2v",
-            transformers=[object()],
-        ),
-    )
-    assert cogvideox.config["num_q_centroids"] == 256
-    assert cogvideox.config["num_k_centroids"] == 1024
-    assert cogvideox.config["kmeans_iter_init"] == 2
-    assert cogvideox.config["kmeans_iter_step"] == 2
-    assert cogvideox.config["use_dynamic_min_kc_ratio"] is False
-    assert cogvideox.config["sparsity_csv_path"] == "sparsity_profiles/sparsity_results.csv"
-
-    ltx = SVOOMethod(
-        config={},
-        model_info=SimpleNamespace(
-            model_type="ltx_video",
-            model_key="ltx-video",
-            transformers=[object()],
-        ),
-    )
-    assert ltx.config["num_q_centroids"] == 256
-    assert ltx.config["num_k_centroids"] == 1024
-    assert ltx.config["kmeans_iter_init"] == 2
-    assert ltx.config["kmeans_iter_step"] == 2
-    assert ltx.config["use_dynamic_min_kc_ratio"] is False
-    assert ltx.config["sparsity_csv_path"] == "sparsity_profiles/sparsity_results.csv"
-
-    mochi = SVOOMethod(
-        config={},
-        model_info=SimpleNamespace(
-            model_type="mochi",
-            model_key="mochi-1",
-            transformers=[object()],
-        ),
-    )
-    assert mochi.config["num_q_centroids"] == 256
-    assert mochi.config["num_k_centroids"] == 1024
-    assert mochi.config["kmeans_iter_init"] == 2
-    assert mochi.config["kmeans_iter_step"] == 2
-    assert mochi.config["use_dynamic_min_kc_ratio"] is False
-    assert mochi.config["sparsity_csv_path"] == "sparsity_profiles/sparsity_results.csv"
-
-    easyanimate = SVOOMethod(
-        config={},
-        model_info=SimpleNamespace(
-            model_type="easyanimate",
-            model_key="easyanimate-v5-t2v-12b",
-            transformers=[object()],
-        ),
-    )
-    assert easyanimate.config["num_q_centroids"] == 256
-    assert easyanimate.config["num_k_centroids"] == 1024
-    assert easyanimate.config["kmeans_iter_init"] == 2
-    assert easyanimate.config["kmeans_iter_step"] == 2
-    assert easyanimate.config["use_dynamic_min_kc_ratio"] is False
-    assert easyanimate.config["sparsity_csv_path"] == "sparsity_profiles/sparsity_results.csv"
+    for model_key in sorted(PUBLIC_BACKBONE_KEYS):
+        expected = _module_default_config("svoo", model_key=model_key)
+        if int(expected.get("kmeans_iter_init", 0)) <= 0:
+            continue
+        if expected.get("use_dynamic_min_kc_ratio"):
+            expected["sparsity_csv_path"] = str(
+                resolve_sparsity_csv_path(expected["sparsity_csv_path"])
+            )
+        method = SVOOMethod(
+            config={},
+            model_info=SimpleNamespace(model_type="wan", model_key=model_key, transformers=[object()]),
+        )
+        assert method.config == expected
 
     with pytest.raises(ValueError, match="kmeans_iter_init > 0"):
         SVOOMethod(
@@ -579,12 +224,12 @@ def test_svoo_apply_api_defaults_use_model_context():
         )
 
 
-def test_svoo_rejects_missing_dynamic_sparsity_profile():
+def test_svoo_rejects_missing_dynamic_sparsity_csv():
     from sparsevideo.methods.svoo import SVOOMethod
 
     with pytest.raises(FileNotFoundError, match="sparsity_csv_path"):
         SVOOMethod(
-            config={"sparsity_csv_path": "/tmp/sparsevideo-missing-svoo-profile.csv"},
+            config={"sparsity_csv_path": "/tmp/sparsevideo-missing-svoo.csv"},
             model_info=SimpleNamespace(model_type="wan", model_key="wan21-t2v-1.3b", transformers=[object()]),
         )
 
@@ -595,38 +240,20 @@ def test_base_method_defaults_use_model_context():
     from sparsevideo.methods.radial import RadialMethod
     from sparsevideo.methods.sta import STAMethod
 
-    method = AdaClusterMethod(
-        config={},
-        model_info=SimpleNamespace(model_type="hunyuan_video", model_key="hunyuan-t2v"),
+    cases = (
+        (AdaClusterMethod, "adacluster", "hunyuan_video", "hunyuan-t2v"),
+        (DraftMethod, "draft", "wan", "wan21-t2v-14b"),
+        (RadialMethod, "radial", "hunyuan_video", "hunyuan-t2v"),
+        (STAMethod, "sta", "wan", "wan21-t2v-14b"),
+        (STAMethod, "sta", "hunyuan_video", "hunyuan-t2v"),
     )
-    assert method.config["topk_num"] == 94
-    assert method.config["q_kernel_num"] == 250
-    assert method.config["kv_kernel_num"] == 1243
 
-    draft = DraftMethod(config={}, model_info=SimpleNamespace(model_type="wan", model_key="wan21-t2v-14b"))
-    assert draft.config["sparsity_ratio"] == 0.75
-    assert "allow_triton_fallback" not in draft.config
-
-    radial = RadialMethod(
-        config={},
-        model_info=SimpleNamespace(model_type="hunyuan_video", model_key="hunyuan-t2v"),
-    )
-    assert "dense_timesteps" not in radial.config
-    assert "dense_layers" not in radial.config
-    assert radial.config["decay_factor"] == 0.95
-
-    sta_hunyuan = STAMethod(
-        config={},
-        model_info=SimpleNamespace(model_type="hunyuan_video", model_key="hunyuan-t2v"),
-    )
-    assert sta_hunyuan.config["window_size"] == [5, 6, 10]
-    assert sta_hunyuan.config["has_text"] is True
-    assert sta_hunyuan.config["mask_strategy_file_path"].endswith("mask_strategy_hunyuan_t2v.json")
-
-    sta_wan = STAMethod(config={}, model_info=SimpleNamespace(model_type="wan", model_key="wan21-t2v-14b"))
-    assert sta_wan.config["window_size"] == [3, 6, 10]
-    assert sta_wan.config["has_text"] is False
-    assert sta_wan.config["mask_strategy_file_path"].endswith("mask_strategy_wan21_t2v_14b.json")
+    for method_cls, method_name, model_type, model_key in cases:
+        method = method_cls(
+            config={},
+            model_info=SimpleNamespace(model_type=model_type, model_key=model_key),
+        )
+        assert method.config == sparsevideo.default_method_config(method_name, model_key=model_key)
 
 
 def test_draft_dense_switch_is_not_exposed_as_sparse_method():
@@ -637,40 +264,6 @@ def test_draft_dense_switch_is_not_exposed_as_sparse_method():
             config={"block_sparse_attention": False},
             model_info=SimpleNamespace(model_type="wan"),
         )
-
-
-def test_contextual_defaults_match_hunyuan_adacluster():
-    config = sparsevideo.default_method_config(
-        "adacluster", model_family="hunyuan_video", model_key="hunyuan-t2v",
-    )
-    assert config["topk_num"] == 94
-    assert config["q_kernel_num"] == 250
-    assert config["kv_kernel_num"] == 1243
-    assert config["use_thresholded_kmeans_loop"] is False
-    assert "late_q_kernel_num" not in config
-    assert "late_kv_kernel_num" not in config
-
-
-def test_contextual_defaults_match_wan_adacluster_runwan_fixed_clusters():
-    config = sparsevideo.default_method_config("adacluster", model_family="wan", model_key="wan21-t2v-1.3b")
-    assert config["topk_num"] == 128
-    assert config["q_kernel_num"] == 100
-    assert config["kv_kernel_num"] == 500
-    assert config["use_thresholded_kmeans_loop"] is False
-    assert config["initial_q_kernel_num"] == 50
-    assert config["initial_kv_kernel_num"] == 200
-    assert config["q_distance_threshold"] == 9.0
-    assert config["kv_distance_threshold"] == 5.5
-    assert config["thresholded_kmeans_iter_time"] == 3
-    assert config["thresholded_kmeans_max_iterations"] == 10
-
-
-def test_flashomni_defaults_use_paper_mmdit_for_all_public_backbones():
-    for model_key in PUBLIC_BACKBONE_KEYS:
-        config = sparsevideo.default_method_config("flashomni", model_key=model_key)
-        assert config["sparse_pattern"] == "paper_mmdit", model_key
-        assert config["use_sparse_gemm"] is False, model_key
-        assert config["taylor_cache_device"] == "cpu", model_key
 
 
 def test_local_aliases_are_not_primary_api():

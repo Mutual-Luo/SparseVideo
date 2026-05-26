@@ -140,7 +140,7 @@ def preflight_runtime(
     config: Dict[str, Any],
     device: str,
     runtime_status: Dict[str, Any],
-    model_family: Optional[str] = None,
+    model_type: Optional[str] = None,
 ) -> Dict[str, Any]:
     kernels = runtime_status["optional_kernels"]
     torch_status = runtime_status["torch"]
@@ -197,7 +197,7 @@ def preflight_runtime(
         sparge = kernels["spas_sage_attn"]
         sparge_env_error = (sparge.get("env_root") or {}).get("error")
         sparsevideo_runtime = sparge.get("sparsevideo_runtime", {})
-        if model_family == "hunyuan_video":
+        if model_type == "hunyuan_video":
             hunyuan_forward_patch = sparsevideo_runtime.get("hunyuan_forward_patch", {})
             if not hunyuan_forward_patch.get("source_files"):
                 errors.append(
@@ -489,7 +489,7 @@ def preflight_runtime(
     if (
         method == "flashomni"
         and config.get("sparse_pattern") == "paper_mmdit"
-        and model_family == "hunyuan_video"
+        and model_type == "hunyuan_video"
         and bool(config.get("use_sparse_gemm", False))
     ):
         errors.append(
@@ -755,7 +755,7 @@ def preflight_runtime(
                 ):
                     if not svg1_runtime.get(attr):
                         missing.append(attr)
-                if model_family == "hunyuan_video" and not svg1_runtime.get("svg1_hunyuan_flash_attn_varlen"):
+                if model_type == "hunyuan_video" and not svg1_runtime.get("svg1_hunyuan_flash_attn_varlen"):
                     missing.append("svg1_hunyuan_flash_attn_varlen")
                 if missing:
                     errors.append(
@@ -780,7 +780,7 @@ def preflight_runtime(
                 "svg1 requires PyTorch FlexAttention APIs for the upstream Sparse-VideoGen sparse path. "
                 f"Missing: {missing}.{detail}"
             )
-        if model_family == "hunyuan_video" and _has_dense_warmup(config):
+        if model_type == "hunyuan_video" and _has_dense_warmup(config):
             error = _flash_attn_preflight_error(
                 kernels,
                 required_func="flash_attn_varlen_func",
@@ -841,7 +841,7 @@ def preflight_runtime(
                     "adacluster owned Triton runtime is missing loadable API(s): "
                     f"{missing}."
                 )
-        if model_family == "hunyuan_video" and _has_dense_warmup(config):
+        if model_type == "hunyuan_video" and _has_dense_warmup(config):
             error = _flash_attn_preflight_error(
                 kernels,
                 required_func="flash_attn_func",
@@ -855,7 +855,7 @@ def preflight_runtime(
 
     if method == "draft":
         message = None
-        if model_family in (None, "wan", "hunyuan_video") and _has_dense_warmup(config):
+        if model_type in (None, "wan", "hunyuan_video") and _has_dense_warmup(config):
             message = _flash_attn_preflight_error(
                 kernels,
                 required_func="flash_attn_varlen_func",
@@ -1013,7 +1013,7 @@ def preflight_runtime(
             else:
                 warnings.append(
                     f"sta seq_shape={seq_shape} uses SparseVideo's generalized STA A100 block-sparse CUDA path "
-                    "for this backbone's inferred tile-padded video layout; this is not a FastVideo H100/TK native profile."
+                    "for this backbone's inferred tile-padded video layout; this is not a FastVideo H100/TK native target."
                 )
         if has_ampere:
             a100_extension = bool(sta.get("sparsevideo_a100_block_sparse", {}).get("native_extension"))

@@ -149,8 +149,8 @@ def test_hunyuan_adacluster_dense_gate_is_only_common_warmup(monkeypatch):
 def test_wan_adacluster_default_matches_runwan_fixed_cluster_path():
     from sparsevideo.methods.adacluster.config import default_config
 
-    wan = default_config(model_family="wan")
-    hunyuan = default_config(model_family="hunyuan_video")
+    wan = default_config(model_key="wan21-t2v-1.3b")
+    hunyuan = default_config(model_key="hunyuan-t2v")
 
     assert wan["topk_num"] == 128
     assert wan["q_kernel_num"] == 100

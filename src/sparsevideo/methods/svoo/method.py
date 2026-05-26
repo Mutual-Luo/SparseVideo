@@ -30,10 +30,8 @@ class SVOOMethod(SparseMethod):
     def __init__(self, config, model_info):
         normalized_config = self.normalize_config(config)
         model_key = getattr(model_info, "model_key", None)
-        if model_info.model_type == "wan" and len(getattr(model_info, "transformers", [])) > 1:
-            model_key = "wan22-t2v-a14b"
         self.config = {
-            **svoo_config.default_config(model_family=model_info.model_type, model_key=model_key),
+            **svoo_config.default_config(model_key=model_key),
             **normalized_config,
         }
         self.model_info = model_info

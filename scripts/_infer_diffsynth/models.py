@@ -16,7 +16,7 @@ DEFAULT_MODEL_ROOT = Path(
 class DiffSynthModelSpec:
     key: str
     aliases: Tuple[str, ...]
-    family: str
+    pipeline_kind: str
     pipeline: str
     description: str
     default_height: int
@@ -43,7 +43,7 @@ class ResolvedDiffSynthModel:
     def as_dict(self) -> Dict[str, Any]:
         return {
             "model": self.spec.key,
-            "family": self.spec.family,
+            "pipeline_kind": self.spec.pipeline_kind,
             "pipeline": self.spec.pipeline,
             "description": self.spec.description,
             "required_inputs": list(self.spec.required_inputs),
@@ -61,7 +61,7 @@ class ResolvedDiffSynthModel:
 class DeferredDiffSynthModelSpec:
     key: str
     aliases: Tuple[str, ...]
-    family: str
+    pipeline_kind: str
     pipeline: str
     description: str
     origin_repo: str
@@ -73,7 +73,7 @@ class DeferredDiffSynthModelSpec:
         return {
             "model": self.key,
             "aliases": list(self.aliases),
-            "family": self.family,
+            "pipeline_kind": self.pipeline_kind,
             "pipeline": self.pipeline,
             "description": self.description,
             "origin_repo": self.origin_repo,
@@ -87,7 +87,7 @@ _SPECS: Tuple[DiffSynthModelSpec, ...] = (
     DiffSynthModelSpec(
         key="wan21-t2v-1.3b",
         aliases=("wan1.3b", "wan21-1.3b"),
-        family="wan",
+        pipeline_kind="wan",
         pipeline="WanVideoPipeline",
         description="DiffSynth Wan2.1 text-to-video 1.3B",
         default_height=480,
@@ -98,7 +98,7 @@ _SPECS: Tuple[DiffSynthModelSpec, ...] = (
     DiffSynthModelSpec(
         key="wan21-speedcontrol-1.3b",
         aliases=("wan21-speedcontrol", "speedcontrol"),
-        family="wan",
+        pipeline_kind="wan",
         pipeline="WanVideoPipeline",
         description="DiffSynth Wan2.1 1.3B speed-control motion controller",
         default_height=480,
@@ -109,7 +109,7 @@ _SPECS: Tuple[DiffSynthModelSpec, ...] = (
     DiffSynthModelSpec(
         key="wan21-t2v-14b",
         aliases=("wan14b", "wan21-14b"),
-        family="wan",
+        pipeline_kind="wan",
         pipeline="WanVideoPipeline",
         description="DiffSynth Wan2.1 text-to-video 14B",
         default_height=480,
@@ -120,7 +120,7 @@ _SPECS: Tuple[DiffSynthModelSpec, ...] = (
     DiffSynthModelSpec(
         key="wan21-i2v-14b-480p",
         aliases=("wan21-i2v-480p", "wan-i2v-480p"),
-        family="wan",
+        pipeline_kind="wan",
         pipeline="WanVideoPipeline",
         description="DiffSynth Wan2.1 image-to-video 14B 480P",
         default_height=480,
@@ -132,7 +132,7 @@ _SPECS: Tuple[DiffSynthModelSpec, ...] = (
     DiffSynthModelSpec(
         key="wan21-i2v-14b-720p",
         aliases=("wan21-i2v-14b", "wan21-i2v", "wan-i2v", "wan14b-i2v"),
-        family="wan",
+        pipeline_kind="wan",
         pipeline="WanVideoPipeline",
         description="DiffSynth Wan2.1 image-to-video 14B 720P",
         default_height=720,
@@ -144,7 +144,7 @@ _SPECS: Tuple[DiffSynthModelSpec, ...] = (
     DiffSynthModelSpec(
         key="wan21-flf2v-14b-720p",
         aliases=("wan21-flf2v", "wan-flf2v"),
-        family="wan",
+        pipeline_kind="wan",
         pipeline="WanVideoPipeline",
         description="DiffSynth Wan2.1 first-last-frame-to-video 14B 720P",
         default_height=720,
@@ -156,7 +156,7 @@ _SPECS: Tuple[DiffSynthModelSpec, ...] = (
     DiffSynthModelSpec(
         key="wan21-fun-1.3b-control",
         aliases=("wan21-fun-control-1.3b",),
-        family="wan",
+        pipeline_kind="wan",
         pipeline="WanVideoPipeline",
         description="DiffSynth Wan2.1-Fun 1.3B Control",
         default_height=480,
@@ -168,7 +168,7 @@ _SPECS: Tuple[DiffSynthModelSpec, ...] = (
     DiffSynthModelSpec(
         key="wan21-fun-1.3b-inp",
         aliases=("wan21-fun-inp-1.3b",),
-        family="wan",
+        pipeline_kind="wan",
         pipeline="WanVideoPipeline",
         description="DiffSynth Wan2.1-Fun 1.3B InP",
         default_height=480,
@@ -180,7 +180,7 @@ _SPECS: Tuple[DiffSynthModelSpec, ...] = (
     DiffSynthModelSpec(
         key="wan21-fun-14b-control",
         aliases=("wan21-fun-control-14b",),
-        family="wan",
+        pipeline_kind="wan",
         pipeline="WanVideoPipeline",
         description="DiffSynth Wan2.1-Fun 14B Control",
         default_height=480,
@@ -192,7 +192,7 @@ _SPECS: Tuple[DiffSynthModelSpec, ...] = (
     DiffSynthModelSpec(
         key="wan21-fun-14b-inp",
         aliases=("wan21-fun-inp-14b",),
-        family="wan",
+        pipeline_kind="wan",
         pipeline="WanVideoPipeline",
         description="DiffSynth Wan2.1-Fun 14B InP",
         default_height=480,
@@ -204,7 +204,7 @@ _SPECS: Tuple[DiffSynthModelSpec, ...] = (
     DiffSynthModelSpec(
         key="wan21-fun-v11-1.3b-control",
         aliases=("wan21-fun-v1.1-1.3b-control",),
-        family="wan",
+        pipeline_kind="wan",
         pipeline="WanVideoPipeline",
         description="DiffSynth Wan2.1-Fun V1.1 1.3B Control",
         default_height=480,
@@ -216,7 +216,7 @@ _SPECS: Tuple[DiffSynthModelSpec, ...] = (
     DiffSynthModelSpec(
         key="wan21-fun-v11-1.3b-control-camera",
         aliases=("wan21-fun-v1.1-1.3b-control-camera",),
-        family="wan",
+        pipeline_kind="wan",
         pipeline="WanVideoPipeline",
         description="DiffSynth Wan2.1-Fun V1.1 1.3B Control-Camera",
         default_height=480,
@@ -228,7 +228,7 @@ _SPECS: Tuple[DiffSynthModelSpec, ...] = (
     DiffSynthModelSpec(
         key="wan21-fun-v11-14b-control",
         aliases=("wan21-fun-v1.1-14b-control",),
-        family="wan",
+        pipeline_kind="wan",
         pipeline="WanVideoPipeline",
         description="DiffSynth Wan2.1-Fun V1.1 14B Control",
         default_height=480,
@@ -240,7 +240,7 @@ _SPECS: Tuple[DiffSynthModelSpec, ...] = (
     DiffSynthModelSpec(
         key="wan21-fun-v11-14b-control-camera",
         aliases=("wan21-fun-v1.1-14b-control-camera",),
-        family="wan",
+        pipeline_kind="wan",
         pipeline="WanVideoPipeline",
         description="DiffSynth Wan2.1-Fun V1.1 14B Control-Camera",
         default_height=480,
@@ -252,7 +252,7 @@ _SPECS: Tuple[DiffSynthModelSpec, ...] = (
     DiffSynthModelSpec(
         key="wan21-vace-1.3b",
         aliases=("vace", "wan-vace", "wan21-vace"),
-        family="wan",
+        pipeline_kind="wan",
         pipeline="WanVideoPipeline",
         description="DiffSynth VACE Wan2.1 1.3B preview",
         default_height=480,
@@ -263,7 +263,7 @@ _SPECS: Tuple[DiffSynthModelSpec, ...] = (
     DiffSynthModelSpec(
         key="wan21-vace-14b",
         aliases=(),
-        family="wan",
+        pipeline_kind="wan",
         pipeline="WanVideoPipeline",
         description="DiffSynth VACE Wan2.1 14B",
         default_height=480,
@@ -274,7 +274,7 @@ _SPECS: Tuple[DiffSynthModelSpec, ...] = (
     DiffSynthModelSpec(
         key="wan22-animate-14b",
         aliases=("wananimate", "wan-animate", "wan22-animate"),
-        family="wan",
+        pipeline_kind="wan",
         pipeline="WanVideoPipeline",
         description="DiffSynth Wan2.2 Animate 14B",
         default_height=480,
@@ -286,7 +286,7 @@ _SPECS: Tuple[DiffSynthModelSpec, ...] = (
     DiffSynthModelSpec(
         key="wan22-t2v-a14b",
         aliases=("wan22", "wan22-a14b"),
-        family="wan",
+        pipeline_kind="wan",
         pipeline="WanVideoPipeline",
         description="DiffSynth Wan2.2 text-to-video A14B high/low-noise models",
         default_height=704,
@@ -297,7 +297,7 @@ _SPECS: Tuple[DiffSynthModelSpec, ...] = (
     DiffSynthModelSpec(
         key="wan22-i2v-a14b",
         aliases=("wan22-i2v",),
-        family="wan",
+        pipeline_kind="wan",
         pipeline="WanVideoPipeline",
         description="DiffSynth Wan2.2 image-to-video A14B high/low-noise models",
         default_height=704,
@@ -309,7 +309,7 @@ _SPECS: Tuple[DiffSynthModelSpec, ...] = (
     DiffSynthModelSpec(
         key="wan22-ti2v-5b",
         aliases=("wan22-ti2v",),
-        family="wan",
+        pipeline_kind="wan",
         pipeline="WanVideoPipeline",
         description="DiffSynth Wan2.2 text/image-to-video 5B",
         default_height=704,
@@ -320,7 +320,7 @@ _SPECS: Tuple[DiffSynthModelSpec, ...] = (
     DiffSynthModelSpec(
         key="wan22-s2v-14b",
         aliases=("wan22-s2v",),
-        family="wan",
+        pipeline_kind="wan",
         pipeline="WanVideoPipeline",
         description="DiffSynth Wan2.2 speech-to-video 14B",
         default_height=704,
@@ -332,7 +332,7 @@ _SPECS: Tuple[DiffSynthModelSpec, ...] = (
     DiffSynthModelSpec(
         key="wan22-fun-a14b-control",
         aliases=("wan22-fun-control-a14b",),
-        family="wan",
+        pipeline_kind="wan",
         pipeline="WanVideoPipeline",
         description="DiffSynth Wan2.2-Fun A14B Control high-noise DiT",
         default_height=704,
@@ -344,7 +344,7 @@ _SPECS: Tuple[DiffSynthModelSpec, ...] = (
     DiffSynthModelSpec(
         key="wan22-fun-a14b-control-camera",
         aliases=("wan22-fun-control-camera-a14b",),
-        family="wan",
+        pipeline_kind="wan",
         pipeline="WanVideoPipeline",
         description="DiffSynth Wan2.2-Fun A14B Control-Camera high-noise DiT",
         default_height=704,
@@ -356,7 +356,7 @@ _SPECS: Tuple[DiffSynthModelSpec, ...] = (
     DiffSynthModelSpec(
         key="longcat-video",
         aliases=("longcat",),
-        family="wan",
+        pipeline_kind="wan",
         pipeline="WanVideoPipeline",
         description="DiffSynth LongCat-Video on WanVideoPipeline",
         default_height=480,
@@ -368,7 +368,7 @@ _SPECS: Tuple[DiffSynthModelSpec, ...] = (
     DiffSynthModelSpec(
         key="video-as-prompt-wan21-14b",
         aliases=("video-as-prompt", "vap-wan21-14b"),
-        family="wan",
+        pipeline_kind="wan",
         pipeline="WanVideoPipeline",
         description="DiffSynth Video-as-Prompt Wan2.1 14B",
         default_height=480,
@@ -380,7 +380,7 @@ _SPECS: Tuple[DiffSynthModelSpec, ...] = (
     DiffSynthModelSpec(
         key="krea-realtime-video",
         aliases=("krea-video",),
-        family="wan",
+        pipeline_kind="wan",
         pipeline="WanVideoPipeline",
         description="DiffSynth Krea realtime video 14B",
         default_height=480,
@@ -391,7 +391,7 @@ _SPECS: Tuple[DiffSynthModelSpec, ...] = (
     DiffSynthModelSpec(
         key="mova-720p",
         aliases=("mova",),
-        family="mova",
+        pipeline_kind="mova",
         pipeline="MovaAudioVideoPipeline",
         description="DiffSynth MOVA 720P with Wan video DiT backbone",
         default_height=720,
@@ -403,7 +403,7 @@ _SPECS: Tuple[DiffSynthModelSpec, ...] = (
     DiffSynthModelSpec(
         key="ltx2",
         aliases=("ltx-2",),
-        family="ltx2",
+        pipeline_kind="ltx2",
         pipeline="LTX2AudioVideoPipeline",
         description="DiffSynth LTX-2 repackaged audio-video components",
         default_height=512,
@@ -415,7 +415,7 @@ _SPECS: Tuple[DiffSynthModelSpec, ...] = (
     DiffSynthModelSpec(
         key="ltx23",
         aliases=("ltx2.3", "ltx-2.3"),
-        family="ltx2",
+        pipeline_kind="ltx2",
         pipeline="LTX2AudioVideoPipeline",
         description="DiffSynth LTX-2.3 source checkpoint plus latent upsampler components",
         default_height=512,
@@ -430,7 +430,7 @@ _DEFERRED_SPECS: Tuple[DeferredDiffSynthModelSpec, ...] = (
     DeferredDiffSynthModelSpec(
         key="wan22-dancer-14b",
         aliases=("wan22-dancer", "wantodance"),
-        family="wan",
+        pipeline_kind="wan",
         pipeline="WanVideoPipeline",
         description="DiffSynth Wan2.2-Dancer 14B WanToDance global model",
         origin_repo="Wan-AI/Wan2.2-Dancer-14B",
@@ -694,7 +694,7 @@ def load_diffsynth_pipeline(
 
         torch_dtype = torch.bfloat16
 
-    if resolved.spec.family == "wan":
+    if resolved.spec.pipeline_kind == "wan":
         from diffsynth import ModelConfig
         from diffsynth.pipelines.wan_video import WanVideoPipeline
 
@@ -720,7 +720,7 @@ def load_diffsynth_pipeline(
         )
         if audio_processor_path is not None:
             pipe.audio_processor = _load_wav2vec2_processor(audio_processor_path)
-    elif resolved.spec.family == "mova":
+    elif resolved.spec.pipeline_kind == "mova":
         from diffsynth import ModelConfig
         from diffsynth.pipelines.mova_audio_video import MovaAudioVideoPipeline
 
@@ -737,7 +737,7 @@ def load_diffsynth_pipeline(
             use_usp=use_usp,
             vram_limit=vram_limit,
         )
-    elif resolved.spec.family == "ltx2":
+    elif resolved.spec.pipeline_kind == "ltx2":
         if use_usp:
             raise NotImplementedError("DiffSynth LTX2AudioVideoPipeline does not expose SparseVideo USP support.")
         from diffsynth import ModelConfig
@@ -756,7 +756,7 @@ def load_diffsynth_pipeline(
             vram_limit=vram_limit,
         )
     else:
-        raise ValueError(f"Unsupported DiffSynth pipeline family: {resolved.spec.family}")
+        raise ValueError(f"Unsupported DiffSynth pipeline kind: {resolved.spec.pipeline_kind}")
 
     if enable_vram_management and hasattr(pipe, "enable_vram_management"):
         pipe.enable_vram_management()

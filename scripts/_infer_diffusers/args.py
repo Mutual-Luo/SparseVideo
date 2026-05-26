@@ -6,7 +6,7 @@ import os
 from pathlib import Path
 from typing import Any, Dict
 
-from .models import DEFAULT_HEIGHT, DEFAULT_SEED, DEFAULT_WIDTH, MODEL_ALIASES
+from .models import DEFAULT_HEIGHT, DEFAULT_NEGATIVE_PROMPT, DEFAULT_SEED, DEFAULT_WIDTH, MODEL_ALIASES
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -32,7 +32,7 @@ def build_parser() -> argparse.ArgumentParser:
             "  python scripts/infer.py --model wan1.3b --method dense\n"
             "  python scripts/infer.py --model wan1.3b --method svoo --num-inference-steps 10\n"
             "  python scripts/infer.py --model hunyuan --method radial --prompt-file prompt.txt\n"
-            "  python scripts/infer.py --model wan14b --method sta --profile upstream\n"
+            "  python scripts/infer.py --model wan14b --method sta\n"
             "  python scripts/infer.py --model wan14b-i2v --method svoo --image input.jpg\n"
             "  python scripts/infer.py --model hunyuan-i2v --method radial --image input.png\n"
             "\n"
@@ -42,7 +42,7 @@ def build_parser() -> argparse.ArgumentParser:
             "easyanimate, motif-video, ltx-video-2, sana-video, kandinsky5\n"
             "Methods: dense, svg1, svg2, spargeattn, radial, sta, draft, "
             "adacluster, flashomni, svoo\n"
-            "Note: sparse methods support Wan-family/SkyReels and Hunyuan (T2V and I2V); "
+            "Note: sparse methods support Wan/SkyReels and Hunyuan (T2V and I2V); "
             "CogVideoX T2V/I2V, LTX, Allegro, Mochi, and EasyAnimate currently use the guarded "
             "validated matrix from sparsevideo._support. "
             "MotifVideo and LTX Video 2 are unknown in this Diffusers install; "
@@ -68,30 +68,6 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--reference-video", type=str, default=None, help="Reference/input video path for WanVACE (optional).")
     parser.add_argument("--mask-video", type=str, default=None, help="Mask video path for WanVACE (optional).")
     parser.add_argument("--negative-prompt", type=str, default=None)
-    parser.add_argument(
-        "--profile",
-        choices=("default", "upstream"),
-        default="default",
-        help="default keeps SparseVideo's normal 720p comparison shape; upstream uses method benchmark shapes and fails if none is defined.",
-    )
-    parser.add_argument(
-        "--upstream-profile",
-        action="store_const",
-        dest="profile",
-        const="upstream",
-        help="Alias for --profile upstream.",
-    )
-    parser.add_argument(
-        "--profile-for-method",
-        choices=METHODS,
-        default=None,
-        help=(
-            "Resolve --profile using another method's upstream benchmark profile. "
-            "Use this for dense baselines, e.g. --method dense --profile upstream "
-            "--profile-for-method draft. Sparse method_config from that profile is "
-            "not applied unless it matches --method."
-        ),
-    )
     parser.add_argument("--height", type=int, default=None, help=f"Output height. Default: {DEFAULT_HEIGHT}.")
     parser.add_argument("--width", type=int, default=None, help=f"Output width. Default: {DEFAULT_WIDTH}.")
     parser.add_argument("--duration-seconds", type=float, default=None)
@@ -106,13 +82,13 @@ def build_parser() -> argparse.ArgumentParser:
         "--vae-dtype",
         choices=("bf16", "fp16", "fp32"),
         default=None,
-        help="Wan VAE dtype. Default: fp32; upstream profiles may override it.",
+        help="Wan/SkyReels VAE dtype. Default: fp32.",
     )
     parser.add_argument(
         "--seed",
         type=int,
         default=None,
-        help=f"Random seed. Default: {DEFAULT_SEED}; --profile upstream may set the upstream example seed.",
+        help=f"Random seed. Default: {DEFAULT_SEED}.",
     )
     parser.add_argument("--dtype", choices=("bf16", "fp16", "fp32"), default="bf16")
     parser.add_argument("--device", default="cuda")
@@ -120,25 +96,25 @@ def build_parser() -> argparse.ArgumentParser:
         "--cpu-offload",
         action=argparse.BooleanOptionalAction,
         default=None,
-        help="Use pipeline CPU offload. Default: false, unless --profile upstream sets an upstream offload policy.",
+        help="Use pipeline CPU offload. Default: false.",
     )
     parser.add_argument(
         "--cpu-offload-mode",
         choices=("model", "sequential"),
         default=None,
-        help="CPU offload API to use when CPU offload is enabled. Default: model, unless the profile sets sequential.",
+        help="CPU offload API to use when CPU offload is enabled. Default: model.",
     )
     parser.add_argument(
         "--vae-tiling",
         action=argparse.BooleanOptionalAction,
         default=None,
-        help="Enable VAE tiling. Default: false, unless --profile upstream sets the reference script policy.",
+        help="Enable VAE tiling. Default: false.",
     )
     parser.add_argument(
         "--vae-slicing",
         action=argparse.BooleanOptionalAction,
         default=None,
-        help="Enable VAE slicing. Default: false, unless --profile upstream sets the reference script policy.",
+        help="Enable VAE slicing. Default: false.",
     )
     parser.add_argument("--vae-decoder-chunk-size", type=int, default=None)
     parser.add_argument("--output-dir", type=Path, default=REPO_ROOT / "result" / "inference")
@@ -210,3 +186,18 @@ def read_prompt(args: argparse.Namespace) -> str:
     if args.prompt_file is not None:
         return args.prompt_file.read_text(encoding="utf-8").strip()
     return args.prompt
+
+
+def finalize_runtime_defaults(args: argparse.Namespace) -> None:
+    if args.seed is None:
+        args.seed = DEFAULT_SEED
+    if args.cpu_offload is None:
+        args.cpu_offload = False
+    if args.cpu_offload_mode is None:
+        args.cpu_offload_mode = "model"
+    if args.vae_tiling is None:
+        args.vae_tiling = False
+    if args.vae_slicing is None:
+        args.vae_slicing = False
+    if args.negative_prompt is None:
+        args.negative_prompt = DEFAULT_NEGATIVE_PROMPT

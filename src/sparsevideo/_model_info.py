@@ -56,7 +56,7 @@ def _infer_model_key(pipe, transformers, model_type: str) -> Optional[str]:
         cls_name = type(pipe).__name__
         if "ImageToVideo" in cls_name or "I2V" in cls_name:
             return "hunyuan-i2v"
-        return "hunyuan_video"
+        return "hunyuan-t2v"
     if model_type == "cogvideox":
         cls_name = type(pipe).__name__
         return "cogvideox-i2v" if "ImageToVideo" in cls_name or "I2V" in cls_name else "cogvideox-t2v"
