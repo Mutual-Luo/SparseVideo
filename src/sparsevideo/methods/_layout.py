@@ -63,7 +63,7 @@ def infer_video_frame_shape(
     # shape is 18x48x80. Hunyuan 129-frame SVG uses 33x45x80; FastVideo STA uses
     # 30x48x80 with text padded after the image tokens.
     known_shapes = {
-        "wan": ((21, 45, 80), (18, 48, 80), (33, 45, 80)),
+        "wan": ((21, 45, 80), (20, 48, 80), (18, 48, 80), (13, 45, 80), (33, 45, 80)),
         "hunyuan_video": ((33, 45, 80), (30, 48, 80), (21, 45, 80)),
         "cogvideox": ((13, 30, 45), (13, 45, 80), (13, 60, 90), (25, 45, 80)),
         "ltx_video": ((21, 16, 22), (21, 22, 40)),

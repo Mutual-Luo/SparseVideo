@@ -95,7 +95,7 @@ model_defaults:
     latent_h: null
     latent_w: null
     visual_len: null
-    text_len: 256
+    text_len: null
     sparsity_ratio: 0.9
     batch_size: null
     block_sparse_attention: true

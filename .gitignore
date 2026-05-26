@@ -101,7 +101,7 @@ generated/
 eval_outputs/
 benchmark_outputs/
 *.log
-*.mp4
+# *.mp4
 *.mov
 *.avi
 *.mkv

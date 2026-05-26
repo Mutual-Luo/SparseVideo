@@ -59,28 +59,28 @@ CUDA_VISIBLE_DEVICES=7 python scripts/infer_diffusers.py --model wan21-i2v-14b  
 # ---------------------------------------
 CUDA_VISIBLE_DEVICES=1 python scripts/infer_diffusers.py --model wan22             --method dense      --prompt-file example/t2v/1.txt --cpu-offload --cpu-offload-mode model # 49:43
 CUDA_VISIBLE_DEVICES=1 python scripts/infer_diffusers.py --model wan22             --method svg1       --prompt-file example/t2v/1.txt --cpu-offload --cpu-offload-mode model # 29:56
-CUDA_VISIBLE_DEVICES=5 python scripts/infer_diffusers.py --model wan22             --method svg2       --prompt-file example/t2v/1.txt --cpu-offload --cpu-offload-mode model
-CUDA_VISIBLE_DEVICES=6 python scripts/infer_diffusers.py --model wan22             --method spargeattn --prompt-file example/t2v/1.txt --cpu-offload --cpu-offload-mode model
-CUDA_VISIBLE_DEVICES=1 python scripts/infer_diffusers.py --model wan22             --method radial     --prompt-file example/t2v/1.txt --cpu-offload --cpu-offload-mode model
+CUDA_VISIBLE_DEVICES=5 python scripts/infer_diffusers.py --model wan22             --method svg2       --prompt-file example/t2v/1.txt --cpu-offload --cpu-offload-mode model # 35:30
+CUDA_VISIBLE_DEVICES=4 python scripts/infer_diffusers.py --model wan22             --method spargeattn --prompt-file example/t2v/1.txt --cpu-offload --cpu-offload-mode model # 33:20
+CUDA_VISIBLE_DEVICES=4 python scripts/infer_diffusers.py --model wan22             --method radial     --prompt-file example/t2v/1.txt --cpu-offload --cpu-offload-mode model # 37:08 [needs to recheck later]
 CUDA_VISIBLE_DEVICES=4 python scripts/infer_diffusers.py --model wan22             --method sta        --prompt-file example/t2v/1.txt --cpu-offload --cpu-offload-mode model
-CUDA_VISIBLE_DEVICES=2 python scripts/infer_diffusers.py --model wan22             --method draft      --prompt-file example/t2v/1.txt --cpu-offload --cpu-offload-mode model
-CUDA_VISIBLE_DEVICES=3 python scripts/infer_diffusers.py --model wan22             --method adacluster --prompt-file example/t2v/1.txt --cpu-offload --cpu-offload-mode model
-CUDA_VISIBLE_DEVICES=5 python scripts/infer_diffusers.py --model wan22             --method flashomni  --prompt-file example/t2v/1.txt --cpu-offload --cpu-offload-mode model
-CUDA_VISIBLE_DEVICES=7 python scripts/infer_diffusers.py --model wan22             --method svoo       --prompt-file example/t2v/1.txt --cpu-offload --cpu-offload-mode model
+CUDA_VISIBLE_DEVICES=2 python scripts/infer_diffusers.py --model wan22             --method draft      --prompt-file example/t2v/1.txt --cpu-offload --cpu-offload-mode model # 26:05
+CUDA_VISIBLE_DEVICES=3 python scripts/infer_diffusers.py --model wan22             --method adacluster --prompt-file example/t2v/1.txt --cpu-offload --cpu-offload-mode model # 28:19
+CUDA_VISIBLE_DEVICES=2 python scripts/infer_diffusers.py --model wan22             --method flashomni  --prompt-file example/t2v/1.txt --cpu-offload --cpu-offload-mode model # 33:37
+CUDA_VISIBLE_DEVICES=3 python scripts/infer_diffusers.py --model wan22             --method svoo       --prompt-file example/t2v/1.txt --cpu-offload --cpu-offload-mode model # 32:13
 
 # ---------------------------------------
 # wan 2.2 i2v A14B (model: wan22-i2v)
 # ---------------------------------------
-CUDA_VISIBLE_DEVICES=1 python scripts/infer_diffusers.py --model wan22-i2v         --method dense      --prompt-file example/i2v/1.txt --image example/i2v/1.jpg --cpu-offload --cpu-offload-mode model
-CUDA_VISIBLE_DEVICES=4 python scripts/infer_diffusers.py --model wan22-i2v         --method svg1       --prompt-file example/i2v/1.txt --image example/i2v/1.jpg --cpu-offload --cpu-offload-mode model
-CUDA_VISIBLE_DEVICES=5 python scripts/infer_diffusers.py --model wan22-i2v         --method svg2       --prompt-file example/i2v/1.txt --image example/i2v/1.jpg --cpu-offload --cpu-offload-mode model
-CUDA_VISIBLE_DEVICES=6 python scripts/infer_diffusers.py --model wan22-i2v         --method spargeattn --prompt-file example/i2v/1.txt --image example/i2v/1.jpg --cpu-offload --cpu-offload-mode model
-CUDA_VISIBLE_DEVICES=7 python scripts/infer_diffusers.py --model wan22-i2v         --method radial     --prompt-file example/i2v/1.txt --image example/i2v/1.jpg --cpu-offload --cpu-offload-mode model
-CUDA_VISIBLE_DEVICES=4 python scripts/infer_diffusers.py --model wan22-i2v         --method sta        --prompt-file example/i2v/1.txt --image example/i2v/1.jpg --cpu-offload --cpu-offload-mode model
-CUDA_VISIBLE_DEVICES=5 python scripts/infer_diffusers.py --model wan22-i2v         --method draft      --prompt-file example/i2v/1.txt --image example/i2v/1.jpg --cpu-offload --cpu-offload-mode model
-CUDA_VISIBLE_DEVICES=6 python scripts/infer_diffusers.py --model wan22-i2v         --method adacluster --prompt-file example/i2v/1.txt --image example/i2v/1.jpg --cpu-offload --cpu-offload-mode model
-CUDA_VISIBLE_DEVICES=5 python scripts/infer_diffusers.py --model wan22-i2v         --method flashomni  --prompt-file example/i2v/1.txt --image example/i2v/1.jpg --cpu-offload --cpu-offload-mode model
-CUDA_VISIBLE_DEVICES=7 python scripts/infer_diffusers.py --model wan22-i2v         --method svoo       --prompt-file example/i2v/1.txt --image example/i2v/1.jpg --cpu-offload --cpu-offload-mode model
+CUDA_VISIBLE_DEVICES=5 python scripts/infer_diffusers.py --model wan22-i2v         --method dense      --prompt-file example/i2v/1.txt --image example/i2v/1.jpg --cpu-offload --cpu-offload-mode model # 49:08
+CUDA_VISIBLE_DEVICES=5 python scripts/infer_diffusers.py --model wan22-i2v         --method svg1       --prompt-file example/i2v/1.txt --image example/i2v/1.jpg --cpu-offload --cpu-offload-mode model # 30:16
+CUDA_VISIBLE_DEVICES=6 python scripts/infer_diffusers.py --model wan22-i2v         --method svg2       --prompt-file example/i2v/1.txt --image example/i2v/1.jpg --cpu-offload --cpu-offload-mode model # 34:12
+CUDA_VISIBLE_DEVICES=7 python scripts/infer_diffusers.py --model wan22-i2v         --method spargeattn --prompt-file example/i2v/1.txt --image example/i2v/1.jpg --cpu-offload --cpu-offload-mode model # 33:29
+CUDA_VISIBLE_DEVICES=0 python scripts/infer_diffusers.py --model wan22-i2v         --method radial     --prompt-file example/i2v/1.txt --image example/i2v/1.jpg --cpu-offload --cpu-offload-mode model
+CUDA_VISIBLE_DEVICES=1 python scripts/infer_diffusers.py --model wan22-i2v         --method sta        --prompt-file example/i2v/1.txt --image example/i2v/1.jpg --cpu-offload --cpu-offload-mode model # 29:53
+CUDA_VISIBLE_DEVICES=1 python scripts/infer_diffusers.py --model wan22-i2v         --method draft      --prompt-file example/i2v/1.txt --image example/i2v/1.jpg --cpu-offload --cpu-offload-mode model # 26:29
+CUDA_VISIBLE_DEVICES=5 python scripts/infer_diffusers.py --model wan22-i2v         --method adacluster --prompt-file example/i2v/1.txt --image example/i2v/1.jpg --cpu-offload --cpu-offload-mode model # 27:03
+CUDA_VISIBLE_DEVICES=6 python scripts/infer_diffusers.py --model wan22-i2v         --method flashomni  --prompt-file example/i2v/1.txt --image example/i2v/1.jpg --cpu-offload --cpu-offload-mode model # 35:17
+CUDA_VISIBLE_DEVICES=7 python scripts/infer_diffusers.py --model wan22-i2v         --method svoo       --prompt-file example/i2v/1.txt --image example/i2v/1.jpg --cpu-offload --cpu-offload-mode model # 31:15
 
 # ---------------------------------------
 # hunyuanvideo t2v (model: hunyuan)
@@ -91,24 +91,24 @@ CUDA_VISIBLE_DEVICES=6 python scripts/infer_diffusers.py --model hunyuan        
 CUDA_VISIBLE_DEVICES=7 python scripts/infer_diffusers.py --model hunyuan           --method spargeattn --prompt-file example/t2v/1.txt # 36:33
 CUDA_VISIBLE_DEVICES=5 python scripts/infer_diffusers.py --model hunyuan           --method radial     --prompt-file example/t2v/1.txt # 35:45
 CUDA_VISIBLE_DEVICES=4 python scripts/infer_diffusers.py --model hunyuan           --method sta        --prompt-file example/t2v/1.txt
-CUDA_VISIBLE_DEVICES=6 python scripts/infer_diffusers.py --model hunyuan           --method draft      --prompt-file example/t2v/1.txt
-CUDA_VISIBLE_DEVICES=1 python scripts/infer_diffusers.py --model hunyuan           --method adacluster --prompt-file example/t2v/1.txt
-CUDA_VISIBLE_DEVICES=7 python scripts/infer_diffusers.py --model hunyuan           --method flashomni  --prompt-file example/t2v/1.txt
-CUDA_VISIBLE_DEVICES=4 python scripts/infer_diffusers.py --model hunyuan           --method svoo       --prompt-file example/t2v/1.txt
+CUDA_VISIBLE_DEVICES=6 python scripts/infer_diffusers.py --model hunyuan           --method draft      --prompt-file example/t2v/1.txt # 20:21
+CUDA_VISIBLE_DEVICES=1 python scripts/infer_diffusers.py --model hunyuan           --method adacluster --prompt-file example/t2v/1.txt # 20:22
+CUDA_VISIBLE_DEVICES=3 python scripts/infer_diffusers.py --model hunyuan           --method flashomni  --prompt-file example/t2v/1.txt # 33:39
+CUDA_VISIBLE_DEVICES=4 python scripts/infer_diffusers.py --model hunyuan           --method svoo       --prompt-file example/t2v/1.txt # 29:05
 
 # ---------------------------------------
 # hunyuanvideo i2v (model: hunyuan-i2v)
 # ---------------------------------------
-CUDA_VISIBLE_DEVICES=1 python scripts/infer_diffusers.py --model hunyuan-i2v       --method dense      --prompt-file example/i2v/1.txt --image example/i2v/1.jpg
-CUDA_VISIBLE_DEVICES=7 python scripts/infer_diffusers.py --model hunyuan-i2v       --method svg1       --prompt-file example/i2v/1.txt --image example/i2v/1.jpg
-CUDA_VISIBLE_DEVICES=1 python scripts/infer_diffusers.py --model hunyuan-i2v       --method svg2       --prompt-file example/i2v/1.txt --image example/i2v/1.jpg
-CUDA_VISIBLE_DEVICES=3 python scripts/infer_diffusers.py --model hunyuan-i2v       --method spargeattn --prompt-file example/i2v/1.txt --image example/i2v/1.jpg
-CUDA_VISIBLE_DEVICES=4 python scripts/infer_diffusers.py --model hunyuan-i2v       --method radial     --prompt-file example/i2v/1.txt --image example/i2v/1.jpg
+CUDA_VISIBLE_DEVICES=1 python scripts/infer_diffusers.py --model hunyuan-i2v       --method dense      --prompt-file example/i2v/1.txt --image example/i2v/1.jpg # 112:19
+CUDA_VISIBLE_DEVICES=1 python scripts/infer_diffusers.py --model hunyuan-i2v       --method svg1       --prompt-file example/i2v/1.txt --image example/i2v/1.jpg # 29:41
+CUDA_VISIBLE_DEVICES=0 python scripts/infer_diffusers.py --model hunyuan-i2v       --method svg2       --prompt-file example/i2v/1.txt --image example/i2v/1.jpg # 35:07
+CUDA_VISIBLE_DEVICES=5 python scripts/infer_diffusers.py --model hunyuan-i2v       --method spargeattn --prompt-file example/i2v/1.txt --image example/i2v/1.jpg # 36:37
+CUDA_VISIBLE_DEVICES=6 python scripts/infer_diffusers.py --model hunyuan-i2v       --method radial     --prompt-file example/i2v/1.txt --image example/i2v/1.jpg # 34:04
 CUDA_VISIBLE_DEVICES=4 python scripts/infer_diffusers.py --model hunyuan-i2v       --method sta        --prompt-file example/i2v/1.txt --image example/i2v/1.jpg
-CUDA_VISIBLE_DEVICES=5 python scripts/infer_diffusers.py --model hunyuan-i2v       --method draft      --prompt-file example/i2v/1.txt --image example/i2v/1.jpg
-CUDA_VISIBLE_DEVICES=6 python scripts/infer_diffusers.py --model hunyuan-i2v       --method adacluster --prompt-file example/i2v/1.txt --image example/i2v/1.jpg
-CUDA_VISIBLE_DEVICES=5 python scripts/infer_diffusers.py --model hunyuan-i2v       --method flashomni  --prompt-file example/i2v/1.txt --image example/i2v/1.jpg
-CUDA_VISIBLE_DEVICES=7 python scripts/infer_diffusers.py --model hunyuan-i2v       --method svoo       --prompt-file example/i2v/1.txt --image example/i2v/1.jpg
+CUDA_VISIBLE_DEVICES=0 python scripts/infer_diffusers.py --model hunyuan-i2v       --method draft      --prompt-file example/i2v/1.txt --image example/i2v/1.jpg # 19:31
+CUDA_VISIBLE_DEVICES=1 python scripts/infer_diffusers.py --model hunyuan-i2v       --method adacluster --prompt-file example/i2v/1.txt --image example/i2v/1.jpg # quickly but bad quality
+CUDA_VISIBLE_DEVICES=2 python scripts/infer_diffusers.py --model hunyuan-i2v       --method flashomni  --prompt-file example/i2v/1.txt --image example/i2v/1.jpg # 29:34
+CUDA_VISIBLE_DEVICES=3 python scripts/infer_diffusers.py --model hunyuan-i2v       --method svoo       --prompt-file example/i2v/1.txt --image example/i2v/1.jpg # 29:34
 
 # ---------------------------------------
 # skyreels-v2 t2v (model: skyreels-v2)

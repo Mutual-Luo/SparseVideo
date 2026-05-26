@@ -396,6 +396,12 @@ def test_draft_inference_context_uses_upstream_defaults():
     assert hunyuan["text_len"] == 256
     assert hunyuan["sparsity_ratio"] == 0.9
 
+    hunyuan_i2v = sparsevideo.default_method_config("draft", model_family="hunyuan_video", model_key="hunyuan-i2v")
+    assert hunyuan_i2v["pool_h"] == 8
+    assert hunyuan_i2v["pool_w"] == 16
+    assert hunyuan_i2v["text_len"] is None
+    assert hunyuan_i2v["sparsity_ratio"] == 0.9
+
 
 def test_sta_inference_context_uses_upstream_text_boundary_defaults():
     wan = sparsevideo.default_method_config("sta", model_family="wan", model_key="wan21-t2v-1.3b")
@@ -699,7 +705,9 @@ def test_720p_token_layout_inference_matches_upstream_shapes():
 
     assert infer_video_frame_count(21 * 45 * 80, model_type="wan") == 21
     assert infer_video_frame_shape(21 * 45 * 80, model_type="wan") == (21, 45, 80)
+    assert infer_video_frame_shape(20 * 48 * 80, model_type="wan") == (20, 48, 80)
     assert infer_video_frame_shape(18 * 48 * 80, model_type="wan") == (18, 48, 80)
+    assert infer_video_frame_shape(13 * 45 * 80, model_type="wan") == (13, 45, 80)
     assert infer_video_frame_shape(33 * 45 * 80, model_type="hunyuan_video") == (33, 45, 80)
     assert infer_video_frame_shape(30 * 48 * 80, model_type="hunyuan_video") == (30, 48, 80)
     assert infer_video_frame_shape(13 * 60 * 90, model_type="cogvideox") == (13, 60, 90)

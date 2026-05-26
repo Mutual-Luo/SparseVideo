@@ -39,6 +39,8 @@ from sparsevideo.methods.flashomni.method import (
 )
 from sparsevideo.methods.flashomni.hunyuan_forward import (
     _flashomni_hunyuan_cache_init,
+    _flashomni_hunyuan_token_replace_double_block_forward,
+    _flashomni_hunyuan_token_replace_single_block_forward,
     cal_type,
     cal_type_sparse,
     derivative_approximation,
@@ -405,7 +407,14 @@ def test_flashomni_hunyuan_pool_blocks_triton_matches_pytorch_fallback():
     assert torch.equal(sim, expected_sim)
 
 
-def test_flashomni_paper_mmdit_schedule_refreshes_symbols_without_dense_dispatch():
+def test_flashomni_paper_mmdit_schedule_refreshes_symbols_with_cache_fill_dispatch():
+    missing_step = _flashomni_paper_mmdit_schedule(
+        None,
+        fresh_threshold=6,
+        first_enhance=8,
+        num_inference_steps=50,
+        has_symbols=False,
+    )
     no_symbols = _flashomni_paper_mmdit_schedule(
         1,
         fresh_threshold=6,
@@ -442,11 +451,12 @@ def test_flashomni_paper_mmdit_schedule_refreshes_symbols_without_dense_dispatch
         has_symbols=True,
     )
 
-    assert no_symbols.full is False and no_symbols.compute_symbols is True
-    assert first_symbols.full is False and first_symbols.compute_symbols is True
+    assert missing_step.full is True and missing_step.compute_symbols is True
+    assert no_symbols.full is True and no_symbols.compute_symbols is True
+    assert first_symbols.full is True and first_symbols.compute_symbols is True
     assert sparse.full is False and sparse.compute_symbols is False
-    assert refresh.full is False and refresh.compute_symbols is True
-    assert last.full is False and last.compute_symbols is True
+    assert refresh.full is True and refresh.compute_symbols is True
+    assert last.full is True and last.compute_symbols is True
 
 
 def test_flashomni_paper_mmdit_schedule_uses_hunyuan_zero_based_current_step():
@@ -582,7 +592,7 @@ def test_flashomni_paper_mmdit_attention_allows_empty_hunyuan_taylor_out(monkeyp
         )
 
     def fake_upstream(q, k, v, block_mask_pattern, **kwargs):
-        calls["out"] = kwargs["out"]
+        calls["out"] = kwargs.get("out")
         return torch.zeros_like(q)
 
     monkeypatch.setattr(
@@ -665,6 +675,8 @@ def test_flashomni_hunyuan_taylor_start_requires_saved_sparse_ratio():
 def test_flashomni_hunyuan_forward_patch_installs_and_restores_diffusers_classes():
     from diffusers.models.transformers.transformer_hunyuan_video import (
         HunyuanVideoSingleTransformerBlock,
+        HunyuanVideoTokenReplaceSingleTransformerBlock,
+        HunyuanVideoTokenReplaceTransformerBlock,
         HunyuanVideoTransformer3DModel,
         HunyuanVideoTransformerBlock,
     )
@@ -674,6 +686,8 @@ def test_flashomni_hunyuan_forward_patch_installs_and_restores_diffusers_classes
     original_single = HunyuanVideoSingleTransformerBlock.forward
     original_block = HunyuanVideoTransformerBlock.forward
     original_model = HunyuanVideoTransformer3DModel.forward
+    original_token_single = HunyuanVideoTokenReplaceSingleTransformerBlock.forward
+    original_token_block = HunyuanVideoTokenReplaceTransformerBlock.forward
 
     restore = install_flashomni_hunyuan_forward_patch(
         model_info,
@@ -683,6 +697,8 @@ def test_flashomni_hunyuan_forward_patch_installs_and_restores_diffusers_classes
         assert HunyuanVideoSingleTransformerBlock.forward is not original_single
         assert HunyuanVideoTransformerBlock.forward is not original_block
         assert HunyuanVideoTransformer3DModel.forward is not original_model
+        assert HunyuanVideoTokenReplaceSingleTransformerBlock.forward is not original_token_single
+        assert HunyuanVideoTokenReplaceTransformerBlock.forward is not original_token_block
         assert model._sparsevideo_flashomni_config["fresh_threshold"] == 6
     finally:
         restore()
@@ -690,7 +706,126 @@ def test_flashomni_hunyuan_forward_patch_installs_and_restores_diffusers_classes
     assert HunyuanVideoSingleTransformerBlock.forward is original_single
     assert HunyuanVideoTransformerBlock.forward is original_block
     assert HunyuanVideoTransformer3DModel.forward is original_model
+    assert HunyuanVideoTokenReplaceSingleTransformerBlock.forward is original_token_single
+    assert HunyuanVideoTokenReplaceTransformerBlock.forward is original_token_block
     assert not hasattr(model, "_sparsevideo_flashomni_config")
+
+
+def test_flashomni_hunyuan_token_replace_double_block_uses_joint_attention_kwargs():
+    class FakeTokenReplaceDoubleBlock:
+        def __init__(self):
+            self.attn_kwargs = None
+
+        def norm1(self, hidden_states, temb, token_replace_emb, num_tokens):
+            self.token_replace_emb = token_replace_emb
+            self.num_tokens = num_tokens
+            shape = (hidden_states.shape[0], hidden_states.shape[-1])
+            ones = torch.ones(shape, dtype=hidden_states.dtype)
+            zeros = torch.zeros(shape, dtype=hidden_states.dtype)
+            tr_gate = torch.full(shape, 2.0, dtype=hidden_states.dtype)
+            tr_mlp_gate = torch.full(shape, 3.0, dtype=hidden_states.dtype)
+            return hidden_states, ones, zeros, zeros, ones, tr_gate, zeros, zeros, tr_mlp_gate
+
+        def norm1_context(self, encoder_hidden_states, emb):
+            shape = (encoder_hidden_states.shape[0], encoder_hidden_states.shape[-1])
+            ones = torch.ones(shape, dtype=encoder_hidden_states.dtype)
+            zeros = torch.zeros(shape, dtype=encoder_hidden_states.dtype)
+            return encoder_hidden_states, ones, zeros, zeros, ones
+
+        def attn(self, **kwargs):
+            self.attn_kwargs = kwargs
+            return torch.ones_like(kwargs["hidden_states"]), torch.ones_like(kwargs["encoder_hidden_states"])
+
+        def norm2(self, hidden_states):
+            return hidden_states
+
+        def norm2_context(self, encoder_hidden_states):
+            return encoder_hidden_states
+
+        def ff(self, hidden_states):
+            return torch.ones_like(hidden_states)
+
+        def ff_context(self, encoder_hidden_states):
+            return torch.ones_like(encoder_hidden_states)
+
+    model = SimpleNamespace(config=SimpleNamespace(num_layers=1, num_single_layers=0))
+    cache_dic, current = _flashomni_hunyuan_cache_init(model, {"num_inference_steps": 50})
+    current.update({"stream": "double_stream", "layer": 0, "type": "full", "sparse_type": None, "flashomni": False})
+    block = FakeTokenReplaceDoubleBlock()
+    token_replace_emb = torch.randn(1, 2)
+
+    hidden_states, encoder_hidden_states = _flashomni_hunyuan_token_replace_double_block_forward(
+        block,
+        torch.zeros(1, 3, 2),
+        torch.zeros(1, 2, 2),
+        torch.zeros(1, 2),
+        None,
+        None,
+        token_replace_emb,
+        1,
+        joint_attention_kwargs={"cache_dic": cache_dic, "current": current},
+    )
+
+    assert block.token_replace_emb is token_replace_emb
+    assert block.num_tokens == 1
+    assert block.attn_kwargs["cache_dic"] is cache_dic
+    assert block.attn_kwargs["current"] is current
+    assert torch.equal(hidden_states[:, :1], torch.full((1, 1, 2), 5.0))
+    assert torch.equal(hidden_states[:, 1:], torch.full((1, 2, 2), 2.0))
+    assert torch.equal(encoder_hidden_states, torch.full((1, 2, 2), 2.0))
+
+
+def test_flashomni_hunyuan_token_replace_single_block_uses_joint_attention_kwargs():
+    class FakeTokenReplaceSingleBlock:
+        def __init__(self):
+            self.attn_kwargs = None
+
+        def norm(self, hidden_states, emb, token_replace_emb, first_frame_num_tokens):
+            self.token_replace_emb = token_replace_emb
+            self.num_tokens = first_frame_num_tokens
+            shape = (hidden_states.shape[0], hidden_states.shape[-1])
+            gate = torch.ones(shape, dtype=hidden_states.dtype)
+            tr_gate = torch.full(shape, 2.0, dtype=hidden_states.dtype)
+            return hidden_states, gate, tr_gate
+
+        def proj_mlp(self, hidden_states):
+            return hidden_states
+
+        def act_mlp(self, hidden_states):
+            return hidden_states
+
+        def attn(self, **kwargs):
+            self.attn_kwargs = kwargs
+            return torch.ones_like(kwargs["hidden_states"]), torch.ones_like(kwargs["encoder_hidden_states"])
+
+        def proj_out(self, hidden_states):
+            return torch.ones(hidden_states.shape[0], hidden_states.shape[1], 2, dtype=hidden_states.dtype)
+
+    model = SimpleNamespace(config=SimpleNamespace(num_layers=0, num_single_layers=1))
+    cache_dic, current = _flashomni_hunyuan_cache_init(model, {"num_inference_steps": 50})
+    current.update({"stream": "single_stream", "layer": 0, "type": "full", "sparse_type": None, "flashomni": False})
+    block = FakeTokenReplaceSingleBlock()
+    token_replace_emb = torch.randn(1, 2)
+
+    hidden_states, encoder_hidden_states = _flashomni_hunyuan_token_replace_single_block_forward(
+        block,
+        torch.zeros(1, 3, 2),
+        torch.zeros(1, 2, 2),
+        torch.zeros(1, 2),
+        None,
+        None,
+        token_replace_emb,
+        1,
+        joint_attention_kwargs={"cache_dic": cache_dic, "current": current},
+    )
+
+    assert block.token_replace_emb is token_replace_emb
+    assert block.num_tokens == 1
+    assert block.attn_kwargs["cache_dic"] is cache_dic
+    assert block.attn_kwargs["current"] is current
+    assert torch.equal(hidden_states[:, :1], torch.full((1, 1, 2), 2.0))
+    assert torch.equal(hidden_states[:, 1:], torch.ones(1, 2, 2))
+    assert torch.equal(encoder_hidden_states, torch.ones(1, 2, 2))
 
 
 def test_flashomni_hunyuan_forward_patch_updates_accelerate_old_forward():
@@ -791,12 +926,12 @@ def test_flashomni_paper_mmdit_processor_generates_sparse_patterns(monkeypatch):
 
     assert calls == [
         {
-            "block_mask_pattern_shape": (1, 2, 4, 4),
-            "sparse_q_shape": (1, 2, 4),
+            "block_mask_pattern_shape": None,
+            "sparse_q_shape": None,
             "text_len": 2,
             "q_block_size": 2,
             "kv_block_size": 2,
-            "is_full": False,
+            "is_full": True,
         },
         {
             "block_mask_pattern_shape": (1, 2, 4, 4),
@@ -807,9 +942,10 @@ def test_flashomni_paper_mmdit_processor_generates_sparse_patterns(monkeypatch):
             "is_full": False,
         },
     ]
-    assert method.runtime_summary()["dispatch_counts"] == {"sparse": 2}
+    assert method.runtime_summary()["dispatch_counts"] == {"dense": 1, "sparse": 1}
     assert method.runtime_summary()["backend_counts"] == {
-        "flashomni_explicit_upstream": 2,
+        "flashomni_full_upstream": 1,
+        "flashomni_explicit_upstream": 1,
     }
 
 
@@ -874,10 +1010,12 @@ def test_flashomni_paper_mmdit_dispatch_reuses_cached_q_blocks(monkeypatch):
         step=2,
     )
 
-    assert update.dispatch == "sparse"
+    assert update.dispatch == "dense"
     assert dispatch.dispatch == "sparse"
-    assert torch.equal(update.output, torch.zeros_like(update.output))
-    assert torch.equal(dispatch.output, torch.zeros_like(dispatch.output))
+    assert torch.equal(update.output, torch.full_like(update.output, 7.0))
+    expected = torch.zeros_like(dispatch.output)
+    expected[:, :2] = 7.0
+    assert torch.equal(dispatch.output, expected)
 
 
 def test_flashomni_paper_mmdit_isolates_mochi_cache_suffixes(monkeypatch):
@@ -940,8 +1078,8 @@ def test_flashomni_paper_mmdit_isolates_mochi_cache_suffixes(monkeypatch):
     processor.attn_fn(q4, q4, q4, None, text_len=0, cache_key_suffix=0)
     processor.attn_fn(q6, q6, q6, None, text_len=0, cache_key_suffix=1)
 
-    assert calls == [(4, False), (6, False), (4, False), (6, False)]
-    assert method.runtime_summary()["dispatch_counts"] == {"sparse": 4}
+    assert calls == [(4, True), (6, True), (4, False), (6, False)]
+    assert method.runtime_summary()["dispatch_counts"] == {"dense": 2, "sparse": 2}
 
 
 def test_flashomni_paper_mmdit_attention_saves_hunyuan_sparse_ratios_for_taylor(monkeypatch):
@@ -1087,7 +1225,7 @@ def test_flashomni_paper_mmdit_trims_hunyuan_prefix_mask_before_native(monkeypat
     assert calls["native_k_len"] == 3
     assert calls["native_attention_mask"] is None
     assert calls["native_text_len"] == 1
-    assert calls["native_is_full"] is False
+    assert calls["native_is_full"] is True
 
 
 def test_flashomni_cached_q_block_helper_checks_shapes():

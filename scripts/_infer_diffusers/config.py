@@ -353,7 +353,7 @@ def draft_upstream_layout_error(
             )
     configured_text_len = config.get("text_len")
     expected_text_len = None
-    if spec.family == "hunyuan_video":
+    if spec.family == "hunyuan_video" and spec.pipeline_class != "HunyuanVideoImageToVideoPipeline":
         expected_text_len = 256
     elif spec.family in ("wan", "ltx_video", "allegro"):
         expected_text_len = 0

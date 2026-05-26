@@ -1777,6 +1777,32 @@ def test_infer_dry_run_resolves_hunyuan_draft_defaults_for_default_target_shape(
         assert any("MIT Han Lab Block-Sparse-Attention" in item for item in errors)
 
 
+def test_infer_dry_run_leaves_hunyuan_i2v_draft_text_len_runtime_resolved(tmp_path):
+    returncode, payload = _run_infer_dry_run_unchecked(
+        tmp_path,
+        "--model", "hunyuan-i2v",
+        "--method", "draft",
+        "--prompt-file", "example/i2v/1.txt",
+        "--image", "example/i2v/1.jpg",
+    )
+    cfg = payload["method_config"]
+
+    assert payload["height"] == 720
+    assert payload["width"] == 1280
+    assert payload["num_frames"] == 129
+    assert cfg["latent_h"] == 45
+    assert cfg["latent_w"] == 80
+    assert cfg["visual_len"] == 118_800
+    assert cfg["text_len"] is None
+    errors = payload["runtime"]["preflight"]["errors"]
+    if _draft_mit_backend_ready(payload):
+        assert returncode == 0
+        assert errors == []
+    else:
+        assert returncode == 1
+        assert any("MIT Han Lab Block-Sparse-Attention" in item for item in errors)
+
+
 def test_draft_layout_preflight_accepts_upstream_hunyuan_diffusers_shape():
     infer = _load_infer_module()
     spec = infer.MODEL_SPECS["hunyuan-t2v"]
@@ -1790,6 +1816,31 @@ def test_draft_layout_preflight_accepts_upstream_hunyuan_diffusers_shape():
     )
 
     assert error is None
+
+
+def test_draft_layout_preflight_keeps_hunyuan_t2v_text_gate_but_allows_i2v_tail():
+    infer = _load_infer_module()
+    t2v_spec = infer.MODEL_SPECS["hunyuan-t2v"]
+    i2v_spec = infer.MODEL_SPECS["hunyuan-i2v"]
+
+    t2v_error = infer.draft_upstream_layout_error(
+        t2v_spec,
+        height=768,
+        width=1280,
+        num_frames=129,
+        config={"pool_h": 8, "pool_w": 16, "block_sparse_attention": True, "text_len": 396},
+    )
+    i2v_error = infer.draft_upstream_layout_error(
+        i2v_spec,
+        height=720,
+        width=1280,
+        num_frames=129,
+        config={"pool_h": 8, "pool_w": 16, "block_sparse_attention": True, "text_len": 396},
+    )
+
+    assert t2v_error is not None
+    assert "text_len=256" in t2v_error
+    assert i2v_error is None
 
 
 def test_hunyuan_draft_upstream_profile_uses_768p_demo_shape(tmp_path):

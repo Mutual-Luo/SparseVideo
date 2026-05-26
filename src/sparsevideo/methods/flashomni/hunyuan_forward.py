@@ -39,6 +39,12 @@ def install_flashomni_hunyuan_forward_patch(model_info, config, runtime_stats=No
         hunyuan.HunyuanVideoTransformerBlock: _flashomni_hunyuan_double_block_forward,
         hunyuan.HunyuanVideoTransformer3DModel: flashomni_hunyuan_forward,
     }
+    token_block = getattr(hunyuan, "HunyuanVideoTokenReplaceTransformerBlock", None)
+    if token_block is not None:
+        patch_map[token_block] = _flashomni_hunyuan_token_replace_double_block_forward
+    token_single = getattr(hunyuan, "HunyuanVideoTokenReplaceSingleTransformerBlock", None)
+    if token_single is not None:
+        patch_map[token_single] = _flashomni_hunyuan_token_replace_single_block_forward
 
     old_forward_patches = []
     for transformer in model_info.transformers:
@@ -82,11 +88,22 @@ def install_flashomni_hunyuan_forward_patch(model_info, config, runtime_stats=No
 
 
 def _flashomni_hunyuan_accelerate_patch_targets(transformer):
+    from diffusers.models.transformers import transformer_hunyuan_video as hunyuan
+
+    token_block = getattr(hunyuan, "HunyuanVideoTokenReplaceTransformerBlock", None)
+    token_single = getattr(hunyuan, "HunyuanVideoTokenReplaceSingleTransformerBlock", None)
+
     yield transformer, flashomni_hunyuan_forward
     for block in getattr(transformer, "transformer_blocks", []) or []:
-        yield block, _flashomni_hunyuan_double_block_forward
+        if token_block is not None and isinstance(block, token_block):
+            yield block, _flashomni_hunyuan_token_replace_double_block_forward
+        else:
+            yield block, _flashomni_hunyuan_double_block_forward
     for block in getattr(transformer, "single_transformer_blocks", []) or []:
-        yield block, _flashomni_hunyuan_single_block_forward
+        if token_single is not None and isinstance(block, token_single):
+            yield block, _flashomni_hunyuan_token_replace_single_block_forward
+        else:
+            yield block, _flashomni_hunyuan_single_block_forward
 
 
 def flashomni_hunyuan_forward(
@@ -148,6 +165,7 @@ def flashomni_hunyuan_forward(
                 image_rotary_emb,
                 token_replace_emb,
                 first_frame_num_tokens,
+                joint_attention_kwargs=attention_kwargs,
             )
         for block in self.single_transformer_blocks:
             hidden_states, encoder_hidden_states = self._gradient_checkpointing_func(
@@ -159,6 +177,7 @@ def flashomni_hunyuan_forward(
                 image_rotary_emb,
                 token_replace_emb,
                 first_frame_num_tokens,
+                joint_attention_kwargs=attention_kwargs,
             )
     else:
         current["stream"] = "double_stream"
@@ -172,6 +191,8 @@ def flashomni_hunyuan_forward(
                 temb,
                 attention_mask,
                 image_rotary_emb,
+                token_replace_emb,
+                first_frame_num_tokens,
                 joint_attention_kwargs=attention_kwargs,
             )
 
@@ -186,6 +207,8 @@ def flashomni_hunyuan_forward(
                 temb,
                 attention_mask,
                 image_rotary_emb,
+                token_replace_emb,
+                first_frame_num_tokens,
                 joint_attention_kwargs=attention_kwargs,
             )
 
@@ -220,6 +243,8 @@ def _flashomni_hunyuan_double_block_forward(
     temb: torch.Tensor,
     attention_mask: Optional[torch.Tensor] = None,
     freqs_cis: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
+    token_replace_emb: torch.Tensor = None,
+    first_frame_num_tokens: int = None,
     joint_attention_kwargs=None,
     *args,
     **kwargs,
@@ -303,6 +328,124 @@ def _flashomni_hunyuan_double_block_forward(
     return hidden_states, encoder_hidden_states
 
 
+def _flashomni_hunyuan_token_replace_double_block_forward(
+    self,
+    hidden_states: torch.Tensor,
+    encoder_hidden_states: torch.Tensor,
+    temb: torch.Tensor,
+    attention_mask: Optional[torch.Tensor] = None,
+    freqs_cis: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
+    token_replace_emb: torch.Tensor = None,
+    first_frame_num_tokens: int = None,
+    joint_attention_kwargs=None,
+    *args,
+    **kwargs,
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    num_tokens = first_frame_num_tokens
+    (
+        norm_hidden_states,
+        gate_msa,
+        shift_mlp,
+        scale_mlp,
+        gate_mlp,
+        tr_gate_msa,
+        tr_shift_mlp,
+        tr_scale_mlp,
+        tr_gate_mlp,
+    ) = self.norm1(hidden_states, temb, token_replace_emb, num_tokens)
+    norm_encoder_hidden_states, c_gate_msa, c_shift_mlp, c_scale_mlp, c_gate_mlp = self.norm1_context(
+        encoder_hidden_states, emb=temb
+    )
+
+    joint_attention_kwargs = joint_attention_kwargs or {}
+    cache_dic = joint_attention_kwargs["cache_dic"]
+    current = joint_attention_kwargs["current"]
+
+    if current["type"] == "full" or current.get("sparse_type") == "flashomni":
+        current["module"] = "attn"
+        taylor_cache_init(cache_dic, current)
+        _flashomni_trace_memory(cache_dic, current, "double_token_replace.attn.before")
+        attn_output, context_attn_output = self.attn(
+            hidden_states=norm_hidden_states,
+            encoder_hidden_states=norm_encoder_hidden_states,
+            attention_mask=attention_mask,
+            image_rotary_emb=freqs_cis,
+            **joint_attention_kwargs,
+        )
+        _maybe_start_taylor_cache(cache_dic, current)
+        _flashomni_trace_memory(cache_dic, current, "double_token_replace.attn.after", feature=attn_output)
+
+        current["module"] = "img_attn"
+        taylor_cache_init(cache_dic, current)
+        if _taylor_started(cache_dic, current):
+            derivative_approximation(cache_dic, current, attn_output)
+        hidden_states_zero = hidden_states[:, :num_tokens] + attn_output[:, :num_tokens] * tr_gate_msa.unsqueeze(1)
+        hidden_states_orig = hidden_states[:, num_tokens:] + attn_output[:, num_tokens:] * gate_msa.unsqueeze(1)
+        hidden_states = torch.cat([hidden_states_zero, hidden_states_orig], dim=1)
+
+        current["module"] = "txt_attn"
+        taylor_cache_init(cache_dic, current)
+        if _taylor_started(cache_dic, current):
+            derivative_approximation(cache_dic, current, context_attn_output)
+        encoder_hidden_states = encoder_hidden_states + context_attn_output * c_gate_msa.unsqueeze(1)
+
+        current["module"] = "img_mlp"
+        taylor_cache_init(cache_dic, current)
+        _flashomni_trace_memory(cache_dic, current, "double_token_replace.img_mlp.before_norm")
+        norm_hidden_states = self.norm2(hidden_states)
+        hidden_states_zero = norm_hidden_states[:, :num_tokens] * (1 + tr_scale_mlp[:, None]) + tr_shift_mlp[:, None]
+        hidden_states_orig = norm_hidden_states[:, num_tokens:] * (1 + scale_mlp[:, None]) + shift_mlp[:, None]
+        norm_hidden_states = torch.cat([hidden_states_zero, hidden_states_orig], dim=1)
+        _flashomni_trace_memory(
+            cache_dic,
+            current,
+            "double_token_replace.img_mlp.before_ff",
+            feature=norm_hidden_states,
+        )
+        ff_output = self.ff(norm_hidden_states)
+        _flashomni_trace_memory(cache_dic, current, "double_token_replace.img_mlp.after_ff", feature=ff_output)
+        if _taylor_started(cache_dic, current):
+            derivative_approximation(cache_dic, current, ff_output)
+        hidden_states_zero = hidden_states[:, :num_tokens] + ff_output[:, :num_tokens] * tr_gate_mlp.unsqueeze(1)
+        hidden_states_orig = hidden_states[:, num_tokens:] + ff_output[:, num_tokens:] * gate_mlp.unsqueeze(1)
+        hidden_states = torch.cat([hidden_states_zero, hidden_states_orig], dim=1)
+
+        current["module"] = "txt_mlp"
+        taylor_cache_init(cache_dic, current)
+        norm_encoder_hidden_states = self.norm2_context(encoder_hidden_states)
+        norm_encoder_hidden_states = norm_encoder_hidden_states * (1 + c_scale_mlp[:, None]) + c_shift_mlp[:, None]
+        context_ff_output = self.ff_context(norm_encoder_hidden_states)
+        if _taylor_started(cache_dic, current):
+            derivative_approximation(cache_dic, current, context_ff_output)
+        encoder_hidden_states = encoder_hidden_states + c_gate_mlp.unsqueeze(1) * context_ff_output
+    elif current.get("sparse_type") == "taylor_cache":
+        current["module"] = "img_attn"
+        _flashomni_trace_memory(cache_dic, current, "double_token_replace.taylor.img_attn.before")
+        attn_output = taylor_formula(cache_dic, current, device=hidden_states.device)
+        hidden_states_zero = hidden_states[:, :num_tokens] + attn_output[:, :num_tokens] * tr_gate_msa.unsqueeze(1)
+        hidden_states_orig = hidden_states[:, num_tokens:] + attn_output[:, num_tokens:] * gate_msa.unsqueeze(1)
+        hidden_states = torch.cat([hidden_states_zero, hidden_states_orig], dim=1)
+
+        current["module"] = "txt_attn"
+        _flashomni_trace_memory(cache_dic, current, "double_token_replace.taylor.txt_attn.before")
+        context_attn_output = taylor_formula(cache_dic, current, device=encoder_hidden_states.device)
+        encoder_hidden_states = encoder_hidden_states + context_attn_output * c_gate_msa.unsqueeze(1)
+
+        current["module"] = "img_mlp"
+        _flashomni_trace_memory(cache_dic, current, "double_token_replace.taylor.img_mlp.before")
+        ff_output = taylor_formula(cache_dic, current, device=hidden_states.device)
+        hidden_states_zero = hidden_states[:, :num_tokens] + ff_output[:, :num_tokens] * tr_gate_mlp.unsqueeze(1)
+        hidden_states_orig = hidden_states[:, num_tokens:] + ff_output[:, num_tokens:] * gate_mlp.unsqueeze(1)
+        hidden_states = torch.cat([hidden_states_zero, hidden_states_orig], dim=1)
+
+        current["module"] = "txt_mlp"
+        _flashomni_trace_memory(cache_dic, current, "double_token_replace.taylor.txt_mlp.before")
+        context_ff_output = taylor_formula(cache_dic, current, device=encoder_hidden_states.device)
+        encoder_hidden_states = encoder_hidden_states + c_gate_mlp.unsqueeze(1) * context_ff_output
+
+    return hidden_states, encoder_hidden_states
+
+
 def _flashomni_hunyuan_single_block_forward(
     self,
     hidden_states: torch.Tensor,
@@ -310,6 +453,8 @@ def _flashomni_hunyuan_single_block_forward(
     temb: torch.Tensor,
     attention_mask: Optional[torch.Tensor] = None,
     image_rotary_emb: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
+    token_replace_emb: torch.Tensor = None,
+    first_frame_num_tokens: int = None,
     joint_attention_kwargs=None,
     *args,
     **kwargs,
@@ -359,6 +504,75 @@ def _flashomni_hunyuan_single_block_forward(
         hidden_states = taylor_formula(cache_dic, current, device=hidden_states.device)
 
     hidden_states = gate.unsqueeze(1) * hidden_states
+    hidden_states = hidden_states + residual
+    hidden_states, encoder_hidden_states = (
+        hidden_states[:, :-text_seq_length, :],
+        hidden_states[:, -text_seq_length:, :],
+    )
+    return hidden_states, encoder_hidden_states
+
+
+def _flashomni_hunyuan_token_replace_single_block_forward(
+    self,
+    hidden_states: torch.Tensor,
+    encoder_hidden_states: torch.Tensor,
+    temb: torch.Tensor,
+    attention_mask: Optional[torch.Tensor] = None,
+    image_rotary_emb: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
+    token_replace_emb: torch.Tensor = None,
+    first_frame_num_tokens: int = None,
+    joint_attention_kwargs=None,
+    *args,
+    **kwargs,
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    num_tokens = first_frame_num_tokens
+    text_seq_length = encoder_hidden_states.shape[1]
+    hidden_states = torch.cat([hidden_states, encoder_hidden_states], dim=1)
+    residual = hidden_states
+    norm_hidden_states, gate, tr_gate = self.norm(hidden_states, temb, token_replace_emb, num_tokens)
+
+    joint_attention_kwargs = joint_attention_kwargs or {}
+    cache_dic = joint_attention_kwargs["cache_dic"]
+    current = joint_attention_kwargs["current"]
+
+    if current["type"] == "full" or current.get("sparse_type") == "flashomni":
+        _flashomni_trace_memory(cache_dic, current, "single_token_replace.mlp.before")
+        mlp_hidden_states = self.act_mlp(self.proj_mlp(norm_hidden_states))
+        _flashomni_trace_memory(cache_dic, current, "single_token_replace.mlp.after", feature=mlp_hidden_states)
+        norm_hidden_states, norm_encoder_hidden_states = (
+            norm_hidden_states[:, :-text_seq_length, :],
+            norm_hidden_states[:, -text_seq_length:, :],
+        )
+
+        current["module"] = "attn"
+        taylor_cache_init(cache_dic, current)
+        _flashomni_trace_memory(cache_dic, current, "single_token_replace.attn.before")
+        attn_output, context_attn_output = self.attn(
+            hidden_states=norm_hidden_states,
+            encoder_hidden_states=norm_encoder_hidden_states,
+            attention_mask=attention_mask,
+            image_rotary_emb=image_rotary_emb,
+            **joint_attention_kwargs,
+        )
+        _maybe_start_taylor_cache(cache_dic, current)
+        _flashomni_trace_memory(cache_dic, current, "single_token_replace.attn.after", feature=attn_output)
+
+        current["module"] = "total"
+        taylor_cache_init(cache_dic, current)
+        _flashomni_trace_memory(cache_dic, current, "single_token_replace.total.before_proj")
+        hidden_states = torch.cat([torch.cat([attn_output, context_attn_output], dim=1), mlp_hidden_states], dim=2)
+        hidden_states = self.proj_out(hidden_states)
+        _flashomni_trace_memory(cache_dic, current, "single_token_replace.total.after_proj", feature=hidden_states)
+        if _taylor_started(cache_dic, current):
+            derivative_approximation(cache_dic, current, hidden_states)
+    elif current.get("sparse_type") == "taylor_cache":
+        current["module"] = "total"
+        _flashomni_trace_memory(cache_dic, current, "single_token_replace.taylor.total.before")
+        hidden_states = taylor_formula(cache_dic, current, device=hidden_states.device)
+
+    hidden_states_zero = hidden_states[:, :num_tokens] * tr_gate.unsqueeze(1)
+    hidden_states_orig = hidden_states[:, num_tokens:] * gate.unsqueeze(1)
+    hidden_states = torch.cat([hidden_states_zero, hidden_states_orig], dim=1)
     hidden_states = hidden_states + residual
     hidden_states, encoder_hidden_states = (
         hidden_states[:, :-text_seq_length, :],

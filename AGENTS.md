@@ -52,8 +52,8 @@ the upstream benchmark uses the same path.
 A method is in target only if all of this is true:
 
 1. Upstream parity: owned code under `src/sparsevideo/` matches the `training_free/` execution path for token layout,
-   timestep/layer gates, masks, clusters, sparse maps, permutation/restore logic, dense fallback rules, and output
-   behavior.
+   sparse timestep/layer gates, masks, clusters, sparse maps, permutation/restore logic, dense fallback behavior under
+   the shared warmup policy, and output behavior.
 2. Config parity: public parameter names, meanings, defaults, and benchmark profiles match upstream. Local aliases can
    exist, but upstream names stay primary.
 3. Kernel parity: every upstream-required Triton/C++/CUDA/FlashInfer/SageAttention/custom kernel path is available from
@@ -86,9 +86,9 @@ claims speed or quality while falling back from the upstream sparse path.
 A method cannot be called complete, benchmark-ready, or upstream-equivalent until all gates below are checked and
 recorded:
 
-- Upstream parity gate: the real execution path is audited against `training_free/` for token layout, timestep/layer
-  gates, masks, clusters, sparse maps, permutation/restore logic, text/video handling, dense fallback rules, and output
-  behavior.
+- Upstream parity gate: the real execution path is audited against `training_free/` for token layout, sparse timestep/layer
+  gates, masks, clusters, sparse maps, permutation/restore logic, text/video handling, dense fallback behavior under the
+  shared warmup policy, and output behavior.
 - Config parity gate: resolved public parameters, meanings, defaults, and benchmark profiles match the upstream
   scripts/configs used for reported quality and speed.
 - Kernel parity gate: every upstream-required Triton/C++/CUDA/FlashInfer/SageAttention/custom kernel path has an owned
@@ -124,6 +124,18 @@ Use these public names:
 
 Always keep `dense` as the baseline and fallback.
 
+## Dense Warmup Policy
+
+Dense/full-attention dispatch is intentionally normalized across SparseVideo methods. The only public controls for
+method-internal dense warmup are `dense_warmup_step_ratio` and `dense_warmup_layer_ratio`, implemented through
+`src/sparsevideo/methods/_schedule.py`. Use `method=dense` for the full dense baseline.
+
+Do not add or restore method-local dense/full routing knobs or hardcoded upstream dense gates such as per-method
+`full`/`is_full` modes, `first_*` warmup keys, fixed first-N-step dense branches, fixed layer lists, or
+`skip_time_steps`-style runtime dense dispatch. Upstream sparse schedules, masks, clustering, kernels, and layouts still
+need parity, but upstream-specific dense/full fallback gates should be expressed through the shared warmup ratios or left
+out of runtime dispatch.
+
 ## Current Audit State
 
 As of 2026-05-20, the current A100 audit is complete for `dense`, `svg1`, `svg2`, `spargeattn`, `radial`, `draft`,
@@ -151,7 +163,7 @@ parity.
 ## Implementation Fidelity Rules
 
 - The goal is the same implementation as the referenced method, not a similar-looking approximation.
-- For each method, compare the real execution path against upstream before claiming parity: timestep/layer gating, token layout, mask generation, clustering, dynamic maps, permutation/restore, dense fallbacks, and backend/kernel calls.
+- For each method, compare the real execution path against upstream before claiming parity: sparse timestep/layer gating, token layout, mask generation, clustering, dynamic maps, permutation/restore, dense fallback behavior under the shared warmup policy, and backend/kernel calls.
 - Keep upstream public parameter names, meanings, and comparison defaults. Distinguish parser defaults from the shell/config defaults actually used for reported quality/speed.
 - Do not simplify, omit, or rename method options unless the change is documented as a compatibility alias and the upstream name remains primary.
 - If a method is only partially ported or uses a fallback/approximation, say so explicitly in code comments, docs, runtime warnings, or review notes. Do not let the registry name imply full parity.
@@ -159,6 +171,8 @@ parity.
 ## Method Config Rules
 
 - `default_method_config()` must support model-aware defaults through `model_family` and `model_key` when upstream uses different quality/speed settings per model or resolution.
+- Method configs may expose only the shared `dense_warmup_step_ratio` and `dense_warmup_layer_ratio` controls for
+  method-internal dense warmup. Do not expose upstream method-local dense/full switches as runtime API.
 - For quality and speed comparisons, copy defaults from the upstream inference shell/config actually used for that benchmark, not from weak parser defaults.
 - Every method default alignment needs a dry-run test that checks the resolved config emitted by `scripts/infer.py`.
 - If a config value is chosen for safety, memory, or local hardware rather than upstream parity, name it as a local override and do not present it as the upstream default.

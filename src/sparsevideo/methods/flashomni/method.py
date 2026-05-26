@@ -549,7 +549,7 @@ def _flashomni_paper_mmdit_schedule(
 ) -> _FlashOmniPaperMMDiTSchedule:
     if step is None:
         return _FlashOmniPaperMMDiTSchedule(
-            full=False,
+            full=not has_symbols,
             compute_symbols=not has_symbols,
             current_iter=0,
         )
@@ -560,20 +560,21 @@ def _flashomni_paper_mmdit_schedule(
     num_inference_steps = max(1, int(num_inference_steps))
 
     if not has_symbols:
-        return _FlashOmniPaperMMDiTSchedule(full=False, compute_symbols=True, current_iter=step0)
+        return _FlashOmniPaperMMDiTSchedule(full=True, compute_symbols=True, current_iter=step0)
 
     if step0 < first_enhance:
         compute_symbols = step0 == first_enhance - 1
         return _FlashOmniPaperMMDiTSchedule(
-            full=False,
+            full=compute_symbols,
             compute_symbols=compute_symbols,
             current_iter=step0,
         )
 
     cycle_pos = (step0 - first_enhance) % fresh_threshold
+    compute_symbols = cycle_pos == fresh_threshold - 1
     return _FlashOmniPaperMMDiTSchedule(
-        full=False,
-        compute_symbols=cycle_pos == fresh_threshold - 1,
+        full=compute_symbols,
+        compute_symbols=compute_symbols,
         current_iter=step0,
     )
 

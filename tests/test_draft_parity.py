@@ -279,6 +279,61 @@ def test_draft_hunyuan_sparse_path_accepts_attention_mask_like_upstream(monkeypa
     assert calls[0]["text_len"] == 256
 
 
+def test_draft_hunyuan_i2v_sparse_path_uses_runtime_condition_tail(monkeypatch):
+    calls = []
+
+    def fake_draft_attention(query, key, value, **kwargs):
+        calls.append(kwargs)
+        return torch.empty_like(query)
+
+    monkeypatch.setattr("sparsevideo.methods.draft.method._draft_attention", fake_draft_attention)
+
+    method = DraftMethod(
+        config={"dense_warmup_step_ratio": 0.0, "dense_warmup_layer_ratio": 0.0},
+        model_info=SimpleNamespace(model_type="hunyuan_video", model_key="hunyuan-i2v", transformers=[]),
+    )
+    processor = method.create_processor(
+        layer_idx=2,
+        total_layers=40,
+        original_processor=None,
+        step_tracker=SimpleNamespace(timestep=900),
+    )
+    query = torch.randn(1, 10, 2, 4)
+    attention_mask = torch.ones(1, 396)
+
+    out = processor.attn_fn(query, query, query, attention_mask, text_len=396)
+
+    assert out.shape == query.shape
+    assert calls[0]["model_type"] == "hunyuan_video"
+    assert calls[0]["text_len"] == 396
+    assert calls[0]["expected_text_len"] is None
+
+
+def test_draft_hunyuan_i2v_attention_accepts_diffusers_condition_tail_before_cuda():
+    video_len = 33 * 45 * 80
+    text_len = 396
+    query = torch.randn(1, video_len + text_len, 1, 4)
+    attention_mask = torch.ones(1, text_len, dtype=torch.bool)
+
+    with pytest.raises(RuntimeError, match="requires CUDA"):
+        _draft_attention(
+            query,
+            query,
+            query,
+            sparsity_ratio=0.9,
+            pool_h=8,
+            pool_w=16,
+            model_type="hunyuan_video",
+            text_len=text_len,
+            latent_h=45,
+            latent_w=80,
+            visual_len=video_len,
+            expected_text_len=None,
+            batch_size=1,
+            attention_mask=attention_mask,
+        )
+
+
 def test_draft_hunyuan_padded_mit_uses_text_tail_from_unpadded_full_mask():
     original_video_len = 33 * 45 * 80
     padded_video_len = 33 * 48 * 80
