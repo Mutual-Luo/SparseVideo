@@ -24,8 +24,8 @@ model_defaults:
   wan22-t2v-a14b:
     dense_warmup_step_ratio: 0.1
     dense_warmup_layer_ratio: 0.03
-    decay_factor: 0.3
-    block_size: 64
+    decay_factor: 0.2
+    block_size: 128
     use_sage_attention: false
   hunyuan-t2v:
     dense_warmup_step_ratio: 0.1
@@ -54,13 +54,13 @@ model_defaults:
   skyreels-v2-t2v-14b:
     dense_warmup_step_ratio: 0.1
     dense_warmup_layer_ratio: 0.03
-    decay_factor: 0.2
+    decay_factor: 0.4
     block_size: 128
     use_sage_attention: false
   skyreels-v2-i2v-14b:
     dense_warmup_step_ratio: 0.1
     dense_warmup_layer_ratio: 0.03
-    decay_factor: 0.2
+    decay_factor: 0.4
     block_size: 128
     use_sage_attention: false
   wan22-animate-14b:

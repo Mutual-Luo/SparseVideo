@@ -12,6 +12,8 @@ class StepTracker:
 
     Processors read ``step_tracker.step`` and ``step_tracker.timestep`` to
     decide whether to use sparse or dense attention at each denoising step.
+    ``step`` is local to the current scheduler loop so segmented pipelines
+    apply dense warmup to every segment.
     """
 
     def __init__(
@@ -20,6 +22,8 @@ class StepTracker:
         num_inference_steps_fn: Optional[Callable[[], Optional[int]]] = None,
     ):
         self.step: int = 0
+        self.global_step: int = 0
+        self.loop: int = 0
         self.timestep: float = 0.0
         self._model_type = model_type
         self._prev_timestep: Optional[float] = None
@@ -37,10 +41,29 @@ class StepTracker:
         if t_val is None:
             return
 
-        if self._prev_timestep is None or t_val != self._prev_timestep:
-            self._prev_timestep = t_val
-            self.timestep = t_val
-            self.step += 1
+        if self._prev_timestep is None:
+            self._advance(t_val)
+            return
+        if t_val == self._prev_timestep:
+            return
+        if self._starts_new_scheduler_loop(t_val):
+            self.step = 0
+            self.loop += 1
+        self._advance(t_val)
+
+    def _advance(self, t_val: float) -> None:
+        self._prev_timestep = t_val
+        self.timestep = t_val
+        self.step += 1
+        self.global_step += 1
+
+    def _starts_new_scheduler_loop(self, t_val: float) -> bool:
+        if self._prev_timestep is None or t_val <= self._prev_timestep:
+            return False
+        num_inference_steps = self.num_inference_steps()
+        if num_inference_steps is None:
+            return False
+        return self.step >= num_inference_steps
 
     def _extract_timestep(self, args, kwargs) -> Optional[float]:
         for key in ("timestep", "timesteps", "t"):
@@ -76,6 +99,8 @@ class StepTracker:
 
     def reset(self):
         self.step = 0
+        self.global_step = 0
+        self.loop = 0
         self.timestep = 0.0
         self._prev_timestep = None
 

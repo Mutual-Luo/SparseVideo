@@ -9,6 +9,7 @@ import shlex
 import subprocess
 import sys
 from pathlib import Path
+from typing import Iterable
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -213,6 +214,62 @@ def _validate_inputs(args: argparse.Namespace) -> None:
         raise SystemExit(f"Missing WanAnimate checkpoint files:\n  {details}{hint}\nUse --download-checkpoint to fetch them.")
 
 
+def _missing_modules(module_names: Iterable[str]) -> list[str]:
+    import importlib.util
+
+    return [name for name in module_names if importlib.util.find_spec(name) is None]
+
+
+def _validate_python_dependencies(args: argparse.Namespace) -> None:
+    modules = [
+        "cv2",
+        "decord",
+        "diffusers",
+        "hydra",
+        "loguru",
+        "matplotlib",
+        "moviepy",
+        "omegaconf",
+        "onnxruntime",
+        "sam2",
+    ]
+    if args.mode == "animation" and args.use_flux:
+        modules.append("peft")
+
+    missing = _missing_modules(modules)
+    if not missing:
+        return
+
+    pip_names = {
+        "cv2": "opencv-python",
+        "hydra": "hydra-core",
+    }
+    commands = []
+    packages = [pip_names.get(name, name) for name in missing if name != "sam2"]
+    if packages:
+        commands.append(" ".join([shlex.quote(sys.executable), "-m", "pip", "install", *map(shlex.quote, packages)]))
+    if "sam2" in missing:
+        commands.append(
+            " ".join(
+                [
+                    shlex.quote(sys.executable),
+                    "-m",
+                    "pip",
+                    "install",
+                    "--no-build-isolation",
+                    "--no-deps",
+                    "sam2==1.1.0",
+                ]
+            )
+        )
+    raise SystemExit(
+        "Missing WanAnimate preprocessing Python dependencies:\n  "
+        + "\n  ".join(missing)
+        + "\nInstall them in the active environment with:\n  "
+        + "\n  ".join(commands)
+    )
+
+
 def _build_command(args: argparse.Namespace, preprocess_path: Path) -> list[str]:
     command = [
         sys.executable,
@@ -275,6 +332,7 @@ def main() -> None:
     preprocess_path = wan2_dir / PREPROCESS_REL
     preprocess_dir = preprocess_path.parent
     _validate_inputs(args)
+    _validate_python_dependencies(args)
 
     command = _build_command(args, preprocess_path)
     print(f"Wan2.2 source: {wan2_dir}")

@@ -603,10 +603,9 @@ def build_call_kwargs(args, spec, prompt: str, negative_prompt: str, generator, 
         kwargs["pose_video"] = _load_video_frames(args.pose_video)
         kwargs["face_video"] = _load_video_frames(args.face_video)
     if spec.pipeline_class == "WanVACEPipeline":
-        if args.reference_video is not None:
-            kwargs["video"] = _load_video_frames(args.reference_video)
-        if args.mask_video is not None:
-            kwargs["mask"] = _load_video_frames(args.mask_video)
+        kwargs["video"], kwargs["mask"], kwargs[frame_key] = _load_wan_vace_video_pair(
+            args.reference_video, args.mask_video, num_frames, args.height, args.width,
+        )
     if spec.key in ("wan22-t2v-a14b", "wan22-i2v-a14b"):
         kwargs["guidance_scale_2"] = args.guidance_scale_2
     if is_hunyuan_pipeline(spec):
@@ -681,6 +680,71 @@ def _load_i2v_image(image_path: Optional[str]):
 def _load_video_frames(video_path: str):
     from diffusers.utils import load_video
     return load_video(video_path)
+
+
+def _load_wan_vace_video_pair(
+    reference_video_path: str,
+    mask_video_path: str,
+    num_frames: int,
+    height: int,
+    width: int,
+):
+    video = _load_video_frames(reference_video_path)
+    mask = _load_video_frames(mask_video_path)
+    source_frames = min(len(video), len(mask))
+    if source_frames <= 0:
+        raise ValueError("WanVACE reference video and mask must contain at least one frame")
+    video = video[:source_frames]
+    mask = mask[:source_frames]
+    target_frames = _wan_vace_condition_frame_count(source_frames, num_frames, height, width)
+    frame_indices = _uniform_frame_indices(source_frames, target_frames)
+    return [video[i] for i in frame_indices], [mask[i] for i in frame_indices], target_frames
+
+
+def _wan_vace_condition_frame_count(source_frames: int, requested_frames: int, height: int, width: int) -> int:
+    requested_frames = _wan_vace_diffusers_frame_count(requested_frames)
+    source_latent_frames = (source_frames - 1) // 4 + 1
+    latent_frame_cap = _wan_vace_official_latent_frame_cap(height, width)
+    if latent_frame_cap is not None:
+        source_latent_frames = min(source_latent_frames, latent_frame_cap)
+    source_aligned_frames = (source_latent_frames - 1) * 4 + 1
+    return min(requested_frames, source_aligned_frames)
+
+
+def _wan_vace_diffusers_frame_count(num_frames: int) -> int:
+    if num_frames <= 0:
+        raise ValueError("WanVACE num_frames must be positive")
+    if num_frames % 4 != 1:
+        return num_frames // 4 * 4 + 1
+    return num_frames
+
+
+def _wan_vace_official_latent_frame_cap(height: int, width: int) -> Optional[int]:
+    area = int(height) * int(width)
+    if area == 720 * 1280:
+        seq_len = 75_600
+    elif area == 480 * 832:
+        seq_len = 32_760
+    else:
+        return None
+    latent_h = int(height) // 16
+    latent_w = int(width) // 16
+    if latent_h <= 0 or latent_w <= 0:
+        return None
+    return max(1, int(seq_len // (latent_h * latent_w)))
+
+
+def _uniform_frame_indices(source_frames: int, target_frames: int):
+    if source_frames <= 0:
+        raise ValueError("source_frames must be positive")
+    if target_frames <= 0:
+        raise ValueError("target_frames must be positive")
+    if target_frames == 1:
+        return [0]
+    if source_frames == 1:
+        return [0] * target_frames
+    scale = (source_frames - 1) / (target_frames - 1)
+    return [min(source_frames - 1, round(i * scale)) for i in range(target_frames)]
 
 
 def should_preload_fused_native_kernels(spec, method: str) -> bool:

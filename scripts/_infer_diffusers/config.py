@@ -330,7 +330,18 @@ def _radial_estimated_latent_shape(spec: ModelSpec, height: int, width: int, num
 def _draft_estimated_latent_shape(spec: ModelSpec, height: int, width: int, num_frames: int) -> tuple:
     if is_cogvideox_pipeline(spec):
         return (num_frames - 1) // 4 + 1, height // 16, width // 16
+    if spec.pipeline_class == "WanAnimatePipeline":
+        segment_frames = _wananimate_effective_segment_frame_length(num_frames)
+        # WanAnimate attends over segment latents plus one prepended reference latent frame.
+        return (segment_frames - 1) // 4 + 2, height // 16, width // 16
     return _radial_estimated_latent_shape(spec, height, width, num_frames)
+
+
+def _wananimate_effective_segment_frame_length(num_frames: int) -> int:
+    segment_frame_length = int(num_frames)
+    if segment_frame_length % 4 != 1:
+        segment_frame_length = segment_frame_length // 4 * 4 + 1
+    return max(segment_frame_length, 1)
 
 
 def apply_draft_runtime_layout_defaults(

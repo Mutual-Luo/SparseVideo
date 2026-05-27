@@ -313,6 +313,19 @@ def test_infer_dry_run_resolves_wan_animate_sparse_alias(tmp_path):
     assert payload["wan_flow_shift"] == 5.0
 
 
+def test_wan_animate_prefers_cusolver_for_motion_encoder_qr():
+    infer = _load_infer_module()
+
+    assert (
+        infer.preferred_cuda_linalg_backend(infer.MODEL_SPECS["wan22-animate-14b"])
+        == "cusolver"
+    )
+    assert (
+        infer.preferred_cuda_linalg_backend(infer.MODEL_SPECS["wan21-t2v-1.3b"])
+        == "magma"
+    )
+
+
 def test_infer_dry_run_resolves_wan_vace_sparse_alias(tmp_path):
     payload = _run_infer_dry_run(tmp_path, "--model", "wan-vace", "--method", "svoo")
 
@@ -352,6 +365,86 @@ def test_build_call_kwargs_rejects_auxiliary_wan_pipelines_without_cli_inputs(mo
             num_frames=1,
             fps=16,
         )
+
+
+def test_build_call_kwargs_resamples_wan_vace_condition_video_pair(monkeypatch):
+    infer = _load_infer_module()
+
+    loaded_videos = {
+        "reference.mp4": [("video", i) for i in range(161)],
+        "mask.mp4": [("mask", i) for i in range(161)],
+    }
+    monkeypatch.setitem(
+        infer.build_call_kwargs.__globals__,
+        "_load_video_frames",
+        lambda path: loaded_videos[path],
+    )
+    args = types.SimpleNamespace(
+        guidance_scale=None,
+        num_inference_steps=None,
+        skip_decode=False,
+        height=720,
+        width=1280,
+        reference_video="reference.mp4",
+        mask_video="mask.mp4",
+    )
+
+    kwargs = infer.build_call_kwargs(
+        args,
+        infer.MODEL_SPECS["wan21-vace-14b"],
+        prompt="test prompt",
+        negative_prompt="",
+        generator=None,
+        num_frames=81,
+        fps=16,
+    )
+
+    assert len(kwargs["video"]) == 81
+    assert len(kwargs["mask"]) == 81
+    assert kwargs["num_frames"] == 81
+    assert [frame[1] for frame in kwargs["video"][:3]] == [0, 2, 4]
+    assert [frame[1] for frame in kwargs["mask"][:3]] == [0, 2, 4]
+    assert kwargs["video"][-1] == ("video", 160)
+    assert kwargs["mask"][-1] == ("mask", 160)
+
+
+def test_build_call_kwargs_uses_shorter_wan_vace_source_length(monkeypatch):
+    infer = _load_infer_module()
+
+    loaded_videos = {
+        "reference.mp4": [("video", i) for i in range(49)],
+        "mask.mp4": [("mask", i) for i in range(49)],
+    }
+    monkeypatch.setitem(
+        infer.build_call_kwargs.__globals__,
+        "_load_video_frames",
+        lambda path: loaded_videos[path],
+    )
+    args = types.SimpleNamespace(
+        guidance_scale=None,
+        num_inference_steps=None,
+        skip_decode=False,
+        height=720,
+        width=1280,
+        reference_video="reference.mp4",
+        mask_video="mask.mp4",
+    )
+
+    kwargs = infer.build_call_kwargs(
+        args,
+        infer.MODEL_SPECS["wan21-vace-14b"],
+        prompt="test prompt",
+        negative_prompt="",
+        generator=None,
+        num_frames=81,
+        fps=16,
+    )
+
+    assert len(kwargs["video"]) == 49
+    assert len(kwargs["mask"]) == 49
+    assert kwargs["num_frames"] == 49
+    assert kwargs["video"][-1] == ("video", 48)
+    assert kwargs["mask"][-1] == ("mask", 48)
 
 
 def test_infer_dry_run_allows_cogvideox_svg2_sparse_processor(tmp_path):
@@ -1269,6 +1362,24 @@ def test_infer_dry_run_resolves_draft_defaults_for_default_target_shape(tmp_path
     assert cfg["visual_len"] == 75_600
     errors = payload["runtime"]["preflight"]["errors"]
     assert not any("draft latent_h config expects" in item for item in errors)
+    if _draft_mit_backend_ready(payload):
+        assert returncode == 0
+        assert errors == []
+    else:
+        assert returncode == 1
+        assert any("MIT Han Lab Block-Sparse-Attention" in item for item in errors)
+
+
+def test_infer_dry_run_resolves_wananimate_draft_reference_frame_layout(tmp_path):
+    returncode, payload = _run_infer_dry_run_unchecked(tmp_path, "--model", "wananimate", "--method", "draft")
+    cfg = payload["method_config"]
+
+    assert payload["num_frames"] == 77
+    assert cfg["latent_h"] == 45
+    assert cfg["latent_w"] == 80
+    assert cfg["visual_len"] == 75_600
+    errors = payload["runtime"]["preflight"]["errors"]
+    assert not any("visual_len" in item for item in errors)
     if _draft_mit_backend_ready(payload):
         assert returncode == 0
         assert errors == []

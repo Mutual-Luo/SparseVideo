@@ -87,6 +87,14 @@ from _infer_diffusers.utils import (
 )
 
 
+def preferred_cuda_linalg_backend(spec) -> str:
+    if spec.pipeline_class == "WanAnimatePipeline":
+        # WanAnimate runs torch.linalg.qr() in its motion encoder; MAGMA can
+        # fail to allocate under sparse attention plus model CPU offload.
+        return "cusolver"
+    return "magma"
+
+
 def run(args: argparse.Namespace) -> int:
     spec = MODEL_SPECS[MODEL_ALIASES[args.model]]
     model_type = sparsevideo_model_type(spec)
@@ -459,7 +467,9 @@ def run(args: argparse.Namespace) -> int:
         torch.backends.cuda.matmul.allow_tf32 = True
         seed_everything(torch, args.seed)
         try:
-            torch.backends.cuda.preferred_linalg_library(backend="magma")
+            torch.backends.cuda.preferred_linalg_library(
+                backend=preferred_cuda_linalg_backend(spec)
+            )
         except Exception:
             pass
         if torch.cuda.is_available():

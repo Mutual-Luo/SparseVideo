@@ -42,3 +42,20 @@ CUDA_VISIBLE_DEVICES="$gpu" "$PY" scripts/infer_diffusers.py \
 done
 
 wait
+
+
+
+python scripts/utils/preprocess_wan_animate.py \
+    --image example/animate/1.jpeg \
+    --video example/animate/1.mp4 \
+    --output example/animate/process_results \
+    --ckpt-path /home/dataset-assist-0/public-models/Wan2.2-Animate-14B/process_checkpoint \
+    --download-checkpoint
+
+python scripts/utils/preprocess_wan_animate.py \
+    --image example/animate/1.jpeg \
+    --video example/animate/1.mp4 \
+    --output example/animate/process_results \
+    --ckpt-path /home/dataset-assist-0/public-models/Wan2.2-Animate-14B/process_checkpoint \
+    --no-use-flux \
+    --download-checkpoint
