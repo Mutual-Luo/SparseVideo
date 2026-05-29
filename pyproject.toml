@@ -29,28 +29,13 @@ dependencies = [
     "jinja2>=3.0",
     "filelock>=3.0",
     "packaging>=21.0",
+    "triton>=2.2.0",
+    "diffsynth>=2.0.12",
 ]
 
 [project.urls]
 Repository = "https://github.com/Mutual-Luo/SparseVideo"
 
-[project.optional-dependencies]
-spargeattn = ["triton>=2.2.0"]
-sta = ["triton>=2.2.0"]
-svg1 = []
-# flashinfer 0.2.x is vendored in sparsevideo/kernels/_flashinfer/ and loaded automatically.
-# If you want a newer/system flashinfer, install it separately (takes priority over vendored):
-#   pip install flashinfer-python -i https://flashinfer.ai/whl/cu121/torch2.4/
-svg2 = ["triton>=2.2.0"]
-radial = []
-draft = ["triton>=2.2.0"]
-adacluster = ["triton>=2.2.0"]
-flashomni = []
-svoo = ["triton>=2.2.0"]
-flashinfer = []
-diffsynth = ["diffsynth>=2.0.12"]
-all = ["triton>=2.2.0", "diffsynth>=2.0.12"]
-dev = ["pytest>=7.0", "ruff>=0.4.0"]
 
 [project.scripts]
 sparsevideo-build-kernels = "sparsevideo.kernels._build:main"
