@@ -4,6 +4,9 @@
 
 #pragma once
 
+// CuTe 4.x's <cute/algorithm/prefetch.hpp> (pulled in by copy.hpp) references
+// Copy_Atom without including it, so cute/tensor.hpp must be seen first to define it.
+#include "cute/tensor.hpp"
 #include "cute/algorithm/copy.hpp"
 
 #include "cutlass/cutlass.h"
@@ -76,7 +79,9 @@ struct Flash_fwd_kernel_traits : public Base {
     using TiledMma = TiledMMA<
         typename Base::MMA_Atom_Arch,
         Layout<Shape<Int<kNWarps>,_1,_1>>,  // 4x1x1 or 8x1x1 thread group
-        typename Base::ValLayoutMNK>; // 1x2x1 or 1x2x2 value group for 16x16x16 MMA and LDSM
+        // CuTe 4.x: TiledMMA's 3rd param is PermutationMNK (a Tile), not the old
+        // ValLayoutMNK. Tile<16*kNWarps,16,16> reproduces the 1x2x1 value grouping.
+        Tile<Int<16 * kNWarps>, _16, _16>>;
 
     using SmemLayoutAtomQ = decltype(
         composition(Swizzle<kSwizzle, 3, 3>{},

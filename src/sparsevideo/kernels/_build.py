@@ -20,6 +20,19 @@ from pathlib import Path
 NATIVE_ROOT = Path(__file__).resolve().parent / "native"
 DEFAULT_CACHE_DIR = Path.home() / ".cache" / "sparsevideo" / "kernels"
 
+
+def _inject_cutlass(name: str, env: dict[str, str]) -> None:
+    """Resolve the pinned CUTLASS root for ``name`` and expose it to the build.
+
+    No-op for kernels that don't use CUTLASS (e.g. svg_svoo_fused uses flashinfer's
+    bundled copy) or when the caller already set ``SPARSEVIDEO_CUTLASS_DIR``.
+    """
+    from . import _cutlass
+
+    if name not in _cutlass.CUTLASS_PINS or "SPARSEVIDEO_CUTLASS_DIR" in env:
+        return
+    env["SPARSEVIDEO_CUTLASS_DIR"] = str(_cutlass.cutlass_root(name))
+
 EXTENSIONS = {
     "svg_svoo_fused": {
         "description": "Fused LayerNorm + RoPE kernels (SVG/SVOO)",
@@ -40,11 +53,20 @@ EXTENSIONS = {
         "description": "MIT Block-Sparse-Attention for Draft method (CUDA)",
         "build_script": "setup.py",
         "setup_cmd": ["install", "--prefix", "{build_dir}"],
+        # SparseVideo's draft only uses the forward block-sparse hdim=128 path, which is
+        # also the only path ported to CUTLASS 4.x. Build inference-only by default.
+        "build_env": {"BLOCK_SPARSE_ATTN_BUILD_MODE": "draft_inference"},
+        "artifact": ("", "block_sparse_attn_cuda*.so"),
     },
     "flashomni": {
         "description": "FlashOmni sparse attention + GEMM (CUDA)",
         "build_script": "setup.py",
         "setup_cmd": ["install", "--prefix", "{build_dir}"],
+        # flashomni is flashinfer-derived: it JITs at runtime unless AOT is requested.
+        # We must build the .so ahead of time so benchmark/quality runs do not pay a
+        # first-call compile and so missing-kernel states fail loudly.
+        "build_env": {"FLASHOMNI_ENABLE_AOT": "1"},
+        "artifact": ("flashomni", "**/flashomni_kernels*.so"),
     },
     "sta_h100": {
         "description": "FastVideo STA Hopper/H100 C++ extension",
@@ -54,22 +76,57 @@ EXTENSIONS = {
 }
 
 
+def _nvcc_path() -> str | None:
+    """Locate nvcc: prefer $CUDA_HOME/bin/nvcc, then PATH."""
+    cuda_home = os.environ.get("CUDA_HOME") or os.environ.get("CUDA_PATH")
+    if cuda_home:
+        candidate = Path(cuda_home) / "bin" / "nvcc"
+        if candidate.is_file():
+            return str(candidate)
+    import shutil
+
+    return shutil.which("nvcc")
+
+
+def _nvcc_major(nvcc: str) -> str | None:
+    """Parse the CUDA major version reported by ``nvcc --version`` (e.g. '12')."""
+    out = subprocess.run([nvcc, "--version"], capture_output=True, text=True)
+    import re
+
+    m = re.search(r"release (\d+)\.", out.stdout)
+    return m.group(1) if m else None
+
+
 def _check_cuda_available() -> tuple[bool, str]:
-    """Check if CUDA toolkit is available for building extensions."""
+    """Preflight the build toolchain, failing loudly with actionable guidance.
+
+    Verifies a CUDA torch, that nvcc is found, and that nvcc's CUDA major matches
+    torch's. A mismatch (a common trap: a stray system nvcc shadowing the conda
+    env's) is the usual cause of confusing compile errors, so we stop early.
+    """
     try:
         import torch
-        if not torch.cuda.is_available():
-            return False, "torch.cuda.is_available() is False"
-        cuda_home = os.environ.get("CUDA_HOME") or os.environ.get("CUDA_PATH")
-        if not cuda_home:
-            nvcc = subprocess.run(
-                ["which", "nvcc"], capture_output=True, text=True
-            )
-            if nvcc.returncode != 0:
-                return False, "CUDA_HOME not set and nvcc not found in PATH"
-        return True, "ok"
     except ImportError:
-        return False, "torch not installed"
+        return False, "torch not installed; install torch with CUDA support"
+    if not torch.cuda.is_available():
+        return False, "torch.cuda.is_available() is False; install a CUDA build of torch"
+
+    nvcc = _nvcc_path()
+    if not nvcc:
+        return False, (
+            "nvcc not found. Set CUDA_HOME to your CUDA toolkit (e.g. your conda env), "
+            "or put nvcc on PATH."
+        )
+
+    torch_cuda = (torch.version.cuda or "").split(".")[0]
+    nvcc_cuda = _nvcc_major(nvcc)
+    if torch_cuda and nvcc_cuda and torch_cuda != nvcc_cuda:
+        return False, (
+            f"CUDA major mismatch: torch is built for CUDA {torch.version.cuda} but "
+            f"nvcc ({nvcc}) is CUDA {nvcc_cuda}.x. Use the matching nvcc (e.g. set "
+            f"CUDA_HOME to your conda env) before building."
+        )
+    return True, f"ok (nvcc={nvcc}, CUDA {nvcc_cuda}.x, torch CUDA {torch.version.cuda})"
 
 
 def _build_svg_svoo_fused(ext_dir: Path, build_dir: Path, verbose: bool) -> tuple[bool, str]:
@@ -97,7 +154,12 @@ def _build_setup_py(ext_dir: Path, build_dir: Path, verbose: bool) -> tuple[bool
     target_dir.mkdir(parents=True, exist_ok=True)
 
     env = os.environ.copy()
-    env.setdefault("MAX_JOBS", str(os.cpu_count() or 4))
+    # Parallel build jobs for ninja. Cap at 32: CUTLASS-heavy nvcc TUs each use
+    # several GB of RAM, so using all cores (e.g. 128) risks OOM/thrashing.
+    env.setdefault("MAX_JOBS", str(min(32, os.cpu_count() or 4)))
+    _inject_cutlass(ext_dir.name, env)
+    for key, value in EXTENSIONS.get(ext_dir.name, {}).get("build_env", {}).items():
+        env.setdefault(key, value)
 
     result = subprocess.run(
         [
@@ -138,11 +200,23 @@ def build_extension(
     build_dir.mkdir(parents=True, exist_ok=True)
 
     if name == "svg_svoo_fused":
-        return _build_svg_svoo_fused(ext_dir, build_dir, verbose)
+        ok, msg = _build_svg_svoo_fused(ext_dir, build_dir, verbose)
     elif ext_info.get("build_script") == "setup.py":
-        return _build_setup_py(ext_dir, build_dir, verbose)
+        ok, msg = _build_setup_py(ext_dir, build_dir, verbose)
     else:
         return False, f"unsupported build_script: {ext_info['build_script']}"
+
+    # Guard against silent no-op builds (e.g. a setup.py that exits 0 without
+    # producing its extension): a reported success must leave the artifact behind.
+    artifact = ext_info.get("artifact")
+    if ok and artifact:
+        subdir, pattern = artifact
+        if not list((ext_dir / subdir).glob(pattern)):
+            return False, (
+                f"build exited 0 but produced no artifact matching "
+                f"{subdir}/{pattern}; check the build flags for {name}"
+            )
+    return ok, msg
 
 
 def build_all(
@@ -185,12 +259,16 @@ def status() -> dict[str, str]:
     """Report which native extensions are already built and loadable."""
     report = {}
 
-    build_dir = NATIVE_ROOT / "build"
-    if build_dir.exists():
-        kernels_so = list(build_dir.glob("_kernels*.so"))
-        report["svg_svoo_fused"] = "built" if kernels_so else "not built"
-    else:
-        report["svg_svoo_fused"] = "not built"
+    # Check both locations: pip-install path and sparsevideo-build-kernels path
+    _svg_locations = [
+        NATIVE_ROOT / "svg_svoo_fused",   # pip install --no-build-isolation
+        NATIVE_ROOT / "build",            # sparsevideo-build-kernels
+    ]
+    report["svg_svoo_fused"] = "not built"
+    for _d in _svg_locations:
+        if _d.exists() and list(_d.glob("_kernels*.so")):
+            report["svg_svoo_fused"] = "built"
+            break
 
     spargeattn_dir = NATIVE_ROOT / "spargeattn" / "spas_sage_attn"
     if spargeattn_dir.exists() and list(spargeattn_dir.glob("_qattn*.so")):

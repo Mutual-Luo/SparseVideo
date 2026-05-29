@@ -180,17 +180,19 @@ block_sparse_attn_sources = (
 )
 draft_inference_flags = ["-DSPARSEVIDEO_DRAFT_INFERENCE_ONLY"] if BUILD_MODE == "draft_inference" else []
 
-cutlass_include_dirs = [
-    Path(this_dir) / "csrc" / "cutlass" / "include",
-    Path(this_dir).parent / "flashomni" / "3rdparty" / "cutlass" / "include",
-    Path(this_dir).parent / "sta_h100" / "include" / "cutlass" / "include",
-]
+# CUTLASS root resolved by sparsevideo.kernels._cutlass (env override / vendored /
+# fetched cache). This fork's forward block-sparse path was ported to CUTLASS 4.x, so
+# it builds against the shared v4.3.0 copy (same as flashomni/sta_h100).
+cutlass_override = os.environ.get("SPARSEVIDEO_CUTLASS_DIR")
+if cutlass_override:
+    cutlass_include_dirs = [Path(cutlass_override) / "include"]
+else:
+    cutlass_include_dirs = [Path(this_dir).parent / "flashomni" / "3rdparty" / "cutlass" / "include"]
 cutlass_include_dirs = [path for path in cutlass_include_dirs if path.exists()]
 if not cutlass_include_dirs and not SKIP_CUDA_BUILD:
     raise RuntimeError(
-        "Block Sparse Attention requires CUTLASS headers. Expected one of: "
-        "csrc/cutlass/include, ../flashomni/3rdparty/cutlass/include, or "
-        "../sta_h100/include/cutlass/include."
+        "Block Sparse Attention requires CUTLASS 4.x headers. Expected the shared "
+        "../flashomni/3rdparty/cutlass/include, or set $SPARSEVIDEO_CUTLASS_DIR."
     )
 
 if not SKIP_CUDA_BUILD:

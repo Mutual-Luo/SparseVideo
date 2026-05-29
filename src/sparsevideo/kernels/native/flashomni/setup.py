@@ -215,7 +215,9 @@ if enable_aot:
         except ValueError:
             pass
     
-    cutlass = root / "3rdparty" / "cutlass"
+    # CUTLASS root resolved by sparsevideo.kernels._cutlass (env override / vendored /
+    # fetched cache). Falls back to the in-tree vendored copy for standalone builds.
+    cutlass = Path(os.environ.get("SPARSEVIDEO_CUTLASS_DIR") or (root / "3rdparty" / "cutlass"))
     include_dirs = [
         root.resolve() / "include",
         cutlass.resolve() / "include",  # for group gemm

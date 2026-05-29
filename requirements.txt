@@ -1,6 +1,0 @@
-# Minimal runtime requirements for `pip install sparsevideo`.
-# For full development/research env, see requirements-dev.txt.
-torch>=2.1.0
-diffusers>=0.30.0
-einops>=0.6.0
-PyYAML>=6.0

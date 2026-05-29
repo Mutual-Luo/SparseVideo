@@ -76,9 +76,9 @@ sparsevideo.restore_sparse_attention(pipe)
 | `svoo` | SVOO | FlashInfer / Triton co-clustering | Wan, Hunyuan | pass |
 | `flashomni` | FlashOmni | C++/CUDA sparse attention | Wan, Hunyuan | pass; visual QC caveat |
 
-See `PARITY_STATUS.md` for the current completion gate. On this A100 machine, the current audit is complete, including
-FlashOmni Hunyuan reported-config dispatch evidence. FlashOmni's gate still records a separate artifact-QC warning for
-visual acceptance. `sta_h100` remains hardware-deferred until a Hopper/H100 machine is available.
+On this A100 machine the current audit is complete, including FlashOmni Hunyuan reported-config dispatch evidence.
+FlashOmni still carries a separate visual-QC caveat (see the table note above). `sta_h100` remains hardware-deferred
+until a Hopper/H100 machine is available.
 
 ## API Reference
 
@@ -109,13 +109,13 @@ methods = sparsevideo.list_methods()
 A unified inference script is provided for benchmarking and quality evaluation:
 
 ```bash
-python scripts/infer.py --model wan14b --method svoo --num-frames 81 --num-inference-steps 50
+python scripts/infer_diffusers.py --model wan14b --method svoo --num-frames 81 --num-inference-steps 50
 
-# Dry-run: show resolved config and kernel status without loading model
-python scripts/infer.py --model wan14b --method svoo --dry-run
+# Dry-run: validate resolved config and kernel status without loading the model
+python scripts/infer_diffusers.py --model wan14b --method svoo --dry-run --print-json
 
-# Use upstream benchmark profile
-python scripts/infer.py --model wan14b --method svoo --profile upstream
+# Override method config (repeatable KEY=VALUE, parsed as JSON when possible)
+python scripts/infer_diffusers.py --model wan14b --method svoo --method-config top_p_kmeans=0.9
 ```
 
 ## DiffSynth-Studio
@@ -125,19 +125,19 @@ entrypoints:
 
 ```bash
 # List supported DiffSynth bundle keys, including deferred/local-only entries
-bash scripts/download_diffsynth_models.sh --list
+bash scripts/download/download_diffsynth_models.sh --list
 
 # Prefer ModelScope when available, then fall back to Hugging Face through an HF mirror.
-bash scripts/download_diffsynth_models.sh --all --source modelscope-first --hf-endpoint https://hf-mirror.com --no-proxy
+bash scripts/download/download_diffsynth_models.sh --all --source modelscope-first --hf-endpoint https://hf-mirror.com --no-proxy
 
 # Prefer Hugging Face/HF mirror first, then fall back to ModelScope when useful.
-bash scripts/download_diffsynth_models.sh --all --source hf-first --hf-endpoint https://hf-mirror.com --no-proxy
+bash scripts/download/download_diffsynth_models.sh --all --source hf-first --hf-endpoint https://hf-mirror.com --no-proxy
 
 # Resolve local files without loading a model
 python scripts/infer_diffsynth.py --model wan21-t2v-1.3b --dry-run --print-json
 
 # Apply/restore SparseVideo on a downloaded DiffSynth bundle without generation
-python scripts/smoke_diffsynth_methods.py --model wan21-t2v-1.3b --methods dense,svg2 --apply-only
+python scripts/infer_diffsynth.py --model wan21-t2v-1.3b --method svg2 --apply-only
 ```
 
 ## Runtime Kernel Status

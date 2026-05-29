@@ -7,6 +7,10 @@
 
 #pragma once
 
+// CuTe 4.x's prefetch.hpp uses Copy_Atom without including it; pull in cute/tensor.hpp
+// first (defines Copy_Atom) before any header that may include the cute copy algorithms.
+#include <cute/tensor.hpp>
+
 #include <ATen/cuda/CUDAContext.h>
 
 #include "static_switch.h"

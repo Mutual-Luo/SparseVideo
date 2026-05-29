@@ -980,7 +980,7 @@ def test_svoo_co_cluster_tokens_smoke_shapes_on_cuda():
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA/Triton")
 def test_svoo_co_cluster_tokens_supports_non_power_of_two_head_dim_on_cuda():
     from sparsevideo.kernels.co_cluster import co_cluster_tokens
-    from sparsevideo.kernels.kmeans import triton_kmeans
+    from sparsevideo.methods.svg2.kmeans import triton_kmeans
 
     torch.manual_seed(11)
     q = torch.randn(2, 32, 96, device="cuda", dtype=torch.float16)

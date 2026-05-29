@@ -60,8 +60,11 @@ def _candidate_native_kernel_dirs():
             )
         yield env_path
 
-    repo_root = Path(__file__).resolve().parents[3]
-    yield repo_root / "src" / "sparsevideo" / "kernels" / "native" / "build"
+    kernels_dir = Path(__file__).resolve().parent
+    # Primary: unified pip install location (setup.py BuildExtension output)
+    yield kernels_dir / "native" / "svg_svoo_fused"
+    # Legacy: sparsevideo-build-kernels / standalone build.py output
+    yield kernels_dir / "native" / "build"
 
 
 def _load_native_kernels(required: bool = False):

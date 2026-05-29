@@ -322,10 +322,10 @@ def _radial_flashinfer_attention(
     block_size,
     pre_defined_mask=None,
 ):
-    from ...kernels.flashinfer_block_sparse import _ensure_cuda_home_for_flashinfer_jit
+    from ...kernels.flashinfer_block_sparse import _ensure_cuda_home_for_flashinfer_jit, get_flashinfer
 
     _ensure_cuda_home_for_flashinfer_jit()
-    import flashinfer
+    flashinfer = get_flashinfer()
 
     B, _N, _H, _D = query.shape
     if tail_len and pre_defined_mask is not None and B != 1:
@@ -424,9 +424,9 @@ def _radial_flashinfer_fixed_bsr_video_attention(
     *,
     return_lse=False,
 ):
-    from ...kernels.flashinfer_block_sparse import build_bsr_from_mask
+    from ...kernels.flashinfer_block_sparse import build_bsr_from_mask, get_flashinfer
 
-    import flashinfer
+    flashinfer = get_flashinfer()
 
     B, _N, H, D = query.shape
     indptr, indices = build_bsr_from_mask(video_mask, query.device)
@@ -587,10 +587,10 @@ def _radial_sage_attention(
         )
         return output.permute(0, 2, 1, 3).contiguous()
 
-    from ...kernels.flashinfer_block_sparse import _ensure_cuda_home_for_flashinfer_jit
+    from ...kernels.flashinfer_block_sparse import _ensure_cuda_home_for_flashinfer_jit, get_flashinfer
 
     _ensure_cuda_home_for_flashinfer_jit()
-    import flashinfer
+    flashinfer = get_flashinfer()
 
     converted_mask = converted_mask.clone()
     kv_border = _ceil_div(int(pre_defined_mask[0].sum().item()), k_block)
@@ -644,10 +644,10 @@ def _radial_sage_dense_attention(
     if not tail_len:
         return output_video.contiguous()
 
-    from ...kernels.flashinfer_block_sparse import _ensure_cuda_home_for_flashinfer_jit
+    from ...kernels.flashinfer_block_sparse import _ensure_cuda_home_for_flashinfer_jit, get_flashinfer
 
     _ensure_cuda_home_for_flashinfer_jit()
-    import flashinfer
+    flashinfer = get_flashinfer()
 
     output_text = []
     for batch_idx in range(B):
