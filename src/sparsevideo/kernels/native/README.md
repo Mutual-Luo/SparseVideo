@@ -26,10 +26,8 @@ headers.
 SparseVideo requires this local runtime once `flashomni_kernels*.so` is built;
 environment `flashomni` packages are not accepted for runtime parity.
 
-`sta_h100/` is a buildable local runtime-source copy of FastVideo's H100/TK
-STA source. The current A100 environment uses the SparseVideo-owned SM80
-block-sparse CUDA backend in `draft_block_sparse/` with STA's tile-window mask;
-build `sta_h100/` only on a Hopper target.
+The `sta` method uses the SparseVideo-owned SM80 block-sparse CUDA backend in
+`draft_block_sparse/` with STA's tile-window mask on A100.
 
 Build for the current environment:
 
@@ -64,12 +62,3 @@ FLASHOMNI_ENABLE_AOT=1 \
 src/sparsevideo/kernels/native/flashomni/setup.sh
 ```
 
-Build FastVideo STA H100 kernels on a Hopper-capable build environment with
-CMake >= 3.26:
-
-```bash
-PYTHON=/home/dataset-assist-0/luojy/miniconda3/envs/sparsevideo/bin/python \
-CMAKE_CUDA_ARCHITECTURES=90a \
-FASTVIDEO_KERNEL_BUILD_TK=ON \
-src/sparsevideo/kernels/native/sta_h100/setup.sh
-```

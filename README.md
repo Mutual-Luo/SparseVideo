@@ -70,15 +70,14 @@ sparsevideo.restore_sparse_attention(pipe)
 | `svg2` | Sparse-VideoGen | FlashInfer + Triton k-means | Wan, Hunyuan | pass |
 | `spargeattn` | SpargeAttn | Triton (spas_sage_attn) | Wan, Hunyuan | pass |
 | `radial` | Radial Attention | FlashInfer / SageAttention | Wan, Hunyuan | pass |
-| `sta` | FastVideo (STA) | Triton (A100) / C++ (H100) | Wan, Hunyuan | A100 pass; H100 hardware-deferred |
+| `sta` | FastVideo (STA) | SM80 block-sparse CUDA (A100) | Wan, Hunyuan | pass |
 | `draft` | Draft Attention | Triton block-sparse | Wan, Hunyuan | pass |
 | `adacluster` | AdaCluster | Triton k-means + block-sparse | Wan, Hunyuan | pass |
 | `svoo` | SVOO | FlashInfer / Triton co-clustering | Wan, Hunyuan | pass |
 | `flashomni` | FlashOmni | C++/CUDA sparse attention | Wan, Hunyuan | pass; visual QC caveat |
 
 On this A100 machine the current audit is complete, including FlashOmni Hunyuan reported-config dispatch evidence.
-FlashOmni still carries a separate visual-QC caveat (see the table note above). `sta_h100` remains hardware-deferred
-until a Hopper/H100 machine is available.
+FlashOmni still carries a separate visual-QC caveat (see the table note above).
 
 ## API Reference
 

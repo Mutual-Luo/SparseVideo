@@ -33,6 +33,21 @@ model_defaults:
     kv_distance_threshold: 5.5
     thresholded_kmeans_iter_time: 3
     thresholded_kmeans_max_iterations: 10
+  wan21-fun-1.3b-control:
+    dense_warmup_step_ratio: 0.1
+    dense_warmup_layer_ratio: 0.03
+    topk_num: 128
+    q_kernel_num: 100
+    kv_kernel_num: 500
+    kmeans_iter_init: 3
+    kmeans_iter_step: 1
+    use_thresholded_kmeans_loop: false
+    initial_q_kernel_num: 50
+    initial_kv_kernel_num: 200
+    q_distance_threshold: 9.0
+    kv_distance_threshold: 5.5
+    thresholded_kmeans_iter_time: 3
+    thresholded_kmeans_max_iterations: 10
   wan21-t2v-14b:
     dense_warmup_step_ratio: 0.1
     dense_warmup_layer_ratio: 0.03
@@ -49,6 +64,36 @@ model_defaults:
     thresholded_kmeans_iter_time: 3
     thresholded_kmeans_max_iterations: 10
   wan22-t2v-a14b:
+    dense_warmup_step_ratio: 0.1
+    dense_warmup_layer_ratio: 0.03
+    topk_num: 128
+    q_kernel_num: 100
+    kv_kernel_num: 500
+    kmeans_iter_init: 3
+    kmeans_iter_step: 1
+    use_thresholded_kmeans_loop: false
+    initial_q_kernel_num: 50
+    initial_kv_kernel_num: 200
+    q_distance_threshold: 9.0
+    kv_distance_threshold: 5.5
+    thresholded_kmeans_iter_time: 3
+    thresholded_kmeans_max_iterations: 10
+  wan22-fun-a14b-control:
+    dense_warmup_step_ratio: 0.1
+    dense_warmup_layer_ratio: 0.03
+    topk_num: 128
+    q_kernel_num: 100
+    kv_kernel_num: 500
+    kmeans_iter_init: 3
+    kmeans_iter_step: 1
+    use_thresholded_kmeans_loop: false
+    initial_q_kernel_num: 50
+    initial_kv_kernel_num: 200
+    q_distance_threshold: 9.0
+    kv_distance_threshold: 5.5
+    thresholded_kmeans_iter_time: 3
+    thresholded_kmeans_max_iterations: 10
+  wan22-ti2v-5b:
     dense_warmup_step_ratio: 0.1
     dense_warmup_layer_ratio: 0.03
     topk_num: 128

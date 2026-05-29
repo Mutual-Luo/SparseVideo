@@ -7,7 +7,7 @@ upstream validated, and that ref is resolved at build time.
 Resolution order for a kernel (see ``cutlass_root``):
 
 1. ``$SPARSEVIDEO_CUTLASS_DIR`` -- explicit global override (advanced / offline).
-   Must satisfy the kernel being built; note flashomni/sta_h100 need CUTLASS 4.x
+   Must satisfy the kernel being built; note flashomni needs CUTLASS 4.x
    while draft needs 3.x, so a single override cannot serve both at once.
 2. Vendored copy in the repo, if present -- correct per-kernel version, offline.
 3. Previously-fetched copy cached under ``~/.cache/sparsevideo/third_party``.
@@ -40,7 +40,6 @@ _CACHE_ROOT = (
 # bit-identical to the 3.x build with no speed regression.
 CUTLASS_PINS: dict[str, str] = {
     "flashomni": "v4.3.0",
-    "sta_h100": "v4.3.0",
     "draft_block_sparse": "v4.3.0",
 }
 
@@ -49,7 +48,6 @@ CUTLASS_PINS: dict[str, str] = {
 # shares the flashomni 4.3.0 copy (its own 3.x checkout is obsolete after the port).
 _VENDORED_ROOT: dict[str, Path] = {
     "flashomni": NATIVE_ROOT / "flashomni" / "3rdparty" / "cutlass",
-    "sta_h100": NATIVE_ROOT / "sta_h100" / "include" / "cutlass",
     "draft_block_sparse": NATIVE_ROOT / "flashomni" / "3rdparty" / "cutlass",
 }
 

@@ -8,7 +8,7 @@ from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
 
 DEFAULT_MODEL_ROOT = Path(
-    os.environ.get("SPARSEVIDEO_DIFFSYNTH_MODEL_ROOT", "/home/dataset-assist-0/luojy/models")
+    os.environ.get("SPARSEVIDEO_DIFFSYNTH_MODEL_ROOT", "/home/dataset-assist-0/public-models")
 )
 
 
@@ -27,6 +27,7 @@ class DiffSynthModelSpec:
     default_sigma_shift: float = 5.0
     default_switch_dit_boundary: float = 0.875
     required_inputs: Tuple[str, ...] = ()
+    config_model_key: Optional[str] = None
 
 
 @dataclass(frozen=True)
@@ -105,6 +106,7 @@ _SPECS: Tuple[DiffSynthModelSpec, ...] = (
         default_width=832,
         default_num_frames=81,
         default_fps=15,
+        config_model_key="wan21-t2v-1.3b",
     ),
     DiffSynthModelSpec(
         key="wan21-t2v-14b",
@@ -128,6 +130,7 @@ _SPECS: Tuple[DiffSynthModelSpec, ...] = (
         default_num_frames=81,
         default_fps=15,
         required_inputs=("input_image",),
+        config_model_key="wan21-i2v-14b",
     ),
     DiffSynthModelSpec(
         key="wan21-i2v-14b-720p",
@@ -140,6 +143,7 @@ _SPECS: Tuple[DiffSynthModelSpec, ...] = (
         default_num_frames=81,
         default_fps=15,
         required_inputs=("input_image",),
+        config_model_key="wan21-i2v-14b",
     ),
     DiffSynthModelSpec(
         key="wan21-flf2v-14b-720p",
@@ -152,6 +156,7 @@ _SPECS: Tuple[DiffSynthModelSpec, ...] = (
         default_num_frames=81,
         default_fps=15,
         required_inputs=("input_image", "end_image"),
+        config_model_key="wan21-t2v-14b",
     ),
     DiffSynthModelSpec(
         key="wan21-fun-1.3b-control",
@@ -176,6 +181,7 @@ _SPECS: Tuple[DiffSynthModelSpec, ...] = (
         default_num_frames=81,
         default_fps=15,
         required_inputs=("input_image", "end_image"),
+        config_model_key="wan21-t2v-1.3b",
     ),
     DiffSynthModelSpec(
         key="wan21-fun-14b-control",
@@ -188,6 +194,7 @@ _SPECS: Tuple[DiffSynthModelSpec, ...] = (
         default_num_frames=81,
         default_fps=15,
         required_inputs=("control_video",),
+        config_model_key="wan21-t2v-14b",
     ),
     DiffSynthModelSpec(
         key="wan21-fun-14b-inp",
@@ -200,6 +207,7 @@ _SPECS: Tuple[DiffSynthModelSpec, ...] = (
         default_num_frames=81,
         default_fps=15,
         required_inputs=("input_image", "end_image"),
+        config_model_key="wan21-t2v-14b",
     ),
     DiffSynthModelSpec(
         key="wan21-fun-v11-1.3b-control",
@@ -212,6 +220,7 @@ _SPECS: Tuple[DiffSynthModelSpec, ...] = (
         default_num_frames=81,
         default_fps=15,
         required_inputs=("control_video", "reference_image"),
+        config_model_key="wan21-t2v-1.3b",
     ),
     DiffSynthModelSpec(
         key="wan21-fun-v11-1.3b-control-camera",
@@ -224,6 +233,7 @@ _SPECS: Tuple[DiffSynthModelSpec, ...] = (
         default_num_frames=81,
         default_fps=15,
         required_inputs=("input_image", "camera_control_direction"),
+        config_model_key="wan21-t2v-1.3b",
     ),
     DiffSynthModelSpec(
         key="wan21-fun-v11-14b-control",
@@ -236,6 +246,7 @@ _SPECS: Tuple[DiffSynthModelSpec, ...] = (
         default_num_frames=81,
         default_fps=15,
         required_inputs=("control_video", "reference_image"),
+        config_model_key="wan21-t2v-14b",
     ),
     DiffSynthModelSpec(
         key="wan21-fun-v11-14b-control-camera",
@@ -248,6 +259,7 @@ _SPECS: Tuple[DiffSynthModelSpec, ...] = (
         default_num_frames=81,
         default_fps=15,
         required_inputs=("input_image", "camera_control_direction"),
+        config_model_key="wan21-t2v-14b",
     ),
     DiffSynthModelSpec(
         key="wan21-vace-1.3b",
@@ -328,6 +340,7 @@ _SPECS: Tuple[DiffSynthModelSpec, ...] = (
         default_num_frames=121,
         default_fps=16,
         required_inputs=("input_audio",),
+        config_model_key="wan22-t2v-a14b",
     ),
     DiffSynthModelSpec(
         key="wan22-fun-a14b-control",
@@ -352,6 +365,7 @@ _SPECS: Tuple[DiffSynthModelSpec, ...] = (
         default_num_frames=121,
         default_fps=15,
         required_inputs=("input_image", "camera_control_direction"),
+        config_model_key="wan22-t2v-a14b",
     ),
     DiffSynthModelSpec(
         key="longcat-video",
@@ -364,6 +378,7 @@ _SPECS: Tuple[DiffSynthModelSpec, ...] = (
         default_num_frames=81,
         default_fps=15,
         required_inputs=("longcat_video",),
+        config_model_key="wan21-t2v-14b",
     ),
     DiffSynthModelSpec(
         key="video-as-prompt-wan21-14b",
@@ -376,6 +391,7 @@ _SPECS: Tuple[DiffSynthModelSpec, ...] = (
         default_num_frames=81,
         default_fps=15,
         required_inputs=("vap_video",),
+        config_model_key="wan21-i2v-14b",
     ),
     DiffSynthModelSpec(
         key="krea-realtime-video",
@@ -387,6 +403,7 @@ _SPECS: Tuple[DiffSynthModelSpec, ...] = (
         default_width=832,
         default_num_frames=81,
         default_fps=15,
+        config_model_key="wan21-t2v-1.3b",
     ),
     DiffSynthModelSpec(
         key="mova-720p",

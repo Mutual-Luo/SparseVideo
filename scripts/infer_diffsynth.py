@@ -46,7 +46,7 @@ EXPECTED_SPARSE_BACKENDS = {
     "flashomni": {"flashomni_explicit_upstream"},
     "radial": {"flashinfer", "sage_block_sparse"},
     "spargeattn": {"spas_sage", "spas_sage_block_sparse", "spas_sage_cdfthreshd", "spas_sage_topk", "spas_sage_tuned"},
-    "sta": {"fastvideo_sta_h100", "fastvideo_sta_a100_block_sparse_cuda"},
+    "sta": {"fastvideo_sta_a100_block_sparse_cuda"},
     "svg1": {"flex_attention"},
     "svg2": {"flashinfer"},
     "svoo": {"svoo_flashinfer"},
@@ -148,11 +148,19 @@ def main(argv: list[str] | None = None) -> int:
 
             prompt = _read_prompt(args)
             call_kwargs = _build_call_kwargs(args, prompt)
-            output_file = Path(args.output_file)
+            if args.output_file is not None:
+                output_file = Path(args.output_file)
+            else:
+                h = args.height or spec.default_height
+                w = args.width or spec.default_width
+                n = args.num_frames or spec.default_num_frames
+                output_file = args.output_dir / args.model / args.method / f"seed{args.seed}_{h}x{w}_{n}f.mp4"
             output_file.parent.mkdir(parents=True, exist_ok=True)
 
+            denoise_timer = _DenoiseTimer()
             generate_started = time.perf_counter()
-            video = pipe(**call_kwargs)
+            with denoise_timer:
+                video = pipe(**call_kwargs)
             generate_sec = time.perf_counter() - generate_started
             payload["generate_summary"] = handle.summary()
             payload["sparse_attention_handle"] = payload["generate_summary"]
@@ -177,6 +185,7 @@ def main(argv: list[str] | None = None) -> int:
                     "timings": {
                         "load_apply_generate_save_sec": time.perf_counter() - started,
                         "generate_sec": generate_sec,
+                        "denoise_sec": denoise_timer.elapsed_sec,
                     },
                     "cuda": _cuda_memory(args.device),
                 }
@@ -257,7 +266,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--retake-audio-regions", type=_parse_regions)
     parser.add_argument("--audio-start-time", type=float, default=0.0)
     parser.add_argument("--audio-duration", type=float)
-    parser.add_argument("--output-file", type=Path, default=REPO_ROOT / "outputs" / "diffsynth.mp4")
+    parser.add_argument("--output-dir", type=Path, default=REPO_ROOT / "result" / "inference" / "diffsynth")
+    parser.add_argument("--output-file", type=Path, default=None)
     parser.add_argument("--video-quality", type=int, default=5)
 
     parser.add_argument("--height", type=int)
@@ -737,7 +747,7 @@ def _build_method_config(args, spec) -> Dict[str, Any]:
     method_config = default_method_config(
         args.method,
         num_inference_steps=args.num_inference_steps,
-        model_key=spec.key,
+        model_key=spec.config_model_key or spec.key,
     )
     method_config.update(normalize_method_config(args.method, user_config))
     return method_config
@@ -955,6 +965,60 @@ def _emit_payload(args, payload: Dict[str, Any]) -> None:
         print(f"error={payload['error']}")
     if payload.get("output_file"):
         print(f"output_file={payload['output_file']}")
+    timings = payload.get("timings") or {}
+    if timings.get("denoise_sec") is not None:
+        print(f"denoise_sec={timings['denoise_sec']:.2f}")
+    if timings.get("generate_sec") is not None:
+        print(f"generate_sec={timings['generate_sec']:.2f}")
+
+
+class _DenoiseTimer:
+    """Wall-clock timer for the denoising loop inside pipe().
+
+    Patches tqdm.tqdm.update to record the time of the first and last progress
+    update, which corresponds to the denoising loop and excludes model loading,
+    input encoding, and VAE decoding (none of which use tqdm).
+    """
+
+    def __init__(self):
+        self._start: float | None = None
+        self._end: float | None = None
+        self._orig_update = None
+
+    def __enter__(self):
+        try:
+            import tqdm as _tqdm_mod
+        except ImportError:
+            return self
+        _timer = self
+        _orig = _tqdm_mod.tqdm.update
+
+        def _hook(self_bar, n=1):
+            t = time.perf_counter()
+            if _timer._start is None:
+                _timer._start = t
+            result = _orig(self_bar, n)
+            _timer._end = time.perf_counter()
+            return result
+
+        self._orig_update = _orig
+        _tqdm_mod.tqdm.update = _hook
+        return self
+
+    def __exit__(self, *_):
+        if self._orig_update is None:
+            return
+        try:
+            import tqdm as _tqdm_mod
+            _tqdm_mod.tqdm.update = self._orig_update
+        except ImportError:
+            pass
+
+    @property
+    def elapsed_sec(self) -> float | None:
+        if self._start is None or self._end is None:
+            return None
+        return self._end - self._start
 
 
 if __name__ == "__main__":

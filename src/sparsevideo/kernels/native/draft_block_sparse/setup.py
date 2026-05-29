@@ -182,7 +182,7 @@ draft_inference_flags = ["-DSPARSEVIDEO_DRAFT_INFERENCE_ONLY"] if BUILD_MODE == 
 
 # CUTLASS root resolved by sparsevideo.kernels._cutlass (env override / vendored /
 # fetched cache). This fork's forward block-sparse path was ported to CUTLASS 4.x, so
-# it builds against the shared v4.3.0 copy (same as flashomni/sta_h100).
+# it builds against the shared v4.3.0 copy (same as flashomni).
 cutlass_override = os.environ.get("SPARSEVIDEO_CUTLASS_DIR")
 if cutlass_override:
     cutlass_include_dirs = [Path(cutlass_override) / "include"]

@@ -20,10 +20,7 @@ _STA_A100_RUNTIME_CACHE_MAX_SIZE = 16
 _STA_A100_RUNTIME_CACHE: dict[tuple, tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]] = {}
 _STA_A100_VALID_MASK_CACHE: dict[tuple, torch.Tensor] = {}
 
-try:
-    from ...kernels.native.sta_h100 import sta_fwd  # type: ignore
-except Exception:
-    sta_fwd = None
+sta_fwd = None
 
 def sliding_tile_attention(
     q: torch.Tensor,
@@ -53,8 +50,7 @@ def sliding_tile_attention(
     if _can_use_a100_sta(q):
         return _sliding_tile_attention_a100(q, k, v, window_size, text_length, has_text, seq_shape, source_seq_shape)
     raise RuntimeError(
-        "STA native path requires a SparseVideo-owned native backend: sta_h100 on Hopper "
-        "or the SM80 block-sparse CUDA backend on Ampere/A100."
+        "STA native path requires the SparseVideo-owned SM80 block-sparse CUDA backend on A100."
     )
 
 

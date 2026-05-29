@@ -4413,32 +4413,6 @@ def test_preflight_warns_sta_inferred_shape_boundary():
     assert any("seq_shape is not set" in warning for warning in preflight["warnings"])
 
 
-def test_preflight_fails_sta_h100_missing_owned_extension():
-    infer = _load_infer_module()
-    runtime = {
-        "torch": {
-            "cuda_available": True,
-            "cuda_devices": [{"capability": [9, 0], "name": "NVIDIA H100"}],
-        },
-        "optional_kernels": {
-            "flashinfer": {"package": True, "sparse_module": True},
-            "flashomni": {"package": True, "aot_config": True},
-            "spas_sage_attn": {"package": True, "qattn_extension": True, "fused_extension": True},
-            "sta_kernels": {
-                "sparsevideo_h100": {"native_extension": False, "source": {"source_files": True}},
-            },
-            "svg_svoo_fused_kernels": {"backend_env": "auto", "native_extension": True, "candidate_dirs": []},
-        },
-    }
-
-    preflight = infer.preflight_runtime(
-        "sta", {"seq_shape": "18x48x80"}, "cuda", runtime,
-    )
-
-    assert any("H100/TK C++ parity kernel" in error for error in preflight["errors"])
-    assert preflight["warnings"] == []
-
-
 def test_preflight_reports_sta_a100_block_sparse_load_failure():
     infer = _load_infer_module()
     runtime = {
@@ -4468,41 +4442,6 @@ def test_preflight_reports_sta_a100_block_sparse_load_failure():
 
     assert any("A100 block-sparse CUDA backend failed to load during preflight" in error for error in preflight["errors"])
     assert any("bad block sparse abi" in error for error in preflight["errors"])
-
-
-def test_preflight_reports_sta_h100_load_failure():
-    infer = _load_infer_module()
-    runtime = {
-        "torch": {
-            "cuda_available": True,
-            "cuda_devices": [{"capability": [9, 0], "name": "NVIDIA H100"}],
-        },
-        "optional_kernels": {
-            "flashinfer": {"package": True, "sparse_module": True},
-            "flashomni": {"package": True, "aot_config": True},
-            "spas_sage_attn": {"package": True, "qattn_extension": True, "fused_extension": True},
-            "sta_kernels": {
-                "sparsevideo_h100": {"native_extension": True, "source": {"source_files": True}},
-                "h100_native_load_checked": True,
-                "h100_native_extension_imported": False,
-                "h100_sta_fwd": False,
-                "h100_import_error_type": "ImportError",
-                "h100_import_error": "undefined symbol: sta_fwd",
-                "sparsevideo_a100_block_sparse": {
-                    "native_extension": True,
-                    "source": {"source_files": True},
-                },
-            },
-            "svg_svoo_fused_kernels": {"backend_env": "auto", "native_extension": True, "candidate_dirs": []},
-        },
-    }
-
-    preflight = infer.preflight_runtime(
-        "sta", {"seq_shape": "18x48x80"}, "cuda", runtime,
-    )
-
-    assert any("H100/TK C++ extension failed to load during preflight" in error for error in preflight["errors"])
-    assert any("undefined symbol: sta_fwd" in error for error in preflight["errors"])
 
 
 def test_preflight_allows_sta_a100_block_sparse_cuda_on_a100():

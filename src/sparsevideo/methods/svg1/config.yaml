@@ -18,6 +18,14 @@ model_defaults:
     sparsity: 0.3
     context_length: null
     prompt_length: null
+  wan21-fun-1.3b-control:
+    dense_warmup_step_ratio: 0.1
+    dense_warmup_layer_ratio: 0.03
+    num_sampled_rows: 64
+    sample_mse_max_row: 10000
+    sparsity: 0.3
+    context_length: null
+    prompt_length: null
   wan21-t2v-14b:
     dense_warmup_step_ratio: 0.1
     dense_warmup_layer_ratio: 0.03
@@ -27,6 +35,22 @@ model_defaults:
     context_length: null
     prompt_length: null
   wan22-t2v-a14b:
+    dense_warmup_step_ratio: 0.1
+    dense_warmup_layer_ratio: 0.03
+    num_sampled_rows: 64
+    sample_mse_max_row: 10000
+    sparsity: 0.3
+    context_length: null
+    prompt_length: null
+  wan22-fun-a14b-control:
+    dense_warmup_step_ratio: 0.1
+    dense_warmup_layer_ratio: 0.03
+    num_sampled_rows: 64
+    sample_mse_max_row: 10000
+    sparsity: 0.3
+    context_length: null
+    prompt_length: null
+  wan22-ti2v-5b:
     dense_warmup_step_ratio: 0.1
     dense_warmup_layer_ratio: 0.03
     num_sampled_rows: 64

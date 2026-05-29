@@ -39,7 +39,6 @@ from sparsevideo.methods.sta.ops import (
     sliding_tile_attention,
 )
 from sparsevideo.methods.sta import ops as sta_ops
-from sparsevideo.kernels.native import sta_h100
 
 
 def _canonical_strategy_sha256(path):
@@ -55,43 +54,6 @@ def test_sta_supported_shapes_match_fastvideo_kernel_api():
     assert _is_supported_fastvideo_shape((30, 48, 80))
     assert _is_supported_fastvideo_shape((36, 48, 48))
     assert not _is_supported_fastvideo_shape((21, 45, 80))
-
-
-def test_sta_h100_owned_source_import_is_optional():
-    assert hasattr(sta_h100, "sta_fwd")
-
-
-def _source_files(root):
-    return sorted(
-        path.relative_to(root)
-        for path in root.rglob("*")
-        if path.is_file() and "__pycache__" not in path.parts
-    )
-
-
-def test_sta_owned_fastvideo_runtime_sources_match_upstream_references():
-    repo = Path(__file__).resolve().parents[1]
-    owned_root = repo / "src/sparsevideo/kernels/native/sta_h100"
-    upstream_root = repo / "training_free/FastVideo/fastvideo-kernel"
-
-    for rel in ["LICENSE", "MANIFEST.in"]:
-        assert (owned_root / rel).read_bytes() == (upstream_root / rel).read_bytes()
-
-    for rel in [
-        "csrc",
-        "include/cutlass/include",
-        "include/tk/include",
-        "include/tk/prototype",
-    ]:
-        owned = owned_root / rel
-        upstream = upstream_root / rel
-        owned_files = _source_files(owned)
-        assert owned_files == _source_files(upstream)
-        for source in owned_files:
-            assert (owned / source).read_bytes() == (upstream / source).read_bytes()
-
-    assert not (owned_root / "python/fastvideo_kernel/triton_kernels").exists()
-    assert not (owned_root / "python/fastvideo_kernel/block_sparse_attn.py").exists()
 
 
 def test_sta_dispatches_to_a100_block_sparse_when_h100_is_unavailable(monkeypatch):
@@ -201,18 +163,6 @@ def test_sta_padded_border_indices_cover_only_incomplete_tiles():
     assert (0, 3, 0) in coords
     assert (0, 0, 0) not in coords
     assert all(t == 2 or h >= 3 for t, h, _ in coords)
-
-
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="STA device backend check requires CUDA")
-def test_sta_current_a100_does_not_claim_h100_native_path():
-    major, _minor = torch.cuda.get_device_capability()
-    if major >= 9:
-        pytest.skip("current CUDA device is Hopper or newer")
-
-    q = torch.empty(1, device="cuda")
-
-    assert sta_h100.sta_fwd is not None
-    assert _can_use_h100_sta(q) is False
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="STA A100 CUDA correctness requires CUDA")

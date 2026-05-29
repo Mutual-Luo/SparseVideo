@@ -986,13 +986,7 @@ def preflight_runtime(
                 "sta tile_size differs from FastVideo's fixed upstream tile_size=(6,8,8); "
                 "SparseVideo rejects the non-upstream generalized STA path for parity runs."
             )
-        has_hopper = _has_hopper_device(torch_status)
         has_ampere = _has_ampere_device(torch_status)
-        if not sta["sparsevideo_h100"].get("source", {}).get("source_files"):
-            errors.append(
-                "sta FastVideo H100/TK C++ source is missing under "
-                "src/sparsevideo/kernels/native/sta_h100; this is not package-ready kernel parity."
-            )
         if has_ampere and not sta.get("sparsevideo_a100_block_sparse", {}).get("source", {}).get("source_files"):
             errors.append(
                 "sta A100 block-sparse CUDA source is missing under "
@@ -1013,7 +1007,7 @@ def preflight_runtime(
             else:
                 warnings.append(
                     f"sta seq_shape={seq_shape} uses SparseVideo's generalized STA A100 block-sparse CUDA path "
-                    "for this backbone's inferred tile-padded video layout; this is not a FastVideo H100/TK native target."
+                    "for this backbone's inferred tile-padded video layout."
                 )
         if has_ampere:
             a100_extension = bool(sta.get("sparsevideo_a100_block_sparse", {}).get("native_extension"))
@@ -1030,45 +1024,9 @@ def preflight_runtime(
                     "sta A100 block-sparse CUDA backend is not available as SparseVideo-owned native code; "
                     "strict STA speed runs on A100 require this backend."
                 )
-        if seq_shape in STA_NATIVE_SEQ_SHAPES:
-            h100_extension = bool(sta["sparsevideo_h100"].get("native_extension"))
-            h100_load_error = None
-            h100_usable = h100_extension
-            if h100_extension and sta.get("h100_native_load_checked"):
-                h100_usable = bool(
-                    sta.get("h100_native_extension_imported")
-                    and sta.get("h100_sta_fwd")
-                )
-                if sta.get("h100_import_error"):
-                    h100_load_error = (
-                        "sta H100/TK C++ extension failed to load during preflight: "
-                        f"{sta.get('h100_import_error_type')}: {sta.get('h100_import_error')}."
-                    )
-                elif not sta.get("h100_sta_fwd"):
-                    h100_load_error = "sta H100/TK C++ extension is missing sta_fwd."
-            if h100_load_error is not None:
-                errors.append(h100_load_error)
-            if has_hopper and not h100_usable:
-                errors.append(
-                    "sta H100/TK C++ parity kernel is not available as a SparseVideo-owned sta_h100 extension; "
-                    "runtime cannot claim H100 STA native parity."
-                )
-            elif h100_usable and not has_hopper and not has_ampere:
-                message = (
-                    "sta_h100 extension is built but no Hopper GPU is visible; "
-                    "this does not prove H100/TK dispatch."
-                )
-                warnings.append(message)
 
     return {"errors": errors, "warnings": warnings}
 
-
-def _has_hopper_device(torch_status: Dict[str, Any]) -> bool:
-    for device in torch_status.get("cuda_devices") or []:
-        capability = device.get("capability") or []
-        if capability and int(capability[0]) >= 9:
-            return True
-    return False
 
 
 def _has_ampere_device(torch_status: Dict[str, Any]) -> bool:

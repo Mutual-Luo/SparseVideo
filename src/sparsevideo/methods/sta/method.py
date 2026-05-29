@@ -183,8 +183,6 @@ def _sta_backend_name(query):
         capability = torch.cuda.get_device_capability(query.device)
     except Exception:
         capability = (0, 0)
-    if query.is_cuda and ops.sta_fwd is not None and capability[0] >= 9:
-        return "fastvideo_sta_h100"
     if query.is_cuda and capability[0] == 8 and ops._can_use_a100_sta(query):
         return "fastvideo_sta_a100_block_sparse_cuda"
     return "sta_native_unavailable"
@@ -275,9 +273,8 @@ def _sta_sparsevideo_fastvideo_path(query, key, value, B, N, H, D,
                                     prompt_length=None):
     """SparseVideo-owned port of FastVideo's sliding_tile_attention API.
 
-    H100 C++ dispatch is used only if a SparseVideo-owned sta_h100 extension is
-    built. On A100 this uses SparseVideo's owned SM80 block-sparse CUDA
-    attention backend with the same STA tile-window mask.
+    Uses SparseVideo's owned SM80 block-sparse CUDA attention backend on A100
+    with the same STA tile-window mask.
     Input layout: [B, H, S, D] (BHSD), matching FastVideo STA.
     window_size: list of (t, h, w) per head — use kernel_size for all heads.
     """

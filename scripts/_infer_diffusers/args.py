@@ -118,7 +118,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="Enable VAE slicing. Default: false.",
     )
     parser.add_argument("--vae-decoder-chunk-size", type=int, default=None)
-    parser.add_argument("--output-dir", type=Path, default=REPO_ROOT / "result" / "inference")
+    parser.add_argument("--output-dir", type=Path, default=REPO_ROOT / "result" / "inference" / "diffusers")
     parser.add_argument("--output-file", type=Path, default=None)
     parser.add_argument(
         "--metrics-file",

@@ -15,6 +15,12 @@ model_defaults:
     decay_factor: 0.2
     block_size: 128
     use_sage_attention: false
+  wan21-fun-1.3b-control:
+    dense_warmup_step_ratio: 0.1
+    dense_warmup_layer_ratio: 0.03
+    decay_factor: 0.2
+    block_size: 128
+    use_sage_attention: false
   wan21-t2v-14b:
     dense_warmup_step_ratio: 0.1
     dense_warmup_layer_ratio: 0.03
@@ -22,6 +28,18 @@ model_defaults:
     block_size: 128
     use_sage_attention: false
   wan22-t2v-a14b:
+    dense_warmup_step_ratio: 0.1
+    dense_warmup_layer_ratio: 0.03
+    decay_factor: 0.2
+    block_size: 128
+    use_sage_attention: false
+  wan22-fun-a14b-control:
+    dense_warmup_step_ratio: 0.1
+    dense_warmup_layer_ratio: 0.03
+    decay_factor: 0.2
+    block_size: 128
+    use_sage_attention: false
+  wan22-ti2v-5b:
     dense_warmup_step_ratio: 0.1
     dense_warmup_layer_ratio: 0.03
     decay_factor: 0.2

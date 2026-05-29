@@ -473,7 +473,7 @@ def _adacluster_attention(query, key, value, topk_num, q_kernel_num, kv_kernel_n
             sm_scale=scale,
         )
     else:
-        sparse_backend = "variable_block_sparse_attn"
+        sparse_backend = "adacluster_flashinfer"
 
     # Unsort
     out_bhsd = _adacluster_inverse_permutation(out_sorted, q_sorted_idx)

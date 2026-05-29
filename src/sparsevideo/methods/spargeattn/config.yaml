@@ -61,6 +61,35 @@ model_defaults:
     verbose: false
     model_out_path: null
     use_fused_qk_norm_rope: true
+  wan21-fun-1.3b-control:
+    dense_warmup_step_ratio: 0.1
+    dense_warmup_layer_ratio: 0.03
+    mode: topk
+    value: null
+    topk: 0.5
+    cdfthreshd: 0.98
+    simthreshd1: null
+    pvthreshd: 50
+    attention_sink: false
+    smooth_k: true
+    dropout_p: 0.0
+    scale: null
+    tensor_layout: HND
+    output_dtype: float16
+    return_sparsity: false
+    mask_id: null
+    tune: false
+    parallel_tune: false
+    sim_rule: l1
+    l1: 0.07
+    pv_l1: 0.08
+    cos_sim: 0.98
+    rmse: 0.07
+    rearrange_kwargs: {}
+    tune_pv: true
+    verbose: false
+    model_out_path: null
+    use_fused_qk_norm_rope: true
   wan21-t2v-14b:
     dense_warmup_step_ratio: 0.1
     dense_warmup_layer_ratio: 0.03
@@ -91,6 +120,64 @@ model_defaults:
     model_out_path: null
     use_fused_qk_norm_rope: true
   wan22-t2v-a14b:
+    dense_warmup_step_ratio: 0.1
+    dense_warmup_layer_ratio: 0.03
+    mode: topk
+    value: null
+    topk: 0.5
+    cdfthreshd: 0.98
+    simthreshd1: null
+    pvthreshd: 50
+    attention_sink: false
+    smooth_k: true
+    dropout_p: 0.0
+    scale: null
+    tensor_layout: HND
+    output_dtype: float16
+    return_sparsity: false
+    mask_id: null
+    tune: false
+    parallel_tune: false
+    sim_rule: l1
+    l1: 0.07
+    pv_l1: 0.08
+    cos_sim: 0.98
+    rmse: 0.07
+    rearrange_kwargs: {}
+    tune_pv: true
+    verbose: false
+    model_out_path: null
+    use_fused_qk_norm_rope: true
+  wan22-fun-a14b-control:
+    dense_warmup_step_ratio: 0.1
+    dense_warmup_layer_ratio: 0.03
+    mode: topk
+    value: null
+    topk: 0.5
+    cdfthreshd: 0.98
+    simthreshd1: null
+    pvthreshd: 50
+    attention_sink: false
+    smooth_k: true
+    dropout_p: 0.0
+    scale: null
+    tensor_layout: HND
+    output_dtype: float16
+    return_sparsity: false
+    mask_id: null
+    tune: false
+    parallel_tune: false
+    sim_rule: l1
+    l1: 0.07
+    pv_l1: 0.08
+    cos_sim: 0.98
+    rmse: 0.07
+    rearrange_kwargs: {}
+    tune_pv: true
+    verbose: false
+    model_out_path: null
+    use_fused_qk_norm_rope: true
+  wan22-ti2v-5b:
     dense_warmup_step_ratio: 0.1
     dense_warmup_layer_ratio: 0.03
     mode: topk

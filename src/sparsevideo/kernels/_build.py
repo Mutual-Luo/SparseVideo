@@ -68,11 +68,6 @@ EXTENSIONS = {
         "build_env": {"FLASHOMNI_ENABLE_AOT": "1"},
         "artifact": ("flashomni", "**/flashomni_kernels*.so"),
     },
-    "sta_h100": {
-        "description": "FastVideo STA Hopper/H100 C++ extension",
-        "build_script": None,
-        "note": "Requires H100 hardware; build manually with cmake in sta_h100/",
-    },
 }
 
 
@@ -293,12 +288,6 @@ def status() -> dict[str, str]:
         report["flashomni"] = "built"
     else:
         report["flashomni"] = "not built"
-
-    sta_dir = NATIVE_ROOT / "sta_h100"
-    if sta_dir.exists() and list(sta_dir.glob("**/fastvideo_kernel_ops*.so")):
-        report["sta_h100"] = "built"
-    else:
-        report["sta_h100"] = "not built (requires H100)"
 
     return report
 

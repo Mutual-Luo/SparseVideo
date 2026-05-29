@@ -63,6 +63,42 @@ model_defaults:
       - 1
     mask_search_output_dir: result/sta_mask_search
     mask_search_prompt_id: null
+  wan21-fun-1.3b-control:
+    dense_warmup_step_ratio: 0.1
+    dense_warmup_layer_ratio: 0.03
+    tile_size:
+    - 6
+    - 8
+    - 8
+    window_size:
+    - 4
+    - 6
+    - 10
+    seq_shape: null
+    has_text: false
+    STA_mode: STA_inference
+    mask_strategy_file_path: null
+    mask_candidates:
+    - - 3
+      - 1
+      - 10
+    - - 1
+      - 5
+      - 7
+    - - 3
+      - 3
+      - 3
+    - - 1
+      - 6
+      - 5
+    - - 1
+      - 3
+      - 10
+    - - 3
+      - 6
+      - 1
+    mask_search_output_dir: result/sta_mask_search
+    mask_search_prompt_id: null
   wan21-t2v-14b:
     dense_warmup_step_ratio: 0.1
     dense_warmup_layer_ratio: 0.03
@@ -100,6 +136,78 @@ model_defaults:
     mask_search_output_dir: result/sta_mask_search
     mask_search_prompt_id: null
   wan22-t2v-a14b:
+    dense_warmup_step_ratio: 0.1
+    dense_warmup_layer_ratio: 0.03
+    tile_size:
+    - 6
+    - 8
+    - 8
+    window_size:
+    - 3
+    - 6
+    - 10
+    seq_shape: null
+    has_text: false
+    STA_mode: STA_inference
+    mask_strategy_file_path: null
+    mask_candidates:
+    - - 3
+      - 1
+      - 10
+    - - 1
+      - 5
+      - 7
+    - - 3
+      - 3
+      - 3
+    - - 1
+      - 6
+      - 5
+    - - 1
+      - 3
+      - 10
+    - - 3
+      - 6
+      - 1
+    mask_search_output_dir: result/sta_mask_search
+    mask_search_prompt_id: null
+  wan22-fun-a14b-control:
+    dense_warmup_step_ratio: 0.1
+    dense_warmup_layer_ratio: 0.03
+    tile_size:
+    - 6
+    - 8
+    - 8
+    window_size:
+    - 3
+    - 6
+    - 10
+    seq_shape: null
+    has_text: false
+    STA_mode: STA_inference
+    mask_strategy_file_path: null
+    mask_candidates:
+    - - 3
+      - 1
+      - 10
+    - - 1
+      - 5
+      - 7
+    - - 3
+      - 3
+      - 3
+    - - 1
+      - 6
+      - 5
+    - - 1
+      - 3
+      - 10
+    - - 3
+      - 6
+      - 1
+    mask_search_output_dir: result/sta_mask_search
+    mask_search_prompt_id: null
+  wan22-ti2v-5b:
     dense_warmup_step_ratio: 0.1
     dense_warmup_layer_ratio: 0.03
     tile_size:

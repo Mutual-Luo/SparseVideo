@@ -869,84 +869,12 @@ def flashomni_load_status() -> Dict[str, Any]:
 def sta_load_status() -> Dict[str, Any]:
     status: Dict[str, Any] = {
         "load_checked": True,
-        "h100_native_load_checked": True,
-        "h100_package_imported": False,
-        "h100_native_extension_imported": False,
-        "h100_sta_fwd": False,
-        "h100_module_file": None,
-        "h100_candidate_files": [],
-        "h100_import_error_type": None,
-        "h100_import_error": None,
         "a100_block_sparse_load_checked": True,
         "a100_block_sparse_ready": False,
         "a100_block_sparse": {},
         "a100_import_error_type": None,
         "a100_import_error": None,
-        "training_free_runtime_detected": False,
     }
-
-    try:
-        h100_module = importlib.import_module("sparsevideo.kernels.native.sta_h100")
-    except Exception as exc:
-        status["h100_import_error_type"] = type(exc).__name__
-        status["h100_import_error"] = str(exc)
-    else:
-        status["h100_package_imported"] = True
-        h100_module_file = getattr(h100_module, "__file__", None)
-        status["h100_module_file"] = h100_module_file
-        if h100_module_file is not None:
-            h100_root = Path(h100_module_file).resolve().parent
-            if "training_free" in h100_root.parts:
-                status["training_free_runtime_detected"] = True
-                status["h100_import_error_type"] = "ImportError"
-                status["h100_import_error"] = (
-                    "STA H100 runtime resolved from training_free/, which is reference-only."
-                )
-                candidate_files = []
-            else:
-                candidate_files = _glob_any_existing(
-                    [h100_root],
-                    ("fastvideo_kernel_ops*.so", "_C/fastvideo_kernel_ops*.so", "build/**/fastvideo_kernel_ops*.so"),
-                )
-                status["h100_candidate_files"] = candidate_files
-        else:
-            candidate_files = []
-
-        sta_fwd = getattr(h100_module, "sta_fwd", None)
-        status["h100_sta_fwd"] = callable(sta_fwd)
-        status["h100_native_extension_imported"] = callable(sta_fwd)
-        if status["h100_native_extension_imported"]:
-            status["h100_import_error_type"] = None
-            status["h100_import_error"] = None
-
-        if not candidate_files and not status["h100_native_extension_imported"]:
-            status["h100_import_error_type"] = "ImportError"
-            status["h100_import_error"] = "No SparseVideo-owned sta_h100 native extension file was found."
-        elif candidate_files:
-            import_errors = []
-            for candidate in candidate_files:
-                spec = importlib.util.spec_from_file_location("fastvideo_kernel_ops", candidate)
-                if spec is None or spec.loader is None:
-                    import_errors.append(f"{candidate}: missing import spec")
-                    continue
-                try:
-                    module = importlib.util.module_from_spec(spec)
-                    spec.loader.exec_module(module)
-                except Exception as exc:
-                    import_errors.append(f"{candidate}: {type(exc).__name__}: {exc}")
-                    continue
-                sta_fwd = getattr(module, "sta_fwd", None)
-                if callable(sta_fwd):
-                    status["h100_native_extension_imported"] = True
-                    status["h100_sta_fwd"] = True
-                    status["h100_import_error_type"] = None
-                    status["h100_import_error"] = None
-                    break
-                import_errors.append(f"{candidate}: missing sta_fwd")
-
-            if not status["h100_native_extension_imported"]:
-                status["h100_import_error_type"] = "ImportError"
-                status["h100_import_error"] = "; ".join(import_errors) or "sta_fwd is not available."
 
     try:
         a100_status = draft_block_sparse_load_status()
@@ -1156,7 +1084,6 @@ def optional_kernel_status() -> Dict[str, Any]:
     sageattention_package_root = sageattention_source_root / "sageattention"
     flashomni_source_root = native_source_root / "flashomni"
     flashomni_package_root = flashomni_source_root / "flashomni"
-    sta_h100_source_root = native_source_root / "sta_h100"
     spargeattn_local_qattn = bool(_glob_existing([spargeattn_package_root], "_qattn*.so"))
     spargeattn_local_fused = bool(_glob_existing([spargeattn_package_root], "_fused*.so"))
     spargeattn_local_block_sparse = _files_contain(
@@ -1219,13 +1146,6 @@ def optional_kernel_status() -> Dict[str, Any]:
     fastvideo_extension_files = _glob_any_existing(
         fastvideo_locations,
         ("_C/*.so", "**/_C*.so", "**/*fastvideo_kernel_ops*.so"),
-    )
-    sta_h100_candidate_dirs = [sta_h100_source_root]
-    if (sta_h100_source_root / "build").exists():
-        sta_h100_candidate_dirs.extend(path for path in (sta_h100_source_root / "build").glob("**") if path.is_dir())
-    sparsevideo_sta_h100_files = _glob_any_existing(
-        sta_h100_candidate_dirs,
-        ("fastvideo_kernel_ops*.so", "sta_h100*.so"),
     )
     draft_mit_root = repo_root / "src" / "sparsevideo" / "kernels" / "native" / "draft_block_sparse"
     draft_mit_source = _source_dir_status(
@@ -1432,15 +1352,6 @@ def optional_kernel_status() -> Dict[str, Any]:
             "methods": ["radial"],
         },
         "sta_kernels": {
-            "sparsevideo_h100": {
-                "native_extension": bool(sparsevideo_sta_h100_files),
-                "candidate_dirs": [str(path) for path in sta_h100_candidate_dirs],
-                "files": sparsevideo_sta_h100_files,
-                "source": _source_dir_status(
-                    sta_h100_source_root,
-                    ("**/*.cu", "**/*.cpp", "**/*.cuh", "**/*.h", "**/CMakeLists.txt"),
-                ),
-            },
             "sparsevideo_a100_block_sparse": {
                 "native_extension": bool(draft_mit_extension_files),
                 "files": draft_mit_extension_files,

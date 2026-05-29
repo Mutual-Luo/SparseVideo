@@ -89,6 +89,49 @@ model_defaults:
     sparse_info_indptr: null
     sparse_kv_info_indptr: null
     sparse_kv_budget: 0.5
+  wan21-fun-1.3b-control:
+    implementation: upstream
+    backend: auto
+    workspace_bytes: 268435456
+    sparse_block_size_for_q: 128
+    sparse_block_size_for_kv: 128
+    causal: false
+    pos_encoding_mode: NONE
+    use_fp16_qk_reduction: false
+    logits_soft_cap: 0.0
+    sm_scale: null
+    rope_scale: null
+    rope_theta: null
+    sparse_pattern: paper_mmdit
+    sparse_size: 128
+    spq_Q: 0.0
+    spq_KV: 0.8
+    text_token: 512
+    threshold_q: 0.5
+    threshold_kv: 0.05
+    fresh_threshold: 6
+    max_order: 1
+    first_enhance: 8
+    saving_threshold_q_for_taylor: 0.3
+    max_sequence_length: -1
+    num_inference_steps: 50
+    dense_warmup_step_ratio: 0.1
+    dense_warmup_layer_ratio: 0.03
+    simthreshd1: 0.1
+    tau_q: 0.5
+    tau_kv: 0.05
+    N: 6
+    D: 1
+    S_q: 0.3
+    use_sparse_gemm: false
+    taylor_cache_device: cpu
+    debug_memory: false
+    debug_memory_max_events: 4000
+    sparse_info: null
+    sparse_kv_info: null
+    sparse_info_indptr: null
+    sparse_kv_info_indptr: null
+    sparse_kv_budget: 0.5
   wan21-t2v-14b:
     implementation: upstream
     backend: auto
@@ -133,6 +176,92 @@ model_defaults:
     sparse_kv_info_indptr: null
     sparse_kv_budget: 0.5
   wan22-t2v-a14b:
+    implementation: upstream
+    backend: auto
+    workspace_bytes: 268435456
+    sparse_block_size_for_q: 128
+    sparse_block_size_for_kv: 128
+    causal: false
+    pos_encoding_mode: NONE
+    use_fp16_qk_reduction: false
+    logits_soft_cap: 0.0
+    sm_scale: null
+    rope_scale: null
+    rope_theta: null
+    sparse_pattern: paper_mmdit
+    sparse_size: 128
+    spq_Q: 0.0
+    spq_KV: 0.8
+    text_token: 512
+    threshold_q: 0.5
+    threshold_kv: 0.05
+    fresh_threshold: 6
+    max_order: 1
+    first_enhance: 8
+    saving_threshold_q_for_taylor: 0.3
+    max_sequence_length: -1
+    num_inference_steps: 40
+    dense_warmup_step_ratio: 0.1
+    dense_warmup_layer_ratio: 0.03
+    simthreshd1: 0.1
+    tau_q: 0.5
+    tau_kv: 0.05
+    N: 6
+    D: 1
+    S_q: 0.3
+    use_sparse_gemm: false
+    taylor_cache_device: cpu
+    debug_memory: false
+    debug_memory_max_events: 4000
+    sparse_info: null
+    sparse_kv_info: null
+    sparse_info_indptr: null
+    sparse_kv_info_indptr: null
+    sparse_kv_budget: 0.5
+  wan22-fun-a14b-control:
+    implementation: upstream
+    backend: auto
+    workspace_bytes: 268435456
+    sparse_block_size_for_q: 128
+    sparse_block_size_for_kv: 128
+    causal: false
+    pos_encoding_mode: NONE
+    use_fp16_qk_reduction: false
+    logits_soft_cap: 0.0
+    sm_scale: null
+    rope_scale: null
+    rope_theta: null
+    sparse_pattern: paper_mmdit
+    sparse_size: 128
+    spq_Q: 0.0
+    spq_KV: 0.8
+    text_token: 512
+    threshold_q: 0.5
+    threshold_kv: 0.05
+    fresh_threshold: 6
+    max_order: 1
+    first_enhance: 8
+    saving_threshold_q_for_taylor: 0.3
+    max_sequence_length: -1
+    num_inference_steps: 40
+    dense_warmup_step_ratio: 0.1
+    dense_warmup_layer_ratio: 0.03
+    simthreshd1: 0.1
+    tau_q: 0.5
+    tau_kv: 0.05
+    N: 6
+    D: 1
+    S_q: 0.3
+    use_sparse_gemm: false
+    taylor_cache_device: cpu
+    debug_memory: false
+    debug_memory_max_events: 4000
+    sparse_info: null
+    sparse_kv_info: null
+    sparse_info_indptr: null
+    sparse_kv_info_indptr: null
+    sparse_kv_budget: 0.5
+  wan22-ti2v-5b:
     implementation: upstream
     backend: auto
     workspace_bytes: 268435456

@@ -58,7 +58,6 @@ def test_wheel_includes_owned_native_sources_and_assets(tmp_path):
         "sparsevideo/kernels/native/svg_svoo_fused/csrc/ops.cu",
         "sparsevideo/kernels/native/spargeattn/setup.sh",
         "sparsevideo/kernels/native/flashomni/setup.sh",
-        "sparsevideo/kernels/native/sta_h100/setup.sh",
         "sparsevideo/kernels/native/draft_block_sparse/setup.py",
     }
     assert required <= names
@@ -67,7 +66,6 @@ def test_wheel_includes_owned_native_sources_and_assets(tmp_path):
     assert not any(name.startswith("training_free/") for name in names)
     assert any(name.startswith("sparsevideo/kernels/native/flashomni/csrc/") for name in names)
     assert any(name.startswith("sparsevideo/kernels/native/spargeattn/csrc/") for name in names)
-    assert any(name.startswith("sparsevideo/kernels/native/sta_h100/csrc/") for name in names)
     assert any(name.startswith("sparsevideo/kernels/native/draft_block_sparse/csrc/") for name in names)
     assert not any("__pycache__" in name or name.endswith(".pyc") for name in names)
     assert not any(name.endswith((".so", ".pyd", ".dll", ".dylib")) for name in names)
@@ -198,9 +196,7 @@ def test_runtime_status_uses_sparsevideo_owned_paths_not_training_free():
     sta = status["sta_kernels"]
     assert sta["methods"] == ["sta"]
     assert "sparsevideo_fastvideo_triton" not in sta
-    assert "training_free" not in sta["sparsevideo_h100"]["source"]["path"]
-    assert "src/sparsevideo/kernels/native/sta_h100" in sta["sparsevideo_h100"]["source"]["path"]
-    assert sta["sparsevideo_h100"]["source"]["source_files"] is True
+    assert "sparsevideo_h100" not in sta
     assert "training_free" not in sta["sparsevideo_a100_block_sparse"]["source"]["path"]
     assert "src/sparsevideo/kernels/native/draft_block_sparse" in sta["sparsevideo_a100_block_sparse"]["source"]["path"]
     assert sta["sparsevideo_a100_block_sparse"]["source"]["source_files"] is True

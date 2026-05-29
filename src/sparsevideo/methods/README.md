@@ -127,14 +127,10 @@ radial      Adapter port. Uses upstream decay_factor/block_size names and
             SparseVideo-owned SageAttention runtime under
             src/sparsevideo/kernels/native/sageattention.
 sta         Adapter port with SparseVideo-owned FastVideo STA wrapper. Sparse
-            inference requires CUDA. FastVideo H100/TK source is copied under
-            src/sparsevideo/kernels/native/sta_h100;
-            the local H100 extension is only expected to build/run on Hopper
-            targets. A100 runs use the SparseVideo-owned SM80 block-sparse
-            CUDA backend under src/sparsevideo/kernels/native/draft_block_sparse
+            inference requires CUDA. A100 runs use the SparseVideo-owned SM80
+            block-sparse CUDA backend under src/sparsevideo/kernels/native/draft_block_sparse
             with FastVideo's STA tile-window mask.
-            Strict preflight checks H100 sta_fwd on Hopper and the A100
-            block-sparse CUDA backend on Ampere.
+            Strict preflight checks the A100 block-sparse CUDA backend on Ampere.
             FastVideo native shapes include 18x48x80, 30x48x80, and 36x48x48;
             other 720p layouts are rejected instead of silently using the
             non-upstream generalized STA kernel.

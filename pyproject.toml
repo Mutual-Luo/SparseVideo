@@ -26,6 +26,9 @@ dependencies = [
     "torch>=2.1.0",
     "diffusers>=0.30.0",
     "einops>=0.6.0",
+    "jinja2>=3.0",
+    "filelock>=3.0",
+    "packaging>=21.0",
 ]
 
 [project.urls]
