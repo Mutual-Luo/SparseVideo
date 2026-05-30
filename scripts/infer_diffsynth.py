@@ -199,6 +199,8 @@ def main(argv: list[str] | None = None) -> int:
                 payload["sparse_attention_handle_after_restore"] = payload["restore_summary"]
                 _validate_restore_summary(payload["restore_summary"])
     except Exception as exc:
+        import traceback as _tb
+        _tb.print_exc()
         payload.update(
             {
                 "status": "failed",
@@ -513,13 +515,14 @@ def _build_call_kwargs(args, prompt: str) -> Dict[str, Any]:
 
     height = args.height or spec.default_height
     width = args.width or spec.default_width
+    num_frames = args.num_frames or spec.default_num_frames
     kwargs: Dict[str, Any] = {
         "prompt": prompt,
         "negative_prompt": args.negative_prompt,
         "seed": args.seed,
         "height": height,
         "width": width,
-        "num_frames": args.num_frames or spec.default_num_frames,
+        "num_frames": num_frames,
         "num_inference_steps": args.num_inference_steps,
         "cfg_scale": args.cfg_scale if args.cfg_scale is not None else spec.default_cfg_scale,
         "tiled": not args.no_tiled,
@@ -560,7 +563,7 @@ def _build_call_kwargs(args, prompt: str) -> Dict[str, Any]:
     if args.vace_reference_image:
         kwargs["vace_reference_image"] = _load_image(args.vace_reference_image)
     if args.vace_video_mask:
-        kwargs["vace_video_mask"] = _load_image(args.vace_video_mask)
+        kwargs["vace_video_mask"] = _load_video_frames(args.vace_video_mask, height=height, width=width, num_frames=num_frames)
 
     for name in (
         "input_video",
@@ -579,10 +582,10 @@ def _build_call_kwargs(args, prompt: str) -> Dict[str, Any]:
         path = getattr(args, name, None)
         if path is not None:
             target_name = "retake_video" if spec.pipeline == "LTX2AudioVideoPipeline" and name == "input_video" else name
-            kwargs[target_name] = _load_video_frames(path, height=height, width=width)
+            kwargs[target_name] = _load_video_frames(path, height=height, width=width, num_frames=num_frames)
     if args.in_context_video:
         kwargs["in_context_videos"] = [
-            _load_video_frames(path, height=height, width=width)
+            _load_video_frames(path, height=height, width=width, num_frames=num_frames)
             for path in args.in_context_video
         ]
 
@@ -674,7 +677,7 @@ def _load_image(path: Path):
     return Image.open(path).convert("RGB")
 
 
-def _load_video_frames(path: Path, *, height: int, width: int):
+def _load_video_frames(path: Path, *, height: int, width: int, num_frames: int | None = None):
     from diffsynth.utils.data import VideoData
 
     path = Path(path)
@@ -682,6 +685,8 @@ def _load_video_frames(path: Path, *, height: int, width: int):
         data = VideoData(image_folder=str(path), height=height, width=width)
     else:
         data = VideoData(video_file=str(path), height=height, width=width)
+    if num_frames is not None:
+        data.set_length(min(num_frames, len(data)))
     return data.raw_data()
 
 
@@ -725,11 +730,42 @@ def _load_audio_with_torchaudio(
 ):
     import torchaudio
 
-    info = torchaudio.info(str(path))
-    sample_rate = int(info.sample_rate)
+    try:
+        info = torchaudio.info(str(path))
+        sample_rate = int(info.sample_rate)
+        frame_offset = max(0, int(start_time * sample_rate))
+        num_frames = -1 if duration is None else max(0, int(duration * sample_rate))
+        return torchaudio.load(str(path), frame_offset=frame_offset, num_frames=num_frames)
+    except Exception:
+        return _load_audio_with_scipy(path, start_time=start_time, duration=duration)
+
+
+def _load_audio_with_scipy(
+    path: Path,
+    *,
+    start_time: float = 0.0,
+    duration: float | None = None,
+):
+    import scipy.io.wavfile
+    import torch
+
+    sample_rate, data = scipy.io.wavfile.read(str(path))
+    if data.dtype.kind == "i":
+        data = data.astype("float32") / float(2 ** (8 * data.dtype.itemsize - 1))
+    elif data.dtype.kind == "u":
+        data = (data.astype("float32") - 128.0) / 128.0
+    else:
+        data = data.astype("float32")
+    if data.ndim == 1:
+        data = data[:, None]
+    waveform = torch.from_numpy(data.T.copy())  # [channels, samples]
     frame_offset = max(0, int(start_time * sample_rate))
-    num_frames = -1 if duration is None else max(0, int(duration * sample_rate))
-    return torchaudio.load(str(path), frame_offset=frame_offset, num_frames=num_frames)
+    if duration is not None:
+        num_samples = max(0, int(duration * sample_rate))
+        waveform = waveform[:, frame_offset : frame_offset + num_samples]
+    else:
+        waveform = waveform[:, frame_offset:]
+    return waveform, int(sample_rate)
 
 
 def _parse_method_config(items: list[str]) -> Dict[str, Any]:

@@ -6,8 +6,9 @@ prefix in each line is stripped and replaced with the assigned GPU.
 
 Usage (from repo root):
     python scripts/run_diffsynth_parallel.py
-    python scripts/run_diffsynth_parallel.py --gpus 4,5,6,7
+    python scripts/run_diffsynth_parallel.py --gpus 4,5,6,7 --skip-existing
     python scripts/run_diffsynth_parallel.py --sh scripts/inference_diffsynth.sh --log-dir logs/diffsynth
+    python scripts/run_diffsynth_parallel.py --skip-existing   # skip jobs that already have output videos
 """
 import argparse
 import os
@@ -18,6 +19,17 @@ import sys
 import threading
 from datetime import datetime
 from pathlib import Path
+
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+_DEFAULT_OUTPUT_DIR = _REPO_ROOT / "result" / "inference" / "diffsynth"
+
+
+def _output_exists(cmd: str, model: str, method: str) -> bool:
+    """Return True if the job's output directory already contains a .mp4 file."""
+    m = re.search(r"--output-dir\s+(\S+)", cmd)
+    output_dir = Path(m.group(1)) if m else _DEFAULT_OUTPUT_DIR
+    job_dir = output_dir / model / method
+    return job_dir.is_dir() and any(job_dir.glob("*.mp4"))
 
 
 # ── command extraction ────────────────────────────────────────────────────────
@@ -151,12 +163,15 @@ def _append_timing_row(timings_file: Path, lock: threading.Lock,
 
 def main():
     ap = argparse.ArgumentParser(description="Parallel DiffSynth inference runner")
+    _ts = datetime.now().strftime("%Y%m%d-%H%M")
     ap.add_argument("--gpus", default="4,5,6,7",
                     help="Comma-separated GPU IDs to use (default: 4,5,6,7)")
     ap.add_argument("--sh", default="scripts/inference_diffsynth.sh",
                     help="Path to inference_diffsynth.sh")
-    ap.add_argument("--log-dir", default="logs/diffsynth",
-                    help="Directory for per-job logs and error summary")
+    ap.add_argument("--log-dir", default=f"logs/diffsynth-{_ts}",
+                    help="Directory for per-job logs and error summary (default: logs/diffsynth-YYYYMMDD-HHMM)")
+    ap.add_argument("--skip-existing", action="store_true",
+                    help="Skip jobs whose output directory already contains a .mp4 file")
     args = ap.parse_args()
 
     gpus = [int(g) for g in args.gpus.split(",")]
@@ -176,12 +191,24 @@ def main():
         print(f"No commands found in {sh_path}", file=sys.stderr)
         sys.exit(1)
 
+    if args.skip_existing:
+        skipped = [(model, method) for model, method, cmd in commands if _output_exists(cmd, model, method)]
+        commands = [(model, method, cmd) for model, method, cmd in commands if not _output_exists(cmd, model, method)]
+        if skipped:
+            print(f"Skipping {len(skipped)} already-done job(s):")
+            for model, method in skipped:
+                print(f"  {model}/{method}")
+
     total = len(commands)
     print(f"Loaded {total} commands from {sh_path}")
     print(f"GPUs:  {gpus}  ({len(gpus)} workers)")
     print(f"Logs:  {log_dir}/")
     if prompt:
         print(f"PROMPT set from sh file")
+
+    if total == 0:
+        print("Nothing to run.")
+        return
 
     # build base env: inherit everything + PROMPT from sh
     base_env = os.environ.copy()

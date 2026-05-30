@@ -41,6 +41,8 @@ _CACHE_ROOT = (
 CUTLASS_PINS: dict[str, str] = {
     "flashomni": "v4.3.0",
     "draft_block_sparse": "v4.3.0",
+    "svg_svoo_fused": "v4.3.0",
+    "flashinfer_vendor": "v4.3.0",
 }
 
 # Vendored cutlass root per kernel (each contains an ``include/`` subdir). Used as the
@@ -49,6 +51,8 @@ CUTLASS_PINS: dict[str, str] = {
 _VENDORED_ROOT: dict[str, Path] = {
     "flashomni": NATIVE_ROOT / "flashomni" / "3rdparty" / "cutlass",
     "draft_block_sparse": NATIVE_ROOT / "flashomni" / "3rdparty" / "cutlass",
+    "svg_svoo_fused": NATIVE_ROOT / "flashomni" / "3rdparty" / "cutlass",
+    "flashinfer_vendor": NATIVE_ROOT / "flashomni" / "3rdparty" / "cutlass",
 }
 
 _TARBALL_URL = "https://github.com/NVIDIA/cutlass/archive/{ref}.tar.gz"

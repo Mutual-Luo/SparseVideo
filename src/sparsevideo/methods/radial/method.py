@@ -175,11 +175,7 @@ def _radial_backend_name(
     if force_dense:
         return "flashinfer_dense"
 
-    from ...kernels.flashinfer_block_sparse import HAS_FLASHINFER
-
     layout = infer_video_token_layout(query.shape[1], model_type=model_type, text_len=text_len)
-    if HAS_FLASHINFER and query.is_cuda and layout.context_len == 0:
-        return "flashinfer"
     return "flashinfer"
 
 
@@ -212,8 +208,6 @@ def _radial_attention(query, key, value, decay_factor, block_mask_cache, block_s
         raise RuntimeError("radial sparse path could not find video tokens")
     if not query.is_cuda:
         raise RuntimeError("radial sparse path requires CUDA")
-
-    from ...kernels.flashinfer_block_sparse import HAS_FLASHINFER
 
     num_frames, frame_h, frame_w = infer_video_frame_shape(video_len, model_type=model_type)
     frame_size = frame_h * frame_w
@@ -288,7 +282,7 @@ def _radial_attention(query, key, value, decay_factor, block_mask_cache, block_s
     # Upstream radial-attention benchmarks use fixed BSR blocks; SparseVideo
     # keeps that path for divisible shapes and uses the same FlashInfer
     # variable-block wrapper as SVG2/SVOO for a partial final block.
-    if HAS_FLASHINFER and query.is_cuda and context_len == 0:
+    if query.is_cuda and context_len == 0:
         bsr_cache_key = (vid_len, block_size, frame_size, num_frames, decay_factor, model_type)
         if bsr_cache_key not in block_mask_cache:
             block_mask_cache[bsr_cache_key] = _radial_bsr_mask(
@@ -301,13 +295,14 @@ def _radial_attention(query, key, value, decay_factor, block_mask_cache, block_s
         )
 
     reasons = []
-    if not HAS_FLASHINFER:
-        reasons.append("FlashInfer is not available")
+    reasons = []
     if context_len != 0:
         reasons.append(f"context_len={context_len}")
-    reason_text = "; ".join(reasons) if reasons else "unsupported FlashInfer layout"
+    if not query.is_cuda:
+        reasons.append("input is not on CUDA")
+    reason_text = "; ".join(reasons) if reasons else "unsupported layout"
     raise RuntimeError(
-        "radial sparse path requires the upstream FlashInfer block-sparse backend. "
+        "radial sparse path requires FlashInfer block-sparse backend. "
         f"{reason_text}."
     )
 

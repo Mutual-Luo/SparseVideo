@@ -23,43 +23,19 @@ import triton
 import triton.language as tl
 
 def _load_flashinfer():
-    """Load flashinfer: system install first, then vendored copy."""
-    try:
-        import flashinfer.sparse as _sparse
-        import flashinfer as _fi
-        return _fi, _sparse
-    except ImportError:
-        pass
-
-    # Fall back to the vendored flashinfer 0.2.x bundled with sparsevideo.
+    """Load the vendored sparsevideo_flashinfer bundled with sparsevideo."""
     _vendor = Path(__file__).resolve().parent / "_flashinfer"
     if _vendor.exists() and str(_vendor) not in sys.path:
         sys.path.insert(0, str(_vendor))
-    try:
-        import flashinfer.sparse as _sparse
-        import flashinfer as _fi
-        return _fi, _sparse
-    except ImportError:
-        return None, None
+    import sparsevideo_flashinfer.sparse as _sparse
+    import sparsevideo_flashinfer as _fi
+    return _fi, _sparse
 
 
 _flashinfer, _fi_sparse = _load_flashinfer()
-HAS_FLASHINFER = _flashinfer is not None
-
-
-_FLASHINFER_INSTALL_MSG = (
-    "flashinfer is not available. sparsevideo bundles flashinfer 0.2.x as a fallback, "
-    "but it failed to load (missing jinja2, filelock, or packaging?).\n"
-    "To use a newer system flashinfer instead:\n"
-    "  pip install flashinfer-python -i https://flashinfer.ai/whl/cu121/torch2.4/\n"
-    "(replace cu121/torch2.4 with your CUDA/torch version)"
-)
 
 
 def get_flashinfer():
-    """Return the flashinfer module (system or vendored). Raises ImportError if unavailable."""
-    if _flashinfer is None:
-        raise ImportError(_FLASHINFER_INSTALL_MSG)
     return _flashinfer
 
 
@@ -381,12 +357,12 @@ def _memory_efficient_plan(
         head_dim,
         head_dim,
         causal,
-        -1,
+        -1,  # window_left (disabled)
     ]
     if self._backend == "fa2":
-        args.append(-1)
-        args.append(False)
-        args.append(0)
+        args.append(-1)    # fixed_split_size
+        args.append(False) # disable_split_kv
+        args.append(0)     # num_colocated_ctas
     self._plan_info = self._cached_module.plan(*args)
 
     self._pos_encoding_mode = pos_encoding_mode
@@ -471,8 +447,6 @@ def _variable_block_sparse_attn_impl(
     dynamic_map[bh, i, j] = True means Q-cluster i in head bh attends to K-cluster j.
     Tokens must already be sorted by cluster within each BH slot.
     """
-    if not HAS_FLASHINFER:
-        raise ImportError(_FLASHINFER_INSTALL_MSG)
 
     BH, S, D = q.shape
     nqc = q_sizes.shape[-1]
@@ -538,8 +512,6 @@ def variable_block_sparse_attn(
     dynamic_map[bh, i, j] = True means Q-cluster i in head bh attends to K-cluster j.
     Tokens must already be sorted by cluster within each BH slot.
     """
-    if not HAS_FLASHINFER:
-        raise ImportError(_FLASHINFER_INSTALL_MSG)
 
     BH, _S, original_head_dim = q.shape
     nqc = q_sizes.shape[-1]
@@ -617,8 +589,6 @@ def hunyuan_flashinfer_varlen_attn(
     The first segment contains valid video+prompt tokens; the second segment
     contains padded prompt tokens that only attend to themselves.
     """
-    if not HAS_FLASHINFER:
-        raise ImportError(_FLASHINFER_INSTALL_MSG)
 
     BH, S, D = q.shape
     valid = max(0, min(int(valid_len), int(S)))
@@ -673,8 +643,6 @@ def bsr_sparse_attn(
 
     Used by Radial, STA.
     """
-    if not HAS_FLASHINFER:
-        raise ImportError(_FLASHINFER_INSTALL_MSG)
 
     workspace_bytes = int(os.environ.get("SV_FLASHINFER_WORKSPACE_BYTES", str(128 * 1024 * 1024)))
     f_buffer = torch.empty((workspace_bytes,), dtype=torch.uint8, device=q.device)

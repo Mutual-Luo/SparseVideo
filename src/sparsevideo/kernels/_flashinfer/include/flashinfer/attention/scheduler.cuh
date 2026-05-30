@@ -681,6 +681,8 @@ inline cudaError_t PrefillPlan(void* float_buffer, size_t float_workspace_size_i
                                uint32_t batch_size, uint32_t num_qo_heads, uint32_t num_kv_heads,
                                uint32_t head_dim_qk, uint32_t head_dim_vo, uint32_t page_size,
                                bool enable_cuda_graph, uint32_t sizeof_dtype_o,
+                               int32_t window_left, int32_t fixed_split_size,
+                               bool disable_split_kv, int64_t num_colocated_ctas,
                                cudaStream_t stream) {
   if (num_qo_heads % num_kv_heads != 0) {
     std::ostringstream err_msg;
@@ -695,8 +697,9 @@ inline cudaError_t PrefillPlan(void* float_buffer, size_t float_workspace_size_i
   FLASHINFER_CUDA_CALL(cudaGetDevice(&dev_id));
   FLASHINFER_CUDA_CALL(cudaDeviceGetAttribute(&num_sm, cudaDevAttrMultiProcessorCount, dev_id));
   int num_blocks_per_sm = 2;
-  int max_grid_size = num_blocks_per_sm * num_sm;
-  uint32_t max_batch_size_if_split = max_grid_size / num_kv_heads;
+  int64_t available_ctas = (int64_t)(num_blocks_per_sm * num_sm) - num_colocated_ctas;
+  if (available_ctas <= 0) available_ctas = num_blocks_per_sm * num_sm;
+  uint32_t max_batch_size_if_split = (uint32_t)(available_ctas / num_kv_heads);
 
   // step 2: determine kv_chunk_size
   auto [split_kv, new_batch_size, padded_batch_size, cta_tile_q, kv_chunk_size, request_indices_vec,

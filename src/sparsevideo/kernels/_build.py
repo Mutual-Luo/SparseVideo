@@ -22,11 +22,7 @@ DEFAULT_CACHE_DIR = Path.home() / ".cache" / "sparsevideo" / "kernels"
 
 
 def _inject_cutlass(name: str, env: dict[str, str]) -> None:
-    """Resolve the pinned CUTLASS root for ``name`` and expose it to the build.
-
-    No-op for kernels that don't use CUTLASS (e.g. svg_svoo_fused uses flashinfer's
-    bundled copy) or when the caller already set ``SPARSEVIDEO_CUTLASS_DIR``.
-    """
+    """Resolve the pinned CUTLASS root for ``name`` and expose it to the build."""
     from . import _cutlass
 
     if name not in _cutlass.CUTLASS_PINS or "SPARSEVIDEO_CUTLASS_DIR" in env:
@@ -37,7 +33,6 @@ EXTENSIONS = {
     "svg_svoo_fused": {
         "description": "Fused LayerNorm + RoPE kernels (SVG/SVOO)",
         "build_script": "build.py",
-        "requires": ["flashinfer-python"],
     },
     "spargeattn": {
         "description": "SpargeAttn quantized sparse attention (CUDA + Triton)",

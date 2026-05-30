@@ -104,7 +104,7 @@ def svoo_attention(
         raise RuntimeError("svoo sparse path requires CUDA")
 
     from ...kernels.co_cluster import co_cluster_tokens
-    from ...kernels.flashinfer_block_sparse import HAS_FLASHINFER, variable_block_sparse_attn, _FLASHINFER_INSTALL_MSG
+    from ...kernels.flashinfer_block_sparse import variable_block_sparse_attn
 
     B, N, H, D = query.shape
     text_len = max(0, min(int(text_len or 0), N))
@@ -222,8 +222,6 @@ def svoo_attention(
 
     q_sizes_i32 = q_sizes.to(torch.int32)
     k_sizes_i32 = k_sizes.to(torch.int32)
-    if not HAS_FLASHINFER:
-        raise ImportError(_FLASHINFER_INSTALL_MSG)
     out_sorted = variable_block_sparse_attn(
         q_sorted, k_sorted, v_sorted,
         dynamic_map, q_sizes_i32, k_sizes_i32,

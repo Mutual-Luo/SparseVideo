@@ -190,9 +190,8 @@ def _draft_dense_attention(query, key, value, attention_mask=None, model_type="w
 
 
 def _load_flash_attn_varlen_func():
-    from flash_attn.flash_attn_interface import flash_attn_varlen_func
-
-    return flash_attn_varlen_func
+    from ..._flash_attn import require_flash_attn_varlen_func
+    return require_flash_attn_varlen_func()
 
 
 def _draft_attention(query, key, value, sparsity_ratio, pool_h, pool_w,

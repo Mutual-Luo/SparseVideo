@@ -13,25 +13,19 @@ from pathlib import Path
 
 ROOT = Path(__file__).parent.resolve()
 
+# flashinfer headers (include/) live next to our vendored sparsevideo_flashinfer package
+_FLASHINFER_INCLUDE = (
+    Path(__file__).resolve().parents[3] / "_flashinfer" / "include"
+)
+
 
 def get_extensions() -> list:
+    import sys
+    sys.path.insert(0, str(Path(__file__).resolve().parents[4]))
+    from sparsevideo.kernels._cutlass import cutlass_root
+    cutlass = cutlass_root("svg_svoo_fused")
+
     from torch.utils.cpp_extension import CUDAExtension
-
-    try:
-        import flashinfer
-        fi_dir = Path(flashinfer.__file__).parent
-    except ImportError as exc:
-        raise ImportError(
-            "svg_svoo_fused requires flashinfer-python. "
-            "Install with: pip install sparsevideo[flashinfer]"
-        ) from exc
-
-    cutlass_include = fi_dir / "data" / "cutlass" / "include"
-    if not cutlass_include.exists():
-        raise RuntimeError(
-            f"flashinfer CUTLASS headers not found at {cutlass_include}. "
-            "Ensure flashinfer-python is fully installed."
-        )
 
     return [
         CUDAExtension(
@@ -40,8 +34,8 @@ def get_extensions() -> list:
             include_dirs=[
                 str(ROOT / "csrc"),
                 str(ROOT / "include"),
-                str(fi_dir / "data" / "include"),
-                str(cutlass_include),
+                str(_FLASHINFER_INCLUDE),
+                str(cutlass / "include"),
             ],
             extra_compile_args={
                 "cxx": ["-w"],

@@ -1,4 +1,4 @@
-# SparseVideo
+# SparseVideo [Under Development...]
 
 Plug-and-play sparse attention for video diffusion models. One line to accelerate inference — no model modifications required.
 

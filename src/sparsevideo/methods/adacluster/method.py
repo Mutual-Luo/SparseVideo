@@ -264,10 +264,7 @@ def _adacluster_flashinfer_cluster_sparse_attn(
     if not query.is_cuda:
         return None
 
-    from ...kernels.flashinfer_block_sparse import HAS_FLASHINFER, variable_block_sparse_attn
-
-    if not HAS_FLASHINFER:
-        return None
+    from ...kernels.flashinfer_block_sparse import variable_block_sparse_attn
 
     batch_size, num_heads, q_len, head_dim = query.shape
     kv_len = key.shape[2]
@@ -330,9 +327,8 @@ def _adacluster_hunyuan_flash_attn(query, key, value):
 
 
 def _load_flash_attn_func():
-    from flash_attn import flash_attn_func
-
-    return flash_attn_func
+    from ..._flash_attn import require_flash_attn_func
+    return require_flash_attn_func()
 
 
 def _adacluster_attention(query, key, value, topk_num, q_kernel_num, kv_kernel_num,

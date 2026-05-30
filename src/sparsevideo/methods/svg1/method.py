@@ -290,9 +290,8 @@ def _svg1_hunyuan_flash_attn_varlen(query, key, value, attention_mask):
 
 
 def _load_flash_attn_varlen_func():
-    from flash_attn.flash_attn_interface import flash_attn_varlen_func
-
-    return flash_attn_varlen_func
+    from ..._flash_attn import require_flash_attn_varlen_func
+    return require_flash_attn_varlen_func()
 
 
 def _profile_masks(query, key, value, scale, context_len, video_end,
