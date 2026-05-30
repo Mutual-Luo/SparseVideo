@@ -70,6 +70,8 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         spec = get_diffsynth_model_spec(args.model)
+        num_inference_steps = _resolve_num_inference_steps(args, spec)
+        runtime_options = _resolve_runtime_options(args)
         payload["model"] = spec.key
         payload.update(
             {
@@ -78,10 +80,15 @@ def main(argv: list[str] | None = None) -> int:
                 "width": args.width or spec.default_width,
                 "num_frames": args.num_frames or spec.default_num_frames,
                 "fps": args.fps or spec.default_fps,
-                "num_inference_steps": args.num_inference_steps,
+                "num_inference_steps": num_inference_steps,
                 "seed": args.seed,
                 "device": args.device,
                 "dtype": args.dtype,
+                "cpu_offload": runtime_options["cpu_offload"],
+                "cpu_offload_mode": runtime_options["cpu_offload_mode"],
+                "offload_device": runtime_options["offload_device"],
+                "vram_limit": args.vram_limit,
+                "vram_management": runtime_options["enable_vram_management"],
             }
         )
         if args.dry_run:
@@ -104,7 +111,7 @@ def main(argv: list[str] | None = None) -> int:
             raise FileNotFoundError(
                 f"DiffSynth model '{resolved.spec.key}' is incomplete under {resolved.model_root}.\n"
                 f"  - {missing}\n"
-                "Run scripts/download_diffsynth_models.sh for the missing native DiffSynth files."
+                "Run scripts/download/download_diffsynth_models.sh for the missing native DiffSynth files."
             )
 
         started = time.perf_counter()
@@ -116,10 +123,10 @@ def main(argv: list[str] | None = None) -> int:
             model_root=args.model_root,
             torch_dtype=torch_dtype,
             device=args.device,
-            offload_device=args.offload_device,
+            offload_device=runtime_options["offload_device"],
             vram_limit=args.vram_limit,
             use_usp=args.use_usp,
-            enable_vram_management=not args.no_vram_management,
+            enable_vram_management=runtime_options["enable_vram_management"],
         )
 
         handle = None
@@ -199,8 +206,10 @@ def main(argv: list[str] | None = None) -> int:
                 payload["sparse_attention_handle_after_restore"] = payload["restore_summary"]
                 _validate_restore_summary(payload["restore_summary"])
     except Exception as exc:
-        import traceback as _tb
-        _tb.print_exc()
+        if os.environ.get("SPARSEVIDEO_DEBUG_TRACEBACK"):
+            import traceback as _tb
+
+            _tb.print_exc()
         payload.update(
             {
                 "status": "failed",
@@ -227,7 +236,14 @@ def build_parser() -> argparse.ArgumentParser:
 
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--dtype", default="bf16", choices=("bf16", "fp16", "fp32"))
-    parser.add_argument("--offload-device", default="cpu")
+    parser.add_argument("--cpu-offload", action="store_true", help="Enable DiffSynth VRAM management with CPU offload.")
+    parser.add_argument(
+        "--cpu-offload-mode",
+        choices=("model", "sequential"),
+        default="model",
+        help="Compatibility with the diffusers entrypoint; DiffSynth currently supports model mode.",
+    )
+    parser.add_argument("--offload-device", help="Device used by DiffSynth VRAM management (default: cpu).")
     parser.add_argument("--vram-limit", type=float)
     parser.add_argument("--no-vram-management", action="store_true")
     parser.add_argument("--use-usp", action="store_true", help="Use DiffSynth USP. Sparse methods currently reject this.")
@@ -243,7 +259,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--camera-control-speed", type=float)
     parser.add_argument("--camera-control-origin", type=_parse_float_tuple)
     parser.add_argument("--vace-video", type=Path, help="Optional video file or image folder for VACE.")
-    parser.add_argument("--vace-video-mask", type=Path, help="Optional image mask for VACE.")
+    parser.add_argument("--vace-video-mask", type=Path, help="Optional video, image folder, or image mask for VACE.")
     parser.add_argument("--vace-reference-image", type=Path)
     parser.add_argument("--vace-scale", type=float)
     parser.add_argument("--animate-pose-video", type=Path, help="Optional video file or image folder for Wan Animate.")
@@ -276,7 +292,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--width", type=int)
     parser.add_argument("--num-frames", type=int)
     parser.add_argument("--fps", type=int)
-    parser.add_argument("--num-inference-steps", type=int, default=50)
+    parser.add_argument("--num-inference-steps", type=int)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--rand-device")
     parser.add_argument("--denoising-strength", type=float)
@@ -425,6 +441,34 @@ def _shape_error(
     )
 
 
+def _resolve_runtime_options(args) -> Dict[str, Any]:
+    if args.cpu_offload_mode != "model":
+        raise ValueError(
+            "DiffSynth --cpu-offload-mode=sequential is not supported; "
+            "use --cpu-offload-mode model."
+        )
+    offload_device = args.offload_device or "cpu"
+    if args.no_vram_management:
+        if args.cpu_offload or args.offload_device:
+            raise ValueError("--no-vram-management conflicts with --cpu-offload/--offload-device.")
+        offload_device = None
+    if args.cpu_offload and offload_device != "cpu":
+        raise ValueError("--cpu-offload requires --offload-device cpu.")
+    enable_vram_management = not args.no_vram_management
+    return {
+        "cpu_offload": enable_vram_management and offload_device == "cpu",
+        "cpu_offload_mode": args.cpu_offload_mode,
+        "offload_device": offload_device,
+        "enable_vram_management": enable_vram_management,
+    }
+
+
+def _resolve_num_inference_steps(args, spec) -> int:
+    if args.num_inference_steps is not None:
+        return args.num_inference_steps
+    return spec.default_num_inference_steps
+
+
 def _validate_sparse_apply_summary(method: str, summary: Mapping[str, Any]) -> None:
     if summary.get("pipeline_backend") != "diffsynth":
         raise RuntimeError(
@@ -516,6 +560,7 @@ def _build_call_kwargs(args, prompt: str) -> Dict[str, Any]:
     height = args.height or spec.default_height
     width = args.width or spec.default_width
     num_frames = args.num_frames or spec.default_num_frames
+    num_inference_steps = _resolve_num_inference_steps(args, spec)
     kwargs: Dict[str, Any] = {
         "prompt": prompt,
         "negative_prompt": args.negative_prompt,
@@ -523,7 +568,7 @@ def _build_call_kwargs(args, prompt: str) -> Dict[str, Any]:
         "height": height,
         "width": width,
         "num_frames": num_frames,
-        "num_inference_steps": args.num_inference_steps,
+        "num_inference_steps": num_inference_steps,
         "cfg_scale": args.cfg_scale if args.cfg_scale is not None else spec.default_cfg_scale,
         "tiled": not args.no_tiled,
     }
@@ -563,7 +608,12 @@ def _build_call_kwargs(args, prompt: str) -> Dict[str, Any]:
     if args.vace_reference_image:
         kwargs["vace_reference_image"] = _load_image(args.vace_reference_image)
     if args.vace_video_mask:
-        kwargs["vace_video_mask"] = _load_video_frames(args.vace_video_mask, height=height, width=width, num_frames=num_frames)
+        kwargs["vace_video_mask"] = _load_vace_video_mask(
+            args.vace_video_mask,
+            height=height,
+            width=width,
+            num_frames=num_frames,
+        )
 
     for name in (
         "input_video",
@@ -582,20 +632,59 @@ def _build_call_kwargs(args, prompt: str) -> Dict[str, Any]:
         path = getattr(args, name, None)
         if path is not None:
             target_name = "retake_video" if spec.pipeline == "LTX2AudioVideoPipeline" and name == "input_video" else name
-            kwargs[target_name] = _load_video_frames(path, height=height, width=width, num_frames=num_frames)
+            if name == "longcat_video":
+                # longcat_video is the condition clip; total latent = condition + generation.
+                # Truncate to half of num_frames so there is room for noise latents.
+                max_frames = num_frames // 2
+                kwargs[target_name] = _load_video_frames_for_call(
+                    path,
+                    height=height,
+                    width=width,
+                    num_frames=max_frames,
+                )
+            elif name == "animate_pose_video":
+                # Animate adapter: x[:, :, 1:] skips the reference frame (slot 0).
+                # Pose latents must match (num_frames-1) generation slots, not num_frames.
+                max_frames = num_frames - 1
+                kwargs[target_name] = _load_video_frames_for_call(
+                    path,
+                    height=height,
+                    width=width,
+                    num_frames=max_frames,
+                )
+            elif name == "animate_face_video":
+                # Face video must keep its native resolution (typically 512x512 face crop);
+                # resizing to main video dimensions breaks the motion encoder.
+                max_frames = num_frames - 1
+                kwargs[target_name] = _load_video_frames_for_call(
+                    path,
+                    height=None,
+                    width=None,
+                    num_frames=max_frames,
+                )
+            else:
+                max_frames = num_frames
+                kwargs[target_name] = _load_video_frames_for_call(
+                    path,
+                    height=height,
+                    width=width,
+                    num_frames=max_frames,
+                )
     if args.in_context_video:
         kwargs["in_context_videos"] = [
-            _load_video_frames(path, height=height, width=width, num_frames=num_frames)
+            _load_video_frames_for_call(path, height=height, width=width, num_frames=num_frames)
             for path in args.in_context_video
         ]
 
     if args.input_audio:
-        input_audio, audio_sample_rate = _load_audio_input(
-            args.input_audio,
-            start_time=args.audio_start_time,
-            duration=args.audio_duration,
-            as_numpy=spec.pipeline != "LTX2AudioVideoPipeline",
-        )
+        audio_kwargs = {
+            "start_time": args.audio_start_time,
+            "duration": args.audio_duration,
+            "as_numpy": spec.pipeline != "LTX2AudioVideoPipeline",
+        }
+        if spec.key == "wan22-s2v-14b":
+            audio_kwargs["target_sample_rate"] = 16000
+        input_audio, audio_sample_rate = _load_audio_input_for_call(args.input_audio, **audio_kwargs)
         audio_name = "retake_audio" if spec.pipeline == "LTX2AudioVideoPipeline" else "input_audio"
         kwargs[audio_name] = input_audio
         kwargs["audio_sample_rate"] = audio_sample_rate
@@ -677,10 +766,30 @@ def _load_image(path: Path):
     return Image.open(path).convert("RGB")
 
 
-def _load_video_frames(path: Path, *, height: int, width: int, num_frames: int | None = None):
+def _load_vace_video_mask(path: Path, *, height: int, width: int, num_frames: int):
+    path = Path(path)
+    if path.is_dir() or path.suffix.lower() in {".mp4", ".mov", ".mkv", ".avi", ".webm"}:
+        return _load_video_frames_for_call(path, height=height, width=width, num_frames=num_frames)
+    mask = _load_image(path)
+    return [mask.copy() for _ in range(num_frames)]
+
+
+def _load_video_frames(path: Path, *, height: int | None, width: int | None, num_frames: int | None = None):
     from diffsynth.utils.data import VideoData
+    import cv2 as _cv2
 
     path = Path(path)
+    if height is None or width is None:
+        # Detect native resolution
+        if path.is_dir():
+            import os
+            first_img = sorted(os.listdir(str(path)))[0]
+            cap = _cv2.VideoCapture(str(path / first_img))
+        else:
+            cap = _cv2.VideoCapture(str(path))
+        height = height or int(cap.get(_cv2.CAP_PROP_FRAME_HEIGHT))
+        width = width or int(cap.get(_cv2.CAP_PROP_FRAME_WIDTH))
+        cap.release()
     if path.is_dir():
         data = VideoData(image_folder=str(path), height=height, width=width)
     else:
@@ -690,12 +799,39 @@ def _load_video_frames(path: Path, *, height: int, width: int, num_frames: int |
     return data.raw_data()
 
 
+def _load_video_frames_for_call(
+    path: Path,
+    *,
+    height: int | None,
+    width: int | None,
+    num_frames: int | None,
+):
+    try:
+        return _load_video_frames(path, height=height, width=width, num_frames=num_frames)
+    except TypeError as exc:
+        if "num_frames" not in str(exc):
+            raise
+        return _load_video_frames(path, height=height, width=width)
+
+
+def _load_audio_input_for_call(path: Path, **kwargs):
+    try:
+        return _load_audio_input(path, **kwargs)
+    except TypeError as exc:
+        if "target_sample_rate" not in kwargs or "target_sample_rate" not in str(exc):
+            raise
+        fallback_kwargs = dict(kwargs)
+        fallback_kwargs.pop("target_sample_rate", None)
+        return _load_audio_input(path, **fallback_kwargs)
+
+
 def _load_audio_input(
     path: Path,
     *,
     start_time: float = 0.0,
     duration: float | None = None,
     as_numpy: bool = True,
+    target_sample_rate: int | None = None,
 ):
     from diffsynth.utils.data.audio import read_audio
 
@@ -705,14 +841,30 @@ def _load_audio_input(
             start_time=start_time,
             duration=duration,
         )
-    except ModuleNotFoundError as exc:
-        if exc.name != "torchcodec":
+    except Exception as exc:
+        if not _is_torchcodec_audio_error(exc):
             raise
         waveform, sample_rate = _load_audio_with_torchaudio(path, start_time=start_time, duration=duration)
-    except ImportError as exc:
-        if "torchcodec" not in str(exc):
-            raise
-        waveform, sample_rate = _load_audio_with_torchaudio(path, start_time=start_time, duration=duration)
+
+    if target_sample_rate is not None and int(sample_rate) != target_sample_rate:
+        import torch
+
+        if not hasattr(waveform, "shape"):
+            waveform = torch.from_numpy(waveform) if hasattr(waveform, "__array__") else torch.tensor(waveform)
+        try:
+            import torchaudio
+
+            waveform = torchaudio.functional.resample(waveform.float(), int(sample_rate), target_sample_rate)
+        except Exception:
+            from scipy.signal import resample as scipy_resample
+            import numpy as np
+
+            arr = waveform.float().cpu().numpy() if hasattr(waveform, "numpy") else np.array(waveform, dtype="float32")
+            n_out = int(arr.shape[-1] * target_sample_rate / sample_rate)
+            arr = scipy_resample(arr, n_out, axis=-1).astype("float32")
+            waveform = torch.from_numpy(arr)
+        sample_rate = target_sample_rate
+
     if as_numpy and hasattr(waveform, "detach"):
         if waveform.ndim == 2:
             waveform = waveform.mean(dim=0)
@@ -720,6 +872,15 @@ def _load_audio_input(
             waveform = waveform.reshape(-1)
         waveform = waveform.detach().cpu().float().numpy()
     return waveform, int(sample_rate)
+
+
+def _is_torchcodec_audio_error(exc: Exception) -> bool:
+    if isinstance(exc, ModuleNotFoundError):
+        return exc.name == "torchcodec"
+    if isinstance(exc, ImportError):
+        return "torchcodec" in str(exc)
+    message = str(exc)
+    return "torchcodec" in message or "Couldn't find appropriate backend" in message
 
 
 def _load_audio_with_torchaudio(
@@ -782,7 +943,7 @@ def _build_method_config(args, spec) -> Dict[str, Any]:
     user_config = _parse_method_config(args.method_config)
     method_config = default_method_config(
         args.method,
-        num_inference_steps=args.num_inference_steps,
+        num_inference_steps=_resolve_num_inference_steps(args, spec),
         model_key=spec.config_model_key or spec.key,
     )
     method_config.update(normalize_method_config(args.method, user_config))

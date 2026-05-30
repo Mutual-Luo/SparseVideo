@@ -34,7 +34,8 @@ CUDA_VISIBLE_DEVICES=1 python scripts/infer_diffsynth.py --model wan21-t2v-1.3b 
 CUDA_VISIBLE_DEVICES=2 python scripts/infer_diffsynth.py --model wan21-t2v-1.3b --method svg2       --prompt-file example/t2v/1.txt
 CUDA_VISIBLE_DEVICES=3 python scripts/infer_diffsynth.py --model wan21-t2v-1.3b --method spargeattn --prompt-file example/t2v/1.txt
 CUDA_VISIBLE_DEVICES=0 python scripts/infer_diffsynth.py --model wan21-t2v-1.3b --method radial     --prompt-file example/t2v/1.txt
-CUDA_VISIBLE_DEVICES=1 python scripts/infer_diffsynth.py --model wan21-t2v-1.3b --method sta        --prompt-file example/t2v/1.txt
+# STA is currently unsupported for Wan2.1-T2V-1.3B.
+# CUDA_VISIBLE_DEVICES=1 python scripts/infer_diffsynth.py --model wan21-t2v-1.3b --method sta        --prompt-file example/t2v/1.txt
 CUDA_VISIBLE_DEVICES=2 python scripts/infer_diffsynth.py --model wan21-t2v-1.3b --method draft      --prompt-file example/t2v/1.txt
 CUDA_VISIBLE_DEVICES=3 python scripts/infer_diffsynth.py --model wan21-t2v-1.3b --method adacluster --prompt-file example/t2v/1.txt
 CUDA_VISIBLE_DEVICES=0 python scripts/infer_diffsynth.py --model wan21-t2v-1.3b --method flashomni  --prompt-file example/t2v/1.txt
@@ -53,16 +54,16 @@ CUDA_VISIBLE_DEVICES=2 python scripts/infer_diffsynth.py --model wan21-t2v-14b -
 CUDA_VISIBLE_DEVICES=3 python scripts/infer_diffsynth.py --model wan21-t2v-14b --method svoo       --prompt-file example/t2v/1.txt
 
 # ── wan22-t2v-a14b ───────────────────────────────────────────────────────────
-CUDA_VISIBLE_DEVICES=0 python scripts/infer_diffsynth.py --model wan22-t2v-a14b --method dense      --prompt-file example/t2v/1.txt --vram-limit 60
-CUDA_VISIBLE_DEVICES=1 python scripts/infer_diffsynth.py --model wan22-t2v-a14b --method svg1       --prompt-file example/t2v/1.txt --vram-limit 60
-CUDA_VISIBLE_DEVICES=2 python scripts/infer_diffsynth.py --model wan22-t2v-a14b --method svg2       --prompt-file example/t2v/1.txt --vram-limit 60
-CUDA_VISIBLE_DEVICES=3 python scripts/infer_diffsynth.py --model wan22-t2v-a14b --method spargeattn --prompt-file example/t2v/1.txt --vram-limit 60
-CUDA_VISIBLE_DEVICES=0 python scripts/infer_diffsynth.py --model wan22-t2v-a14b --method radial     --prompt-file example/t2v/1.txt --vram-limit 60
-CUDA_VISIBLE_DEVICES=1 python scripts/infer_diffsynth.py --model wan22-t2v-a14b --method sta        --prompt-file example/t2v/1.txt --vram-limit 60
-CUDA_VISIBLE_DEVICES=2 python scripts/infer_diffsynth.py --model wan22-t2v-a14b --method draft      --prompt-file example/t2v/1.txt --vram-limit 60
-CUDA_VISIBLE_DEVICES=3 python scripts/infer_diffsynth.py --model wan22-t2v-a14b --method adacluster --prompt-file example/t2v/1.txt --vram-limit 60
-CUDA_VISIBLE_DEVICES=0 python scripts/infer_diffsynth.py --model wan22-t2v-a14b --method flashomni  --prompt-file example/t2v/1.txt --vram-limit 60
-CUDA_VISIBLE_DEVICES=1 python scripts/infer_diffsynth.py --model wan22-t2v-a14b --method svoo       --prompt-file example/t2v/1.txt --vram-limit 60
+CUDA_VISIBLE_DEVICES=0 python scripts/infer_diffsynth.py --model wan22-t2v-a14b --method dense      --prompt-file example/t2v/1.txt --cpu-offload --cpu-offload-mode model
+CUDA_VISIBLE_DEVICES=1 python scripts/infer_diffsynth.py --model wan22-t2v-a14b --method svg1       --prompt-file example/t2v/1.txt --cpu-offload --cpu-offload-mode model
+CUDA_VISIBLE_DEVICES=2 python scripts/infer_diffsynth.py --model wan22-t2v-a14b --method svg2       --prompt-file example/t2v/1.txt --cpu-offload --cpu-offload-mode model
+CUDA_VISIBLE_DEVICES=3 python scripts/infer_diffsynth.py --model wan22-t2v-a14b --method spargeattn --prompt-file example/t2v/1.txt --cpu-offload --cpu-offload-mode model
+CUDA_VISIBLE_DEVICES=0 python scripts/infer_diffsynth.py --model wan22-t2v-a14b --method radial     --prompt-file example/t2v/1.txt --cpu-offload --cpu-offload-mode model
+CUDA_VISIBLE_DEVICES=1 python scripts/infer_diffsynth.py --model wan22-t2v-a14b --method sta        --prompt-file example/t2v/1.txt --cpu-offload --cpu-offload-mode model
+CUDA_VISIBLE_DEVICES=2 python scripts/infer_diffsynth.py --model wan22-t2v-a14b --method draft      --prompt-file example/t2v/1.txt --cpu-offload --cpu-offload-mode model
+CUDA_VISIBLE_DEVICES=3 python scripts/infer_diffsynth.py --model wan22-t2v-a14b --method adacluster --prompt-file example/t2v/1.txt --cpu-offload --cpu-offload-mode model
+CUDA_VISIBLE_DEVICES=0 python scripts/infer_diffsynth.py --model wan22-t2v-a14b --method flashomni  --prompt-file example/t2v/1.txt --cpu-offload --cpu-offload-mode model
+CUDA_VISIBLE_DEVICES=1 python scripts/infer_diffsynth.py --model wan22-t2v-a14b --method svoo       --prompt-file example/t2v/1.txt --cpu-offload --cpu-offload-mode model
 
 # ── wan21-i2v-14b-720p ───────────────────────────────────────────────────────
 CUDA_VISIBLE_DEVICES=2 python scripts/infer_diffsynth.py --model wan21-i2v-14b-720p --method dense      --prompt-file example/i2v/1.txt --input-image example/i2v/1.jpg
@@ -77,16 +78,16 @@ CUDA_VISIBLE_DEVICES=2 python scripts/infer_diffsynth.py --model wan21-i2v-14b-7
 CUDA_VISIBLE_DEVICES=3 python scripts/infer_diffsynth.py --model wan21-i2v-14b-720p --method svoo       --prompt-file example/i2v/1.txt --input-image example/i2v/1.jpg
 
 # ── wan22-i2v-a14b ───────────────────────────────────────────────────────────
-CUDA_VISIBLE_DEVICES=0 python scripts/infer_diffsynth.py --model wan22-i2v-a14b --method dense      --prompt-file example/i2v/1.txt --input-image example/i2v/1.jpg --vram-limit 60
-CUDA_VISIBLE_DEVICES=1 python scripts/infer_diffsynth.py --model wan22-i2v-a14b --method svg1       --prompt-file example/i2v/1.txt --input-image example/i2v/1.jpg --vram-limit 60
-CUDA_VISIBLE_DEVICES=2 python scripts/infer_diffsynth.py --model wan22-i2v-a14b --method svg2       --prompt-file example/i2v/1.txt --input-image example/i2v/1.jpg --vram-limit 60
-CUDA_VISIBLE_DEVICES=3 python scripts/infer_diffsynth.py --model wan22-i2v-a14b --method spargeattn --prompt-file example/i2v/1.txt --input-image example/i2v/1.jpg --vram-limit 60
-CUDA_VISIBLE_DEVICES=0 python scripts/infer_diffsynth.py --model wan22-i2v-a14b --method radial     --prompt-file example/i2v/1.txt --input-image example/i2v/1.jpg --vram-limit 60
-CUDA_VISIBLE_DEVICES=1 python scripts/infer_diffsynth.py --model wan22-i2v-a14b --method sta        --prompt-file example/i2v/1.txt --input-image example/i2v/1.jpg --vram-limit 60
-CUDA_VISIBLE_DEVICES=2 python scripts/infer_diffsynth.py --model wan22-i2v-a14b --method draft      --prompt-file example/i2v/1.txt --input-image example/i2v/1.jpg --vram-limit 60
-CUDA_VISIBLE_DEVICES=3 python scripts/infer_diffsynth.py --model wan22-i2v-a14b --method adacluster --prompt-file example/i2v/1.txt --input-image example/i2v/1.jpg --vram-limit 60
-CUDA_VISIBLE_DEVICES=0 python scripts/infer_diffsynth.py --model wan22-i2v-a14b --method flashomni  --prompt-file example/i2v/1.txt --input-image example/i2v/1.jpg --vram-limit 60
-CUDA_VISIBLE_DEVICES=1 python scripts/infer_diffsynth.py --model wan22-i2v-a14b --method svoo       --prompt-file example/i2v/1.txt --input-image example/i2v/1.jpg --vram-limit 60
+CUDA_VISIBLE_DEVICES=0 python scripts/infer_diffsynth.py --model wan22-i2v-a14b --method dense      --prompt-file example/i2v/1.txt --input-image example/i2v/1.jpg --cpu-offload --cpu-offload-mode model
+CUDA_VISIBLE_DEVICES=1 python scripts/infer_diffsynth.py --model wan22-i2v-a14b --method svg1       --prompt-file example/i2v/1.txt --input-image example/i2v/1.jpg --cpu-offload --cpu-offload-mode model
+CUDA_VISIBLE_DEVICES=2 python scripts/infer_diffsynth.py --model wan22-i2v-a14b --method svg2       --prompt-file example/i2v/1.txt --input-image example/i2v/1.jpg --cpu-offload --cpu-offload-mode model
+CUDA_VISIBLE_DEVICES=3 python scripts/infer_diffsynth.py --model wan22-i2v-a14b --method spargeattn --prompt-file example/i2v/1.txt --input-image example/i2v/1.jpg --cpu-offload --cpu-offload-mode model
+CUDA_VISIBLE_DEVICES=0 python scripts/infer_diffsynth.py --model wan22-i2v-a14b --method radial     --prompt-file example/i2v/1.txt --input-image example/i2v/1.jpg --cpu-offload --cpu-offload-mode model
+CUDA_VISIBLE_DEVICES=1 python scripts/infer_diffsynth.py --model wan22-i2v-a14b --method sta        --prompt-file example/i2v/1.txt --input-image example/i2v/1.jpg --cpu-offload --cpu-offload-mode model
+CUDA_VISIBLE_DEVICES=2 python scripts/infer_diffsynth.py --model wan22-i2v-a14b --method draft      --prompt-file example/i2v/1.txt --input-image example/i2v/1.jpg --cpu-offload --cpu-offload-mode model
+CUDA_VISIBLE_DEVICES=3 python scripts/infer_diffsynth.py --model wan22-i2v-a14b --method adacluster --prompt-file example/i2v/1.txt --input-image example/i2v/1.jpg --cpu-offload --cpu-offload-mode model
+CUDA_VISIBLE_DEVICES=0 python scripts/infer_diffsynth.py --model wan22-i2v-a14b --method flashomni  --prompt-file example/i2v/1.txt --input-image example/i2v/1.jpg --cpu-offload --cpu-offload-mode model
+CUDA_VISIBLE_DEVICES=1 python scripts/infer_diffsynth.py --model wan22-i2v-a14b --method svoo       --prompt-file example/i2v/1.txt --input-image example/i2v/1.jpg --cpu-offload --cpu-offload-mode model
 
 # ── wan22-animate-14b ────────────────────────────────────────────────────────
 CUDA_VISIBLE_DEVICES=2 python scripts/infer_diffsynth.py --model wan22-animate-14b --method dense      --prompt-file example/animate/1.txt --input-image example/animate/official/official_image.png --animate-pose-video example/animate/official/official_pose.mp4 --animate-face-video example/animate/official/official_face.mp4

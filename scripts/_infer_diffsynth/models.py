@@ -23,6 +23,7 @@ class DiffSynthModelSpec:
     default_width: int
     default_num_frames: int
     default_fps: int
+    default_num_inference_steps: int = 50
     default_cfg_scale: float = 5.0
     default_sigma_shift: float = 5.0
     default_switch_dit_boundary: float = 0.875
@@ -301,10 +302,11 @@ _SPECS: Tuple[DiffSynthModelSpec, ...] = (
         pipeline_kind="wan",
         pipeline="WanVideoPipeline",
         description="DiffSynth Wan2.2 text-to-video A14B high/low-noise models",
-        default_height=704,
-        default_width=1248,
-        default_num_frames=121,
-        default_fps=15,
+        default_height=480,
+        default_width=832,
+        default_num_frames=81,
+        default_fps=16,
+        default_num_inference_steps=40,
     ),
     DiffSynthModelSpec(
         key="wan22-i2v-a14b",
@@ -312,10 +314,11 @@ _SPECS: Tuple[DiffSynthModelSpec, ...] = (
         pipeline_kind="wan",
         pipeline="WanVideoPipeline",
         description="DiffSynth Wan2.2 image-to-video A14B high/low-noise models",
-        default_height=704,
-        default_width=1248,
-        default_num_frames=121,
-        default_fps=15,
+        default_height=480,
+        default_width=832,
+        default_num_frames=81,
+        default_fps=16,
+        default_num_inference_steps=40,
         required_inputs=("input_image",),
     ),
     DiffSynthModelSpec(
@@ -403,7 +406,10 @@ _SPECS: Tuple[DiffSynthModelSpec, ...] = (
         default_width=832,
         default_num_frames=81,
         default_fps=15,
-        config_model_key="wan21-t2v-1.3b",
+        default_num_inference_steps=6,
+        default_cfg_scale=1.0,
+        default_sigma_shift=20.0,
+        config_model_key="wan21-t2v-14b",
     ),
     DiffSynthModelSpec(
         key="mova-720p",
@@ -615,7 +621,7 @@ def resolve_diffsynth_model_paths(
         add("dit", vace_paths)
         add("vace", vace_paths)
     elif spec.key == "wan22-animate-14b":
-        _add_wan_image_components(add, dit_repo="Wan2.2-Animate-14B", vae_version="22")
+        _add_wan_image_components(add, dit_repo="Wan2.2-Animate-14B", vae_version="21")
         animate_paths = (("Wan2.2-Animate-14B", "diffusion_pytorch_model*.safetensors"),)
         add("dit", animate_paths)
         add("animate_adapter", animate_paths)
@@ -624,14 +630,17 @@ def resolve_diffsynth_model_paths(
         add("dit_high_noise", (("Wan2.2-T2V-A14B", "high_noise_model/diffusion_pytorch_model*.safetensors"),))
         add("dit_low_noise", (("Wan2.2-T2V-A14B", "low_noise_model/diffusion_pytorch_model*.safetensors"),))
     elif spec.key == "wan22-i2v-a14b":
-        _add_wan_image_components(add, dit_repo="Wan2.2-I2V-A14B", vae_version="22")
+        # I2V-A14B DIT has in_dim=36 (16 noise + 16 image + 4 mask), so it needs
+        # the 16-channel Wan2.1 VAE. Only TI2V-5B uses WanVideoVAE38.
+        _add_wan_image_components(add, dit_repo="Wan2.2-I2V-A14B", vae_version="21")
         add("dit_high_noise", (("Wan2.2-I2V-A14B", "high_noise_model/diffusion_pytorch_model*.safetensors"),))
         add("dit_low_noise", (("Wan2.2-I2V-A14B", "low_noise_model/diffusion_pytorch_model*.safetensors"),))
     elif spec.key == "wan22-ti2v-5b":
         _add_wan_common_components(add, dit_repo="Wan2.2-TI2V-5B", vae_version="22")
         add("dit", (("Wan2.2-TI2V-5B", "diffusion_pytorch_model*.safetensors"),))
     elif spec.key == "wan22-s2v-14b":
-        _add_wan_image_components(add, dit_repo="Wan2.2-S2V-14B", vae_version="22")
+        # S2V-14B DIT has in_dim=16, so it needs the 16-channel Wan2.1 VAE.
+        _add_wan_image_components(add, dit_repo="Wan2.2-S2V-14B", vae_version="21")
         add("dit", (("Wan2.2-S2V-14B", "diffusion_pytorch_model*.safetensors"),))
         add("audio_encoder", (("Wan2.2-S2V-14B", "wav2vec2-large-xlsr-53-english/model.safetensors"),))
         add(
@@ -703,7 +712,7 @@ def load_diffsynth_pipeline(
         raise FileNotFoundError(
             f"DiffSynth model '{resolved.spec.key}' is incomplete under {resolved.model_root}.\n"
             f"  - {missing}\n"
-            "Run scripts/download_diffsynth_models.sh for the missing native DiffSynth files."
+            "Run scripts/download/download_diffsynth_models.sh for the missing native DiffSynth files."
         )
 
     if torch_dtype is None:

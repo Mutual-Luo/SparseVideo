@@ -148,15 +148,13 @@ def _append_timing_row(timings_file: Path, lock: threading.Lock,
         text = ""
     status_m = re.search(r"status=(\S+)", text)
     denoise_m = re.search(r"denoise_sec=([\d.]+)", text)
-    generate_m = re.search(r"generate_sec=([\d.]+)", text)
 
     status = status_m.group(1) if status_m else ("ok" if rc == 0 else "failed")
     denoise = f"{float(denoise_m.group(1)):.1f}" if denoise_m else ""
-    generate = f"{float(generate_m.group(1)):.1f}" if generate_m else ""
 
     with lock:
         with open(timings_file, "a") as f:
-            f.write(f"{model}\t{method}\t{status}\t{denoise}\t{generate}\n")
+            f.write(f"{model}\t{method}\t{status}\t{denoise}\n")
 
 
 # ── main ──────────────────────────────────────────────────────────────────────
@@ -183,7 +181,7 @@ def main():
     error_log.write_text(f"Error log — started {datetime.now()}\n\n")
 
     timings_file = log_dir / "timings.tsv"
-    timings_file.write_text("model\tmethod\tstatus\tdenoise_sec\tgenerate_sec\n")
+    timings_file.write_text("model\tmethod\tstatus\tdenoise_sec\n")
     timings_lock = threading.Lock()
 
     commands, prompt = parse_sh(sh_path)
@@ -212,6 +210,7 @@ def main():
 
     # build base env: inherit everything + PROMPT from sh
     base_env = os.environ.copy()
+    base_env.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
     if prompt:
         base_env["PROMPT"] = prompt
 
@@ -264,27 +263,26 @@ def _print_timing_table(timings_file: Path, print_lock: threading.Lock):
     rows = []
     for line in lines[1:]:  # skip header
         parts = line.split("\t")
-        if len(parts) < 5:
+        if len(parts) < 4:
             continue
         rows.append({"model": parts[0], "method": parts[1], "status": parts[2],
-                     "denoise_sec": parts[3], "generate_sec": parts[4]})
+                     "denoise_sec": parts[3]})
     if not rows:
         return
 
     col_w = [
         max(len(r["model"]) for r in rows),
         max(len(r["method"]) for r in rows),
-        8, 12, 13,
+        8, 12,
     ]
     header = (f"{'model':<{col_w[0]}}  {'method':<{col_w[1]}}  "
-              f"{'status':<{col_w[2]}}  {'denoise_sec':>{col_w[3]}}  {'generate_sec':>{col_w[4]}}")
+              f"{'status':<{col_w[2]}}  {'denoise_sec':>{col_w[3]}}")
     lines_out = [f"\nTiming summary → {timings_file}", header, "-" * len(header)]
     for r in rows:
         denoise = r["denoise_sec"] or "-"
-        generate = r["generate_sec"] or "-"
         lines_out.append(
             f"{r['model']:<{col_w[0]}}  {r['method']:<{col_w[1]}}  "
-            f"{r['status']:<{col_w[2]}}  {denoise:>{col_w[3]}}  {generate:>{col_w[4]}}"
+            f"{r['status']:<{col_w[2]}}  {denoise:>{col_w[3]}}"
         )
     _print(print_lock, "\n".join(lines_out))
 

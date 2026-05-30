@@ -363,7 +363,12 @@ def _memory_efficient_plan(
         args.append(-1)    # fixed_split_size
         args.append(False) # disable_split_kv
         args.append(0)     # num_colocated_ctas
-    self._plan_info = self._cached_module.plan(*args)
+    try:
+        self._plan_info = self._cached_module.plan(*args)
+    except TypeError as exc:
+        if "expected at most 15" not in str(exc) and "received 19" not in str(exc):
+            raise
+        self._plan_info = self._cached_module.plan(*args[:15])
 
     self._pos_encoding_mode = pos_encoding_mode
     self._use_fp16_qk_reduction = use_fp16_qk_reduction

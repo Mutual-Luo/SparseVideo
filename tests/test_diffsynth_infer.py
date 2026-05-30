@@ -53,7 +53,7 @@ def test_diffsynth_inference_helpers_stay_out_of_sparsevideo_package():
 
 
 def test_default_diffsynth_model_root_matches_download_script_layout():
-    assert DEFAULT_MODEL_ROOT == Path("/home/dataset-assist-0/luojy/models")
+    assert DEFAULT_MODEL_ROOT == Path("/home/dataset-assist-0/public-models")
 
 
 def test_generic_sparsevideo_model_root_env_does_not_override_diffsynth_default():
@@ -75,7 +75,7 @@ def test_generic_sparsevideo_model_root_env_does_not_override_diffsynth_default(
         text=True,
     )
 
-    assert result.stdout.strip() == "/home/dataset-assist-0/luojy/models"
+    assert result.stdout.strip() == "/home/dataset-assist-0/public-models"
 
 
 def test_diffsynth_model_root_env_override_is_specific():
@@ -515,7 +515,7 @@ def test_resolve_diffsynth_wan22_fun_control_uses_high_noise_dit(tmp_path):
     assert "image_encoder" not in resolved.components
 
 
-def test_resolve_diffsynth_reuses_wan22_vae_from_ti2v_dir(tmp_path):
+def test_resolve_diffsynth_wan22_animate_uses_wan21_vae(tmp_path):
     _make_wan21_common(tmp_path)
     _touch(tmp_path / "Wan2.2-TI2V-5B/Wan2.2_VAE.pth")
     _touch(tmp_path / "Wan2.2-Animate-14B/models_clip_open-clip-xlm-roberta-large-vit-huge-14.pth")
@@ -524,7 +524,7 @@ def test_resolve_diffsynth_reuses_wan22_vae_from_ti2v_dir(tmp_path):
     resolved = resolve_diffsynth_model_paths("wan22-animate-14b", model_root=tmp_path)
 
     assert resolved.complete
-    assert resolved.components["vae"] == (tmp_path / "Wan2.2-TI2V-5B/Wan2.2_VAE.pth",)
+    assert resolved.components["vae"] == (tmp_path / "Wan2.1-T2V-1.3B/Wan2.1_VAE.pth",)
 
 
 def test_load_diffsynth_wan_shared_checkpoint_roles_are_not_duplicated(monkeypatch, tmp_path):
@@ -658,7 +658,7 @@ def test_load_diffsynth_animate_shared_checkpoint_roles_are_not_duplicated(monke
         "Wan2.2-Animate-14B/diffusion_pytorch_model.safetensors",
         "Wan2.1-T2V-1.3B/models_t5_umt5-xxl-enc-bf16.pth",
         "Wan2.2-Animate-14B/models_clip_open-clip-xlm-roberta-large-vit-huge-14.pth",
-        "Wan2.2-TI2V-5B/Wan2.2_VAE.pth",
+        "Wan2.1-T2V-1.3B/Wan2.1_VAE.pth",
     ]
     assert calls["enabled_vram_management"] is True
     assert pipe._sparsevideo_model_key == "wan22-animate-14b"
@@ -794,7 +794,7 @@ def test_load_diffsynth_s2v_loads_audio_processor_after_pipeline(monkeypatch, tm
         "Wan2.2-S2V-14B/wav2vec2-large-xlsr-53-english/model.safetensors",
         "Wan2.1-T2V-1.3B/models_t5_umt5-xxl-enc-bf16.pth",
         "Wan2.2-S2V-14B/models_clip_open-clip-xlm-roberta-large-vit-huge-14.pth",
-        "Wan2.2-TI2V-5B/Wan2.2_VAE.pth",
+        "Wan2.1-T2V-1.3B/Wan2.1_VAE.pth",
     ]
     assert calls["audio_processor_config"] is None
     assert pipe.audio_processor == "processor:Wan2.2-S2V-14B/wav2vec2-large-xlsr-53-english"
@@ -1138,7 +1138,7 @@ def test_download_diffsynth_dry_run_skips_ltx23_repackage_duplicates(tmp_path):
     result = subprocess.run(
         [
             "bash",
-            str(REPO_ROOT / "scripts" / "download_diffsynth_models.sh"),
+            str(REPO_ROOT / "scripts" / "download" / "download_diffsynth_models.sh"),
             "--dry-run",
             "--no-proxy",
             "--model-root",
@@ -1165,7 +1165,7 @@ def test_download_diffsynth_dry_run_does_not_skip_incomplete_shards(tmp_path):
     result = subprocess.run(
         [
             "bash",
-            str(REPO_ROOT / "scripts" / "download_diffsynth_models.sh"),
+            str(REPO_ROOT / "scripts" / "download" / "download_diffsynth_models.sh"),
             "--dry-run",
             "--no-proxy",
             "--model-root",
@@ -1191,7 +1191,7 @@ def test_download_diffsynth_dry_run_does_not_skip_incomplete_shard_variant(tmp_p
     result = subprocess.run(
         [
             "bash",
-            str(REPO_ROOT / "scripts" / "download_diffsynth_models.sh"),
+            str(REPO_ROOT / "scripts" / "download" / "download_diffsynth_models.sh"),
             "--dry-run",
             "--no-proxy",
             "--model-root",
@@ -1220,7 +1220,7 @@ def test_download_diffsynth_dry_run_skips_two_level_nested_longcat_layout(tmp_pa
     result = subprocess.run(
         [
             "bash",
-            str(REPO_ROOT / "scripts" / "download_diffsynth_models.sh"),
+            str(REPO_ROOT / "scripts" / "download" / "download_diffsynth_models.sh"),
             "--dry-run",
             "--no-proxy",
             "--model-root",
@@ -1241,7 +1241,7 @@ def test_download_diffsynth_modelscope_first_dry_run_reports_hf_fallback(tmp_pat
     result = subprocess.run(
         [
             "bash",
-            str(REPO_ROOT / "scripts" / "download_diffsynth_models.sh"),
+            str(REPO_ROOT / "scripts" / "download" / "download_diffsynth_models.sh"),
             "--dry-run",
             "--no-proxy",
             "--source",
@@ -1263,7 +1263,7 @@ def test_download_diffsynth_modelscope_first_keeps_modelscope_only_repos_on_mode
     result = subprocess.run(
         [
             "bash",
-            str(REPO_ROOT / "scripts" / "download_diffsynth_models.sh"),
+            str(REPO_ROOT / "scripts" / "download" / "download_diffsynth_models.sh"),
             "--dry-run",
             "--no-proxy",
             "--source",
@@ -1287,7 +1287,7 @@ def test_download_diffsynth_dry_run_includes_speedcontrol_motion_controller(tmp_
     result = subprocess.run(
         [
             "bash",
-            str(REPO_ROOT / "scripts" / "download_diffsynth_models.sh"),
+            str(REPO_ROOT / "scripts" / "download" / "download_diffsynth_models.sh"),
             "--dry-run",
             "--no-proxy",
             "--source",
@@ -1312,7 +1312,7 @@ def test_download_diffsynth_hf_first_keeps_pai_fun_repos_on_modelscope(tmp_path)
     result = subprocess.run(
         [
             "bash",
-            str(REPO_ROOT / "scripts" / "download_diffsynth_models.sh"),
+            str(REPO_ROOT / "scripts" / "download" / "download_diffsynth_models.sh"),
             "--dry-run",
             "--no-proxy",
             "--source",
@@ -1341,7 +1341,7 @@ def test_download_diffsynth_modelscope_first_keeps_hf_only_repos_on_hf(tmp_path)
     result = subprocess.run(
         [
             "bash",
-            str(REPO_ROOT / "scripts" / "download_diffsynth_models.sh"),
+            str(REPO_ROOT / "scripts" / "download" / "download_diffsynth_models.sh"),
             "--dry-run",
             "--no-proxy",
             "--source",
@@ -1372,7 +1372,7 @@ def test_download_diffsynth_defaults_to_hf_mirror_without_proxy(tmp_path):
     result = subprocess.run(
         [
             "bash",
-            str(REPO_ROOT / "scripts" / "download_diffsynth_models.sh"),
+            str(REPO_ROOT / "scripts" / "download" / "download_diffsynth_models.sh"),
             "--dry-run",
             "--model-root",
             str(tmp_path),
@@ -1450,7 +1450,7 @@ esac
     result = subprocess.run(
         [
             "bash",
-            str(REPO_ROOT / "scripts" / "download_diffsynth_models.sh"),
+            str(REPO_ROOT / "scripts" / "download" / "download_diffsynth_models.sh"),
             "--source",
             "huggingface",
             "--model-root",
@@ -1472,7 +1472,7 @@ def test_download_diffsynth_huggingface_first_dry_run_reports_modelscope_fallbac
     result = subprocess.run(
         [
             "bash",
-            str(REPO_ROOT / "scripts" / "download_diffsynth_models.sh"),
+            str(REPO_ROOT / "scripts" / "download" / "download_diffsynth_models.sh"),
             "--dry-run",
             "--no-proxy",
             "--source",
@@ -1505,7 +1505,7 @@ def test_download_diffsynth_link_root_reuses_nested_longcat_layout(tmp_path):
     result = subprocess.run(
         [
             "bash",
-            str(REPO_ROOT / "scripts" / "download_diffsynth_models.sh"),
+            str(REPO_ROOT / "scripts" / "download" / "download_diffsynth_models.sh"),
             "--no-proxy",
             "--model-root",
             str(model_root),
@@ -1533,7 +1533,7 @@ def test_download_diffsynth_dry_run_does_not_skip_incomplete_wan_tokenizer(tmp_p
     result = subprocess.run(
         [
             "bash",
-            str(REPO_ROOT / "scripts" / "download_diffsynth_models.sh"),
+            str(REPO_ROOT / "scripts" / "download" / "download_diffsynth_models.sh"),
             "--dry-run",
             "--no-proxy",
             "--model-root",
@@ -1568,7 +1568,7 @@ def test_download_diffsynth_verifies_pattern_after_successful_cli(tmp_path):
     result = subprocess.run(
         [
             "bash",
-            str(REPO_ROOT / "scripts" / "download_diffsynth_models.sh"),
+            str(REPO_ROOT / "scripts" / "download" / "download_diffsynth_models.sh"),
             "--no-proxy",
             "--source",
             "huggingface",
@@ -1596,7 +1596,7 @@ def test_download_diffsynth_lists_explicit_s2v_wav2vec_components(tmp_path):
     result = subprocess.run(
         [
             "bash",
-            str(REPO_ROOT / "scripts" / "download_diffsynth_models.sh"),
+            str(REPO_ROOT / "scripts" / "download" / "download_diffsynth_models.sh"),
             "--dry-run",
             "--no-proxy",
             "--model-root",
@@ -1626,7 +1626,7 @@ def test_download_diffsynth_ltx_text_download_uses_explicit_patterns(tmp_path):
     result = subprocess.run(
         [
             "bash",
-            str(REPO_ROOT / "scripts" / "download_diffsynth_models.sh"),
+            str(REPO_ROOT / "scripts" / "download" / "download_diffsynth_models.sh"),
             "--dry-run",
             "--no-proxy",
             "--model-root",
@@ -1665,7 +1665,7 @@ def test_download_diffsynth_mova_tokenizer_uses_explicit_files(tmp_path):
     result = subprocess.run(
         [
             "bash",
-            str(REPO_ROOT / "scripts" / "download_diffsynth_models.sh"),
+            str(REPO_ROOT / "scripts" / "download" / "download_diffsynth_models.sh"),
             "--dry-run",
             "--no-proxy",
             "--model-root",
@@ -1697,7 +1697,7 @@ def test_download_diffsynth_file_pattern_does_not_match_directory(tmp_path):
     result = subprocess.run(
         [
             "bash",
-            str(REPO_ROOT / "scripts" / "download_diffsynth_models.sh"),
+            str(REPO_ROOT / "scripts" / "download" / "download_diffsynth_models.sh"),
             "--dry-run",
             "--no-proxy",
             "--model-root",
@@ -1724,7 +1724,7 @@ def test_download_diffsynth_dry_run_does_not_skip_empty_checkpoint_file(tmp_path
     result = subprocess.run(
         [
             "bash",
-            str(REPO_ROOT / "scripts" / "download_diffsynth_models.sh"),
+            str(REPO_ROOT / "scripts" / "download" / "download_diffsynth_models.sh"),
             "--dry-run",
             "--no-proxy",
             "--model-root",
@@ -1748,7 +1748,7 @@ def test_download_diffsynth_ltx_text_partial_json_dir_downloads_missing_configs(
     result = subprocess.run(
         [
             "bash",
-            str(REPO_ROOT / "scripts" / "download_diffsynth_models.sh"),
+            str(REPO_ROOT / "scripts" / "download" / "download_diffsynth_models.sh"),
             "--dry-run",
             "--no-proxy",
             "--model-root",
@@ -1952,13 +1952,26 @@ def test_infer_diffsynth_requires_vap_video_and_builds_kwargs(monkeypatch, tmp_p
     assert kwargs["negative_vap_prompt"] == "bad vap"
 
 
-def test_infer_diffsynth_builds_vace_mask_as_image_and_wan_options(monkeypatch, tmp_path):
+def test_infer_diffsynth_builds_vace_mask_as_repeated_image_and_wan_options(monkeypatch, tmp_path):
     pytest.importorskip("diffsynth")
     from diffsynth.pipelines.wan_video import WanVideoPipeline
 
     infer = _load_infer_module()
 
-    monkeypatch.setattr(infer, "_load_image", lambda path: f"image:{Path(path).name}")
+    class FakeImage:
+        def __init__(self, name):
+            self.name = name
+
+        def copy(self):
+            return f"copy:{self.name}"
+
+    def fake_load_image(path):
+        name = Path(path).name
+        if name == "mask.png":
+            return FakeImage(name)
+        return f"image:{name}"
+
+    monkeypatch.setattr(infer, "_load_image", fake_load_image)
     monkeypatch.setattr(
         infer,
         "_load_video_frames",
@@ -2012,7 +2025,7 @@ def test_infer_diffsynth_builds_vace_mask_as_image_and_wan_options(monkeypatch, 
     kwargs = infer._build_call_kwargs(args, "prompt")
 
     assert kwargs["vace_video"] == ["vace.mp4:480x832"]
-    assert kwargs["vace_video_mask"] == "image:mask.png"
+    assert kwargs["vace_video_mask"] == ["copy:mask.png"] * 81
     assert kwargs["tile_size"] == (16, 32)
     assert kwargs["tile_stride"] == (8, 16)
     assert kwargs["camera_control_direction"] == "Left"
@@ -2032,6 +2045,36 @@ def test_infer_diffsynth_builds_vace_mask_as_image_and_wan_options(monkeypatch, 
     assert kwargs["framewise_decoding"] is True
     assert kwargs["output_type"] == "floatpoint"
     assert set(kwargs) <= _call_signature_params(WanVideoPipeline)
+
+
+def test_infer_diffsynth_builds_vace_mask_video_as_frames(monkeypatch, tmp_path):
+    infer = _load_infer_module()
+    calls = []
+
+    def fake_load_video_frames(path, *, height, width, num_frames=None):
+        calls.append((Path(path).name, height, width, num_frames))
+        return [f"{Path(path).name}:{height}x{width}:{num_frames}"]
+
+    monkeypatch.setattr(infer, "_load_video_frames", fake_load_video_frames)
+    args = infer.build_parser().parse_args(
+        [
+            "--model",
+            "wan21-vace-14b",
+            "--vace-video",
+            str(tmp_path / "vace.mp4"),
+            "--vace-video-mask",
+            str(tmp_path / "mask.mp4"),
+        ]
+    )
+
+    kwargs = infer._build_call_kwargs(args, "prompt")
+
+    assert kwargs["vace_video"] == ["vace.mp4:480x832:81"]
+    assert kwargs["vace_video_mask"] == ["mask.mp4:480x832:81"]
+    assert calls == [
+        ("mask.mp4", 480, 832, 81),
+        ("vace.mp4", 480, 832, 81),
+    ]
 
 
 def test_infer_diffsynth_requires_longcat_video_for_generation():
@@ -2478,6 +2521,97 @@ def test_infer_diffsynth_build_method_config_does_not_add_fallback_keys():
     assert "allow_triton_fallback" not in method_config
 
 
+def test_infer_diffsynth_cpu_offload_flags_map_to_diffsynth_vram_management():
+    infer = _load_infer_module()
+
+    args = infer.build_parser().parse_args(["--cpu-offload", "--cpu-offload-mode", "model"])
+    runtime_options = infer._resolve_runtime_options(args)
+
+    assert runtime_options == {
+        "cpu_offload": True,
+        "cpu_offload_mode": "model",
+        "offload_device": "cpu",
+        "enable_vram_management": True,
+    }
+
+
+def test_infer_diffsynth_rejects_unsupported_sequential_cpu_offload_mode():
+    infer = _load_infer_module()
+    args = infer.build_parser().parse_args(["--cpu-offload", "--cpu-offload-mode", "sequential"])
+
+    with pytest.raises(ValueError, match="sequential is not supported"):
+        infer._resolve_runtime_options(args)
+
+
+def test_infer_diffsynth_cpu_offload_flags_are_passed_to_loader(monkeypatch, tmp_path):
+    infer = _load_infer_module()
+    load_calls = {}
+
+    class FakeResolved:
+        complete = True
+
+        def as_dict(self):
+            return {"model": "wan21-t2v-1.3b", "complete": True, "missing": []}
+
+    class FakeHandle:
+        def __init__(self):
+            self.restored = False
+
+        def summary(self):
+            return {
+                "pipeline_backend": "diffsynth",
+                "diffsynth_version": "2.0.12",
+                "model_key": "wan21-t2v-1.3b",
+                "num_self_attn_layers": 30,
+                "patched_attention_count": 0,
+                "patched_attention_paths": [],
+                "restored": self.restored,
+            }
+
+        def restore(self):
+            self.restored = True
+
+    def fake_load_pipeline(*args, **kwargs):
+        load_calls.update(kwargs)
+        return object(), FakeResolved()
+
+    payloads = []
+    monkeypatch.setattr(infer, "resolve_diffsynth_model_paths", lambda *args, **kwargs: FakeResolved())
+    monkeypatch.setattr(infer, "load_diffsynth_pipeline", fake_load_pipeline)
+    monkeypatch.setattr(infer, "apply_sparse_attention", lambda *args, **kwargs: FakeHandle())
+    monkeypatch.setattr(infer, "_reset_cuda_memory", lambda device: None)
+    monkeypatch.setattr(infer, "_cuda_memory", lambda device: {"device": device, "available": False})
+    monkeypatch.setattr(infer, "_emit_payload", lambda args, payload: payloads.append(dict(payload)))
+
+    rc = infer.main(
+        [
+            "--apply-only",
+            "--method",
+            "dense",
+            "--device",
+            "cpu",
+            "--model-root",
+            str(tmp_path),
+            "--cpu-offload",
+            "--cpu-offload-mode",
+            "model",
+            "--vram-limit",
+            "40",
+        ]
+    )
+
+    payload = payloads[0]
+    assert rc == 0
+    assert load_calls["offload_device"] == "cpu"
+    assert load_calls["vram_limit"] == 40
+    assert load_calls["enable_vram_management"] is True
+    assert payload["cpu_offload"] is True
+    assert payload["cpu_offload_mode"] == "model"
+    assert payload["offload_device"] == "cpu"
+    assert payload["vram_limit"] == 40
+    assert payload["vram_management"] is True
+
+
 def test_infer_diffsynth_generation_uses_pipeline_audio_sample_rate(monkeypatch, tmp_path):
     infer = _load_infer_module()
     captured = {}
@@ -2626,6 +2760,73 @@ def test_infer_diffsynth_default_kwargs_match_installed_pipeline_signatures():
         assert set(kwargs) <= _call_signature_params(pipeline_cls)
 
 
+def test_infer_diffsynth_wan22_a14b_defaults_match_diffusers_benchmark_shape():
+    infer = _load_infer_module()
+    for model in ("wan22-t2v-a14b", "wan22-i2v-a14b"):
+        args_list = ["--model", model]
+        if model == "wan22-i2v-a14b":
+            args_list += ["--input-image", "example/i2v/1.jpg"]
+        args = infer.build_parser().parse_args(args_list)
+
+        kwargs = infer._build_call_kwargs(args, "prompt")
+
+        assert kwargs["height"] == 480
+        assert kwargs["width"] == 832
+        assert kwargs["num_frames"] == 81
+        assert kwargs["num_inference_steps"] == 40
+
+
+def test_infer_diffsynth_krea_defaults_match_diffsynth_studio_example():
+    pytest.importorskip("diffsynth")
+    from diffsynth.pipelines.wan_video import WanVideoPipeline
+
+    infer = _load_infer_module()
+    args = infer.build_parser().parse_args(["--model", "krea-realtime-video"])
+
+    kwargs = infer._build_call_kwargs(args, "prompt")
+
+    assert kwargs["num_inference_steps"] == 6
+    assert kwargs["cfg_scale"] == 1.0
+    assert kwargs["sigma_shift"] == 20.0
+    assert kwargs["height"] == 480
+    assert kwargs["width"] == 832
+    assert kwargs["num_frames"] == 81
+    assert kwargs["tiled"] is True
+    assert set(kwargs) <= _call_signature_params(WanVideoPipeline)
+
+
+def test_infer_diffsynth_krea_sparse_config_uses_wan14b_backbone_defaults():
+    infer = _load_infer_module()
+    spec = get_diffsynth_model_spec("krea-realtime-video")
+    args = infer.build_parser().parse_args(["--model", "krea-realtime-video", "--method", "sta"])
+
+    method_config = infer._build_method_config(args, spec)
+
+    assert method_config["mask_strategy_file_path"].endswith("mask_strategy_wan21_t2v_14b.json")
+
+
+def test_infer_diffsynth_krea_cli_overrides_diffsynth_studio_defaults():
+    infer = _load_infer_module()
+    args = infer.build_parser().parse_args(
+        [
+            "--model",
+            "krea-realtime-video",
+            "--num-inference-steps",
+            "8",
+            "--cfg-scale",
+            "2.5",
+            "--sigma-shift",
+            "7.5",
+        ]
+    )
+
+    kwargs = infer._build_call_kwargs(args, "prompt")
+
+    assert kwargs["num_inference_steps"] == 8
+    assert kwargs["cfg_scale"] == 2.5
+    assert kwargs["sigma_shift"] == 7.5
+
+
 def test_installed_diffsynth_video_pipeline_surface_is_documented():
     pytest.importorskip("diffsynth")
     import diffsynth.pipelines as pipelines
@@ -2651,7 +2852,7 @@ def test_download_diffsynth_catalog_tracks_installed_video_model_config_examples
     result = subprocess.run(
         [
             "bash",
-            str(REPO_ROOT / "scripts" / "download_diffsynth_models.sh"),
+            str(REPO_ROOT / "scripts" / "download" / "download_diffsynth_models.sh"),
             "--dry-run",
             "--no-proxy",
             "--model-root",

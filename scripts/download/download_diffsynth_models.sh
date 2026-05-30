@@ -1,19 +1,19 @@
 #!/usr/bin/env bash
 # Download DiffSynth-Studio-native model bundles for SparseVideo integration.
 # Usage:
-#   bash scripts/download_diffsynth_models.sh [--list]
-#   bash scripts/download_diffsynth_models.sh [--source auto|modelscope-first|huggingface-first|hf-first|huggingface|modelscope] [--hf-endpoint URL] [--proxy URL|--no-proxy] [--link-root PATH] [--tier 1|2|3] [--kind wan|mova|ltx2] [--all] [--dry-run] [KEY ...]
+#   bash scripts/download/download_diffsynth_models.sh [--list]
+#   bash scripts/download/download_diffsynth_models.sh [--source auto|modelscope-first|huggingface-first|hf-first|huggingface|modelscope] [--hf-endpoint URL] [--proxy URL|--no-proxy] [--link-root PATH] [--tier 1|2|3] [--kind wan|mova|ltx2] [--all] [--dry-run] [KEY ...]
 #
 # Examples:
-#   bash scripts/download_diffsynth_models.sh --list
-#   bash scripts/download_diffsynth_models.sh --dry-run wan21-t2v-1.3b
-#   bash scripts/download_diffsynth_models.sh --tier 1 --source huggingface
-#   bash scripts/download_diffsynth_models.sh mova-720p --source modelscope
-#   bash scripts/download_diffsynth_models.sh wan21-t2v-14b
+#   bash scripts/download/download_diffsynth_models.sh --list
+#   bash scripts/download/download_diffsynth_models.sh --dry-run wan21-t2v-1.3b
+#   bash scripts/download/download_diffsynth_models.sh --tier 1 --source huggingface
+#   bash scripts/download/download_diffsynth_models.sh mova-720p --source modelscope
+#   bash scripts/download/download_diffsynth_models.sh wan21-t2v-14b
 #   # Only use proxy after confirming the mirror path cannot fetch the required files.
-#   bash scripts/download_diffsynth_models.sh wan21-t2v-14b --proxy http://127.0.0.1:10000
-#   bash scripts/download_diffsynth_models.sh --link-root /path/to/existing/models wan21-t2v-1.3b
-# bash scripts/download_diffsynth_models.sh \
+#   bash scripts/download/download_diffsynth_models.sh wan21-t2v-14b --proxy http://127.0.0.1:10000
+#   bash scripts/download/download_diffsynth_models.sh --link-root /path/to/existing/models wan21-t2v-1.3b
+# bash scripts/download/download_diffsynth_models.sh \
 #     --all \
 #     --source auto \
 #     --hf-endpoint https://hf-mirror.com \
@@ -24,10 +24,11 @@ set -euo pipefail
 trap 'echo; echo "[ABORT] interrupted"; exit 130' INT TERM
 
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+SCRIPTS_ROOT=$(cd "$SCRIPT_DIR/.." && pwd)
 PYTHON=${PYTHON:-/home/dataset-assist-0/luojy/miniconda3/envs/sparsevideo/bin/python}
 HF_CLI=${HF_CLI:-/home/dataset-assist-0/luojy/miniconda3/envs/sparsevideo/bin/hf}
 MODELSCOPE_CLI=${MODELSCOPE_CLI:-/home/dataset-assist-0/luojy/miniconda3/envs/sparsevideo/bin/modelscope}
-MODEL_ROOT=${MODEL_ROOT:-/home/dataset-assist-0/luojy/models}
+MODEL_ROOT=${MODEL_ROOT:-/home/dataset-assist-0/public-models}
 PROXY=${PROXY:-}
 SOURCE=${SOURCE:-auto}
 HF_ENDPOINT=${HF_ENDPOINT:-https://hf-mirror.com}
@@ -75,11 +76,11 @@ CATALOGUE=(
     "wan21-fun-v11-14b-control-camera|1|wan|DiffSynth Wan2.1-Fun V1.1 14B Control-Camera|${WAN_COMMON_21_IMAGE};;PAI/Wan2.1-Fun-V1.1-14B-Control-Camera::diffusion_pytorch_model*.safetensors"
     "wan21-vace-1.3b|1|wan|DiffSynth VACE Wan2.1 1.3B preview|${WAN_COMMON_21};;iic/VACE-Wan2.1-1.3B-Preview::diffusion_pytorch_model*.safetensors"
     "wan21-vace-14b|1|wan|DiffSynth VACE Wan2.1 14B|${WAN_COMMON_21};;Wan-AI/Wan2.1-VACE-14B::diffusion_pytorch_model*.safetensors"
-    "wan22-animate-14b|1|wan|DiffSynth Wan2.2 Animate 14B|${WAN_COMMON_22_IMAGE};;Wan-AI/Wan2.2-Animate-14B::diffusion_pytorch_model*.safetensors"
+    "wan22-animate-14b|1|wan|DiffSynth Wan2.2 Animate 14B|${WAN_COMMON_21_IMAGE};;Wan-AI/Wan2.2-Animate-14B::diffusion_pytorch_model*.safetensors"
     "wan22-t2v-a14b|1|wan|DiffSynth Wan2.2 text-to-video A14B high/low-noise models|${WAN_COMMON_21};;Wan-AI/Wan2.2-T2V-A14B::high_noise_model/diffusion_pytorch_model*.safetensors;;Wan-AI/Wan2.2-T2V-A14B::low_noise_model/diffusion_pytorch_model*.safetensors"
-    "wan22-i2v-a14b|1|wan|DiffSynth Wan2.2 image-to-video A14B high/low-noise models|${WAN_COMMON_22_IMAGE};;Wan-AI/Wan2.2-I2V-A14B::high_noise_model/diffusion_pytorch_model*.safetensors;;Wan-AI/Wan2.2-I2V-A14B::low_noise_model/diffusion_pytorch_model*.safetensors"
+    "wan22-i2v-a14b|1|wan|DiffSynth Wan2.2 image-to-video A14B high/low-noise models|${WAN_COMMON_21_IMAGE};;Wan-AI/Wan2.2-I2V-A14B::high_noise_model/diffusion_pytorch_model*.safetensors;;Wan-AI/Wan2.2-I2V-A14B::low_noise_model/diffusion_pytorch_model*.safetensors"
     "wan22-ti2v-5b|1|wan|DiffSynth Wan2.2 TI2V 5B|${WAN_COMMON_22};;Wan-AI/Wan2.2-TI2V-5B::diffusion_pytorch_model*.safetensors"
-    "wan22-s2v-14b|1|wan|DiffSynth Wan2.2 speech-to-video 14B|${WAN_COMMON_22_IMAGE};;Wan-AI/Wan2.2-S2V-14B::diffusion_pytorch_model*.safetensors;;${S2V_WAV2VEC}"
+    "wan22-s2v-14b|1|wan|DiffSynth Wan2.2 speech-to-video 14B|${WAN_COMMON_21_IMAGE};;Wan-AI/Wan2.2-S2V-14B::diffusion_pytorch_model*.safetensors;;${S2V_WAV2VEC}"
     "wan22-fun-a14b-control|1|wan|DiffSynth Wan2.2-Fun A14B Control high-noise DiT|${WAN_COMMON_21};;PAI/Wan2.2-Fun-A14B-Control::high_noise_model/diffusion_pytorch_model*.safetensors"
     "wan22-fun-a14b-control-camera|1|wan|DiffSynth Wan2.2-Fun A14B Control-Camera high-noise DiT|${WAN_COMMON_21};;PAI/Wan2.2-Fun-A14B-Control-Camera::high_noise_model/diffusion_pytorch_model*.safetensors"
     "longcat-video|1|wan|DiffSynth LongCat-Video on WanVideoPipeline|${WAN_COMMON_21};;meituan-longcat/LongCat-Video::dit/diffusion_pytorch_model*.safetensors"
@@ -615,11 +616,11 @@ verify_bundle_complete() {
     local key=$1
 
     [[ $DRY_RUN -eq 0 ]] || return 0
-    MODEL_ROOT="$MODEL_ROOT" VERIFY_KEY="$key" PYTHONPATH="$SCRIPT_DIR" "$PYTHON" - <<'PY'
+    MODEL_ROOT="$MODEL_ROOT" VERIFY_KEY="$key" PYTHONPATH="$SCRIPTS_ROOT" "$PYTHON" - <<'PY'
 import os
 import sys
 
-from _diffsynth_models import resolve_diffsynth_model_paths
+from _infer_diffsynth.models import resolve_diffsynth_model_paths
 
 key = os.environ["VERIFY_KEY"]
 model_root = os.environ["MODEL_ROOT"]
