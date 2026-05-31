@@ -4,7 +4,7 @@ import torch
 
 from .._base import SparseMethod
 from .._layout import infer_video_frame_shape, infer_video_token_layout
-from .._schedule import configured_dense_warmup_layer_count, configured_dense_warmup_requires_dense, runtime_num_inference_steps
+from .._schedule import configured_dense_warmup_layer_count, configured_dense_warmup_requires_dense, runtime_or_config_num_inference_steps
 from ...processors.allegro import SparseAllegroAttnProcessor
 from ...processors.cogvideox import SparseCogVideoXAttnProcessor
 from ...processors.easyanimate import SparseEasyAnimateAttnProcessor
@@ -69,7 +69,7 @@ class RadialMethod(SparseMethod):
                 layer_idx < dense_warmup_layer_count
                 or configured_dense_warmup_requires_dense(
                     self.config,
-                    runtime_num_inference_steps(step_tracker),
+                    runtime_or_config_num_inference_steps(step_tracker, self.config),
                     getattr(step_tracker, "step", None),
                     notifier=self.warmup_notifier,
                 )

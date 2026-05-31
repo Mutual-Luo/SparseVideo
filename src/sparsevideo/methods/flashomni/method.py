@@ -6,6 +6,7 @@ import math
 import os
 import sys
 import tempfile
+import warnings
 from dataclasses import dataclass
 from pathlib import Path
 from types import ModuleType
@@ -71,6 +72,7 @@ class _FlashOmniPaperMMDiTState:
         self.gemm_o_bias_history: list[torch.Tensor] = []
         self.last_dispatch: str | None = None
         self.cache_suffix_states: dict[object, _FlashOmniPaperMMDiTState] = {}
+        self.attention_shape_key: object | None = None
 
     def has_symbols(self) -> bool:
         return self.sparse_q is not None and self.sparse_kv is not None
@@ -135,6 +137,21 @@ def _flashomni_paper_state_for_cache_suffix(state: _FlashOmniPaperMMDiTState, ca
     if cache_key_suffix is None:
         return state
     return state.cache_suffix_states.setdefault(cache_key_suffix, _FlashOmniPaperMMDiTState())
+
+
+def _flashomni_paper_state_for_attention_shape(
+    state: _FlashOmniPaperMMDiTState,
+    shape_key,
+) -> _FlashOmniPaperMMDiTState:
+    if state.attention_shape_key is None or state.attention_shape_key == shape_key:
+        state.attention_shape_key = shape_key
+        return state
+    shaped_state = state.cache_suffix_states.setdefault(
+        ("attention_shape", shape_key),
+        _FlashOmniPaperMMDiTState(),
+    )
+    shaped_state.attention_shape_key = shape_key
+    return shaped_state
 
 
 class FlashOmniMethod(SparseMethod):
@@ -746,6 +763,18 @@ def _sync_flashomni_upstream_config_aliases(config, normalized_input):
         ("max_order", "D"),
         ("saving_threshold_q_for_taylor", "S_q"),
     )
+    primary_only = [
+        primary for primary, legacy in pairs
+        if primary in normalized_input and legacy not in normalized_input
+    ]
+    if primary_only:
+        warnings.warn(
+            "flashomni paper_mmdit config keys "
+            f"{', '.join(primary_only)} are mirrored to the paper/upstream aliases "
+            "tau_q, tau_kv, N, D, and S_q for compatibility.",
+            RuntimeWarning,
+            stacklevel=3,
+        )
     for primary, legacy in pairs:
         primary_set = primary in normalized_input
         legacy_set = legacy in normalized_input
@@ -960,18 +989,27 @@ def _flashomni_paper_mmdit_attention(query, key, value, tau_q, tau_kv, N, D, S_q
     q_block_size = int(sparse_block_size_for_q)
     kv_block_size = int(sparse_block_size_for_kv)
     cache_order = int(D)
+    trim = _flashomni_trim_prefix_key_value_mask(
+        key,
+        value,
+        attention_mask,
+        text_len=int(text_len or 0),
+    )
+    shape_key = (
+        tuple(map(int, query.shape)),
+        tuple(map(int, trim.key.shape)),
+        tuple(map(int, trim.value.shape)),
+        q_block_size,
+        kv_block_size,
+        int(trim.kv_text_len),
+    )
+    state = _flashomni_paper_state_for_attention_shape(state, shape_key)
     schedule = _flashomni_paper_mmdit_schedule(
         _flashomni_paper_mmdit_effective_step(step, current),
         fresh_threshold=int(N),
         first_enhance=int(first_enhance),
         num_inference_steps=int(num_inference_steps),
         has_symbols=state.has_symbols(),
-    )
-    trim = _flashomni_trim_prefix_key_value_mask(
-        key,
-        value,
-        attention_mask,
-        text_len=int(text_len or 0),
     )
 
     if schedule.compute_symbols:

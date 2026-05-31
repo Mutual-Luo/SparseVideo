@@ -306,6 +306,26 @@ def test_svg1_common_mask_matches_upstream_wan_reference():
     assert torch.equal(actual.cpu(), expected)
 
 
+def test_svg1_common_mask_supports_longcat_kv_offset_condition_prefix():
+    q_idx = torch.tensor([[0], [4]])
+    kv_idx = torch.arange(10).unsqueeze(0)
+
+    mask = _svg_common_mask(
+        q_idx,
+        kv_idx,
+        video_len=6,
+        frame_size=2,
+        window_width=1,
+        model_type="wan",
+        q_kv_offset=4,
+    )
+
+    assert mask.tolist() == [
+        [True, True, True, True, True, True, False, False, False, False],
+        [True, True, True, True, False, False, False, True, True, True],
+    ]
+
+
 def test_svg1_common_mask_matches_upstream_hunyuan_reference():
     frame_size = 256
     num_frames = 3
@@ -434,6 +454,47 @@ def test_svg1_block_mask_partitions_match_common_mask_wan_without_dense_n2_mask(
     assert torch.equal(partial | full, expected)
     assert not (partial & full).any()
     assert torch.equal(_block_mask_matrix(block_mask), expected)
+
+
+def test_svg1_rectangular_block_mask_matches_offset_common_mask():
+    q_len = 256
+    kv_len = 384
+    video_len = q_len
+    frame_size = 128
+    num_frames = 2
+    q_kv_offset = 128
+    window_width = 128
+
+    block_mask = _build_svg_block_mask(
+        q_len,
+        video_len,
+        frame_size,
+        num_frames,
+        window_width,
+        torch.device("cpu"),
+        model_type="wan",
+        kv_len=kv_len,
+        q_kv_offset=q_kv_offset,
+    )
+    expected = torch.zeros(2, 3, dtype=torch.bool)
+    for q_block in range(2):
+        q_idx = torch.arange(q_block * 128, min(q_len, (q_block + 1) * 128)).unsqueeze(1)
+        for kv_block in range(3):
+            kv_idx = torch.arange(kv_block * 128, min(kv_len, (kv_block + 1) * 128)).unsqueeze(0)
+            expected[q_block, kv_block] = bool(
+                _svg_common_mask(
+                    q_idx,
+                    kv_idx,
+                    video_len,
+                    frame_size,
+                    window_width,
+                    model_type="wan",
+                    q_kv_offset=q_kv_offset,
+                ).any()
+            )
+
+    assert block_mask.shape == (1, 1, q_len, kv_len)
+    assert torch.equal(_block_mask_matrix(block_mask).bool(), expected)
 
 
 def test_svg1_block_mask_partitions_match_common_mask_hunyuan_without_dense_n2_mask():
@@ -710,6 +771,74 @@ def test_svg1_hunyuan_rejects_context_length_mismatch_like_upstream_assertion():
             prompt_length=3,
             context_length=5,
         )
+
+
+def test_svg1_wan_sparse_attention_accepts_rectangular_longcat_qkv(monkeypatch):
+    from sparsevideo.methods.svg1 import method as svg1_method
+
+    calls = {}
+
+    def fake_profile(query, key, value, scale, context_len, video_end,
+                     frame_size, num_frames, num_sampled_rows,
+                     sample_mse_max_row, **kwargs):
+        calls["profile"] = {
+            "query_len": query.shape[1],
+            "key_len": key.shape[1],
+            "video_end": video_end,
+            "frame_size": frame_size,
+            "num_frames": num_frames,
+            "kv_video_end": kwargs["kv_video_end"],
+            "kv_num_frames": kwargs["kv_num_frames"],
+            "q_kv_offset": kwargs["q_kv_offset"],
+        }
+        return torch.zeros(query.shape[0], query.shape[2], dtype=torch.long, device=query.device)
+
+    def fake_flex(query, key, value, block_mask, model_type="wan"):
+        calls["flex"] = {
+            "query_shape": tuple(query.shape),
+            "key_shape": tuple(key.shape),
+            "value_shape": tuple(value.shape),
+            "block_mask_shape": block_mask.shape,
+        }
+        return query
+
+    monkeypatch.setattr(torch.Tensor, "is_cuda", property(lambda self: True))
+    monkeypatch.setattr(svg1_method, "_svg_placement_triton_supported", lambda tensor: False)
+    monkeypatch.setattr(svg1_method, "_profile_masks", fake_profile)
+    monkeypatch.setattr(svg1_method, "_svg_flex_attention", fake_flex)
+
+    query = torch.randn(1, 6, 2, 4)
+    key = torch.randn(1, 12, 2, 4)
+
+    out = _svg_attention(
+        query,
+        key,
+        key,
+        sparsity=0.25,
+        num_sampled_rows=2,
+        sample_mse_max_row=6,
+        state={},
+        step_tracker_step=1,
+        model_type="wan",
+    )
+
+    assert out.shape == query.shape
+    assert calls["profile"] == {
+        "query_len": 6,
+        "key_len": 12,
+        "video_end": 6,
+        "frame_size": 3,
+        "num_frames": 2,
+        "kv_video_end": 12,
+        "kv_num_frames": 4,
+        "q_kv_offset": 6,
+    }
+    assert calls["flex"] == {
+        "query_shape": (1, 2, 6, 4),
+        "key_shape": (1, 2, 12, 4),
+        "value_shape": (1, 2, 12, 4),
+        "block_mask_shape": (1, 1, 6, 12),
+    }
 
 
 def test_svg1_warmup_ratio_gate_still_covers_first_ratio_steps_without_scheduler_threshold():

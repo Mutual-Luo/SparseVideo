@@ -1082,6 +1082,75 @@ def test_flashomni_paper_mmdit_isolates_mochi_cache_suffixes(monkeypatch):
     assert method.runtime_summary()["dispatch_counts"] == {"dense": 2, "sparse": 2}
 
 
+def test_flashomni_paper_mmdit_isolates_rectangular_longcat_attention_shapes(monkeypatch):
+    calls = []
+
+    def fake_policy(query, key, **kwargs):
+        q_block_size = int(kwargs["sparse_block_size_for_q"])
+        kv_block_size = int(kwargs["sparse_block_size_for_kv"])
+        q_blocks = math.ceil(query.shape[1] / q_block_size)
+        kv_blocks = math.ceil(key.shape[1] / kv_block_size)
+        sparse_q = torch.zeros(query.shape[0], query.shape[2], q_blocks, dtype=torch.uint8, device=query.device)
+        sparse_kv = torch.ones(
+            query.shape[0],
+            query.shape[2],
+            q_blocks,
+            kv_blocks,
+            dtype=torch.uint8,
+            device=query.device,
+        )
+        return sparse_q, sparse_kv
+
+    def fake_upstream(q, k, v, block_mask_pattern, **kwargs):
+        is_full = bool(kwargs.get("is_full"))
+        calls.append((q.shape[1], k.shape[1], is_full))
+        if is_full:
+            return torch.full_like(q, 7.0)
+        return torch.zeros_like(q)
+
+    monkeypatch.setattr(
+        "sparsevideo.methods.flashomni.method.flashomni_paper_sparse_blocks",
+        fake_policy,
+    )
+    monkeypatch.setattr(
+        "sparsevideo.methods.flashomni.method._flashomni_upstream_attention",
+        fake_upstream,
+    )
+    monkeypatch.setattr(torch.Tensor, "is_cuda", property(lambda self: True))
+
+    state = _FlashOmniPaperMMDiTState()
+    q4 = torch.randn(1, 4, 1, 4)
+    q6 = torch.randn(1, 6, 1, 4)
+    kv10 = torch.randn(1, 10, 1, 4)
+    common = {
+        "tau_q": 0.4,
+        "tau_kv": 0.01,
+        "N": 4,
+        "D": 0,
+        "S_q": 0.0,
+        "text_len": 0,
+        "sparse_block_size_for_q": 2,
+        "sparse_block_size_for_kv": 2,
+        "implementation": "upstream",
+        "backend": "auto",
+        "workspace_bytes": 1,
+        "state": state,
+    }
+
+    cond_full = _flashomni_paper_mmdit_attention(q4, q4, q4, step=1, **common)
+    gen_full = _flashomni_paper_mmdit_attention(q6, kv10, kv10, step=1, **common)
+    cond_sparse = _flashomni_paper_mmdit_attention(q4, q4, q4, step=2, **common)
+    gen_sparse = _flashomni_paper_mmdit_attention(q6, kv10, kv10, step=2, **common)
+
+    assert calls == [(4, 4, True), (6, 10, True), (4, 4, False), (6, 10, False)]
+    assert cond_full.dispatch == "dense"
+    assert gen_full.dispatch == "dense"
+    assert cond_sparse.dispatch == "sparse"
+    assert gen_sparse.dispatch == "sparse"
+    assert torch.equal(cond_sparse.output, torch.full_like(cond_sparse.output, 7.0))
+    assert torch.equal(gen_sparse.output, torch.full_like(gen_sparse.output, 7.0))
+
+
 def test_flashomni_paper_mmdit_attention_saves_hunyuan_sparse_ratios_for_taylor(monkeypatch):
     sparse_q = torch.tensor([[[0, 1]]], dtype=torch.uint8)
     sparse_kv = torch.tensor([[[[0, 1], [1, 1]]]], dtype=torch.uint8)
@@ -2165,10 +2234,33 @@ def test_flashomni_owned_runtime_sources_match_upstream_references():
     owned_root = repo_root / "src/sparsevideo/kernels/native/flashomni"
     upstream_root = repo_root / "training_free/FlashOmni"
 
-    for relative_path in ["custom_backend.py", "pyproject.toml", "setup.py", "version.txt"]:
+    def assert_known_sparsevideo_patch(relative_path, path):
+        if relative_path == Path("setup.py"):
+            text = path.read_text(encoding="utf-8")
+            assert "SPARSEVIDEO_CUTLASS_DIR" in text
+            assert "sparsevideo.kernels._cutlass" in text
+            return True
+        if relative_path == Path("csrc/generated/dispatch.inc"):
+            text = path.read_text(encoding="utf-8")
+            assert "_DISPATCH_CASES_head_dim_sm90" in text
+            assert "_DISPATCH_CASE_U16x2" not in text.split("_DISPATCH_CASES_head_dim_sm90", 1)[1].split("// EOL", 1)[0]
+            return True
+        if relative_path == Path("flashomni/jit/core.py"):
+            text = path.read_text(encoding="utf-8")
+            assert "def _torch_cpp_ext()" in text
+            assert "remove_unwanted_pytorch_nvcc_flags()\n\nsm90a_nvcc_flags" not in text
+            return True
+        if relative_path == Path("flashomni/jit/env.py"):
+            text = path.read_text(encoding="utf-8")
+            assert "from torch.utils.cpp_extension import _get_cuda_arch_flags" in text.split("def _get_workspace_dir_name", 1)[1]
+            return True
+        return False
+
+    for relative_path in ["custom_backend.py", "pyproject.toml", "version.txt"]:
         owned = owned_root / relative_path
         upstream = upstream_root / relative_path
         assert owned.read_bytes() == upstream.read_bytes()
+    assert assert_known_sparsevideo_patch(Path("setup.py"), owned_root / "setup.py")
 
     for relative_path in [
         "aot_build_utils",
@@ -2195,4 +2287,7 @@ def test_flashomni_owned_runtime_sources_match_upstream_references():
         )
         assert owned_files == upstream_files
         for source in owned_files:
+            patch_path = Path(relative_path) / source
+            if assert_known_sparsevideo_patch(patch_path, owned / source):
+                continue
             assert (owned / source).read_bytes() == (upstream / source).read_bytes()

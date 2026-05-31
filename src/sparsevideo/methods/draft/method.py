@@ -5,7 +5,7 @@ import torch.nn.functional as F
 
 from .._base import SparseMethod
 from .._layout import infer_video_frame_shape, infer_video_token_layout
-from .._schedule import configured_dense_warmup_layer_count, configured_dense_warmup_requires_dense, runtime_num_inference_steps
+from .._schedule import configured_dense_warmup_layer_count, configured_dense_warmup_requires_dense, runtime_or_config_num_inference_steps
 from ...processors.allegro import SparseAllegroAttnProcessor
 from ...processors.cogvideox import SparseCogVideoXAttnProcessor
 from ...processors.easyanimate import SparseEasyAnimateAttnProcessor
@@ -62,7 +62,7 @@ class DraftMethod(SparseMethod):
                 layer_idx < dense_warmup_layer_count
                 or configured_dense_warmup_requires_dense(
                     cfg,
-                    runtime_num_inference_steps(step_tracker),
+                    runtime_or_config_num_inference_steps(step_tracker, cfg),
                     getattr(step_tracker, "step", None),
                     notifier=self.warmup_notifier,
                 )
@@ -83,13 +83,29 @@ class DraftMethod(SparseMethod):
                     step=getattr(step_tracker, "step", None),
                 )
                 return out
-            if query.shape[1] != key.shape[1]:
-                raise RuntimeError(
-                    "draft sparse path requires self-attention with matching query/key lengths; "
-                    "dense fallback is controlled only by the common dense warmup ratios"
-                )
             if attention_mask is not None and model_type != "hunyuan_video":
                 raise RuntimeError("draft sparse path requires self-attention without an attention mask")
+            if query.shape[1] != key.shape[1]:
+                if attention_mask is not None:
+                    raise RuntimeError(
+                        "draft rectangular sparse fallback requires no attention mask; "
+                        f"got query_len={query.shape[1]}, key_len={key.shape[1]}"
+                    )
+                backend_trace = []
+                out = _draft_dense_attention(
+                    query, key, value,
+                    attention_mask=attention_mask,
+                    model_type=model_type,
+                    text_len=kwargs.get("text_len", 0),
+                    backend_trace=backend_trace,
+                )
+                self.record_runtime_dispatch(
+                    "dense",
+                    backend=backend_trace[-1] if backend_trace else None,
+                    layer_idx=layer_idx,
+                    step=getattr(step_tracker, "step", None),
+                )
+                return out
             backend_trace = []
             out = _draft_attention(
                 query, key, value,

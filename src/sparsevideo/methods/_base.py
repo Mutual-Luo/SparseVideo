@@ -15,6 +15,13 @@ class SparseMethod(ABC):
     CONFIG_COMPAT_KEYS: set[str] = set()
 
     @classmethod
+    def config_compat_keys(cls) -> set[str]:
+        compat_keys = set(cls.CONFIG_COMPAT_KEYS)
+        if "dense_warmup_step_ratio" in cls.CONFIG_DEFAULTS:
+            compat_keys.add("num_inference_steps")
+        return compat_keys
+
+    @classmethod
     def normalize_config(cls, config: Dict[str, Any]) -> Dict[str, Any]:
         normalized_config: Dict[str, Any] = {}
         for key, value in config.items():
@@ -29,10 +36,10 @@ class SparseMethod(ABC):
         unknown = (
             set(normalized_config)
             - set(cls.CONFIG_DEFAULTS)
-            - set(cls.CONFIG_COMPAT_KEYS)
+            - cls.config_compat_keys()
         )
         if unknown:
-            valid_keys = [*cls.CONFIG_DEFAULTS, *sorted(cls.CONFIG_COMPAT_KEYS)]
+            valid_keys = [*cls.CONFIG_DEFAULTS, *sorted(cls.config_compat_keys())]
             raise ValueError(
                 f"Unknown config keys for {cls.__name__}: {unknown}. "
                 f"Valid keys: {valid_keys}"
@@ -43,7 +50,10 @@ class SparseMethod(ABC):
     def default_config(cls, **context: Any) -> Dict[str, Any]:
         config = dict(cls.CONFIG_DEFAULTS)
         num_inference_steps = context.get("num_inference_steps")
-        if num_inference_steps is not None and "num_inference_steps" in config:
+        if num_inference_steps is not None and (
+            "num_inference_steps" in config
+            or "num_inference_steps" in cls.config_compat_keys()
+        ):
             config["num_inference_steps"] = num_inference_steps
         return config
 

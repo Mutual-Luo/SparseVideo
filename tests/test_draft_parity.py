@@ -216,6 +216,40 @@ def test_draft_dense_warmup_ratio_is_only_step_gate(monkeypatch):
     assert calls == ["sparse"]
 
 
+def test_draft_rectangular_longcat_attention_uses_dense_varlen_fallback(monkeypatch):
+    calls = []
+
+    def fake_dense(query, key, value, **kwargs):
+        calls.append(("dense", query.shape[1], key.shape[1], kwargs["attention_mask"]))
+        return query
+
+    def fake_sparse(query, key, value, **kwargs):
+        calls.append(("sparse", query.shape[1], key.shape[1]))
+        return query
+
+    monkeypatch.setattr("sparsevideo.methods.draft.method._draft_dense_attention", fake_dense)
+    monkeypatch.setattr("sparsevideo.methods.draft.method._draft_attention", fake_sparse)
+
+    method = DraftMethod(
+        config={"dense_warmup_step_ratio": 0.0, "dense_warmup_layer_ratio": 0.0},
+        model_info=SimpleNamespace(model_type="wan", model_key="longcat-video"),
+    )
+    processor = method.create_processor(
+        layer_idx=5,
+        total_layers=30,
+        original_processor=None,
+        step_tracker=SimpleNamespace(step=20, timestep=999),
+    )
+    query = torch.randn(1, 6, 2, 4)
+    key = torch.randn(1, 10, 2, 4)
+
+    out = processor.attn_fn(query, key, key, None)
+
+    assert out is query
+    assert calls == [("dense", 6, 10, None)]
+    assert method.runtime_summary()["dispatch_counts"] == {"dense": 1}
+
+
 def test_draft_runtime_layout_gate_rejects_non_upstream_hunyuan_shapes():
     _validate_upstream_draft_layout(
         33 * 48 * 80,

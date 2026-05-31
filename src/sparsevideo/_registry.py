@@ -61,7 +61,11 @@ def default_method_config(name: str, **context: Any) -> Dict[str, Any]:
         else:
             config = dict(getattr(module, "CONFIG_DEFAULTS"))
         num_inference_steps = context.get("num_inference_steps")
-        if num_inference_steps is not None and "num_inference_steps" in config:
+        compat_keys = _compat_keys_for_defaults(config, getattr(module, "CONFIG_COMPAT_KEYS", ()))
+        if num_inference_steps is not None and (
+            "num_inference_steps" in config
+            or "num_inference_steps" in compat_keys
+        ):
             config["num_inference_steps"] = num_inference_steps
         return config
     method_cls = get_method_class(name)
@@ -74,7 +78,7 @@ def normalize_method_config(name: str, config: Dict[str, Any]) -> Dict[str, Any]
         module = importlib.import_module(entry.config_module)
         defaults = getattr(module, "CONFIG_DEFAULTS")
         aliases = getattr(module, "CONFIG_ALIASES", {})
-        compat_keys = getattr(module, "CONFIG_COMPAT_KEYS", ())
+        compat_keys = _compat_keys_for_defaults(defaults, getattr(module, "CONFIG_COMPAT_KEYS", ()))
         return _normalize_config(config, defaults, aliases, compat_keys, entry.class_name)
     method_cls = get_method_class(name)
     return method_cls.normalize_config(config)
@@ -85,6 +89,13 @@ def _get_entry(name: str) -> MethodEntry:
         available = ", ".join(sorted(_METHODS))
         raise ValueError(f"Unknown method '{name}'. Available: {available}")
     return _METHODS[name]
+
+
+def _compat_keys_for_defaults(defaults: Dict[str, Any], compat_keys) -> set[str]:
+    merged = set(compat_keys)
+    if "dense_warmup_step_ratio" in defaults:
+        merged.add("num_inference_steps")
+    return merged
 
 
 def _normalize_config(

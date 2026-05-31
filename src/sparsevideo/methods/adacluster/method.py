@@ -4,7 +4,7 @@ import torch
 import torch.nn.functional as F
 
 from .._base import SparseMethod
-from .._schedule import configured_dense_warmup_layer_count, configured_dense_warmup_requires_dense, runtime_num_inference_steps
+from .._schedule import configured_dense_warmup_layer_count, configured_dense_warmup_requires_dense, runtime_or_config_num_inference_steps
 from ...processors.allegro import SparseAllegroAttnProcessor
 from ...processors.cogvideox import SparseCogVideoXAttnProcessor
 from ...processors.easyanimate import SparseEasyAnimateAttnProcessor
@@ -56,7 +56,7 @@ class AdaClusterMethod(SparseMethod):
                 layer_idx < dense_warmup_layer_count
                 or configured_dense_warmup_requires_dense(
                     cfg,
-                    runtime_num_inference_steps(step_tracker),
+                    runtime_or_config_num_inference_steps(step_tracker, cfg),
                     getattr(step_tracker, "step", None),
                     notifier=self.warmup_notifier,
                 )

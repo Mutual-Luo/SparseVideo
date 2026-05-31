@@ -4,7 +4,7 @@ import torch
 import torch.nn.functional as F
 
 from .._base import SparseMethod
-from .._schedule import configured_dense_warmup_layer_count, configured_dense_warmup_requires_dense, runtime_num_inference_steps, scheduler_timestep_from_tracker
+from .._schedule import configured_dense_warmup_layer_count, configured_dense_warmup_requires_dense, runtime_or_config_num_inference_steps, scheduler_timestep_from_tracker
 from ...kernels.dynamic_map import identify_dynamic_map
 from ...processors.allegro import SparseAllegroAttnProcessor
 from ...processors.cogvideox import SparseCogVideoXAttnProcessor
@@ -49,7 +49,7 @@ class SVG2Method(SparseMethod):
                 layer_idx < first_layer_count
                 or configured_dense_warmup_requires_dense(
                     cfg,
-                    runtime_num_inference_steps(step_tracker),
+                    runtime_or_config_num_inference_steps(step_tracker, cfg),
                     step_tracker.step,
                     scheduler_timestep,
                     notifier=self.warmup_notifier,

@@ -162,6 +162,42 @@ def test_svoo_rejects_non_method_public_options():
             sparsevideo.normalize_method_config("svoo", {key: value})
 
 
+def test_dense_warmup_methods_accept_num_inference_steps_fallback():
+    warmup_methods = {
+        "adacluster",
+        "draft",
+        "flashomni",
+        "radial",
+        "spargeattn",
+        "sta",
+        "svg1",
+        "svg2",
+        "svoo",
+    }
+    for method in warmup_methods:
+        assert sparsevideo.normalize_method_config(method, {"num_inference_steps": 37}) == {
+            "num_inference_steps": 37,
+        }
+        assert sparsevideo.default_method_config(method, num_inference_steps=37)["num_inference_steps"] == 37
+
+    with pytest.raises(ValueError, match="num_inference_steps"):
+        sparsevideo.normalize_method_config("dense", {"num_inference_steps": 37})
+
+
+def test_num_inference_steps_prefers_runtime_over_config_fallback():
+    from sparsevideo.methods._schedule import runtime_or_config_num_inference_steps
+
+    assert runtime_or_config_num_inference_steps(
+        SimpleNamespace(num_inference_steps=lambda: 17),
+        {"num_inference_steps": 37},
+    ) == 17
+    assert runtime_or_config_num_inference_steps(
+        SimpleNamespace(),
+        {"num_inference_steps": 37},
+    ) == 37
+    assert runtime_or_config_num_inference_steps(SimpleNamespace(), {}) is None
+
+
 def test_svoo_enable_mem_save_follows_upstream_env_default(monkeypatch):
     from sparsevideo.methods.svoo.config import CONFIG_DEFAULTS, default_config
 

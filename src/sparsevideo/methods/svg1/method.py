@@ -7,7 +7,7 @@ import torch.nn.functional as F
 
 from .._base import SparseMethod
 from .._layout import infer_video_frame_count, infer_video_token_layout
-from .._schedule import configured_dense_warmup_layer_count, configured_dense_warmup_requires_dense, runtime_num_inference_steps, scheduler_timestep_from_tracker
+from .._schedule import configured_dense_warmup_layer_count, configured_dense_warmup_requires_dense, runtime_or_config_num_inference_steps, scheduler_timestep_from_tracker
 from ...processors.allegro import SparseAllegroAttnProcessor
 from ...processors.cogvideox import SparseCogVideoXAttnProcessor
 from ...processors.easyanimate import SparseEasyAnimateAttnProcessor
@@ -54,7 +54,7 @@ class SVG1Method(SparseMethod):
                 layer_idx < first_layer_count
                 or configured_dense_warmup_requires_dense(
                     cfg,
-                    runtime_num_inference_steps(step_tracker),
+                    runtime_or_config_num_inference_steps(step_tracker, cfg),
                     step_tracker.step,
                     scheduler_timestep,
                     notifier=self.warmup_notifier,
@@ -139,15 +139,26 @@ def _svg_attention(query, key, value, sparsity, num_sampled_rows,
                    context_length=None):
     """SVG stripe-based sparse attention with per-head profiling.
 
-    query/key/value: [B, N, H, D]
+    query: [B, Q, H, D], key/value: [B, KV, H, D]
     """
-    B, N, H, D = query.shape
+    B, q_len, H, D = query.shape
+    kv_len = key.shape[1]
+    if value.shape[1] != kv_len:
+        raise RuntimeError(
+            "svg1 sparse path requires key/value lengths to match; "
+            f"got key_len={kv_len}, value_len={value.shape[1]}"
+        )
     scale = D ** -0.5
 
-    layout = infer_video_token_layout(N, model_type=model_type, text_len=text_len)
+    layout = infer_video_token_layout(q_len, model_type=model_type, text_len=text_len)
     context_len = layout.context_len
     tail_len = layout.tail_len
     video_len = layout.video_len
+    if model_type in _TEXT_TAIL_MODELS and tail_len > 0 and q_len != kv_len:
+        raise RuntimeError(
+            "svg1 text-tail sparse path requires matching query/key lengths; "
+            f"got query_len={q_len}, key_len={kv_len}"
+        )
     if model_type in _TEXT_TAIL_MODELS and tail_len > 0:
         if context_length is not None and int(context_length) != tail_len:
             raise RuntimeError(
@@ -163,6 +174,24 @@ def _svg_attention(query, key, value, sparsity, num_sampled_rows,
     num_frames = infer_video_frame_count(video_len, model_type=model_type)
     frame_size = video_len // num_frames
     video_end = context_len + num_frames * frame_size
+    q_kv_offset = 0
+    kv_video_len = video_len
+    kv_num_frames = num_frames
+    if model_type not in _TEXT_TAIL_MODELS and kv_len != q_len:
+        if kv_len < q_len:
+            raise RuntimeError(
+                "svg1 rectangular sparse path requires key/value length >= query length; "
+                f"got query_len={q_len}, key_len={kv_len}"
+            )
+        q_kv_offset = kv_len - q_len
+        if q_kv_offset % frame_size != 0 or kv_len % frame_size != 0:
+            raise RuntimeError(
+                "svg1 rectangular sparse path requires the LongCat condition prefix "
+                "and KV sequence to align to whole video frames; "
+                f"got query_len={q_len}, key_len={kv_len}, frame_size={frame_size}"
+            )
+        kv_video_len = kv_len
+        kv_num_frames = kv_video_len // frame_size
     if context_len != 0:
         raise RuntimeError("svg1 sparse path currently expects video tokens before any text/context tail")
     window_width = _svg_window_width(sparsity, model_type, tail_len, num_frames, frame_size)
@@ -171,21 +200,28 @@ def _svg_attention(query, key, value, sparsity, num_sampled_rows,
         query, key, value, scale, context_len, video_end,
         frame_size, num_frames, num_sampled_rows,
         sample_mse_max_row, model_type=model_type,
+        kv_video_end=kv_video_len,
+        kv_num_frames=kv_num_frames,
+        q_kv_offset=q_kv_offset,
     )
 
     prompt_length = _resolve_prompt_length(prompt_length, text_len)
     block_mask_key = (
-        N,
+        q_len,
+        kv_len,
         num_frames,
+        kv_num_frames,
         frame_size,
         float(window_width),
         model_type,
         prompt_length,
+        q_kv_offset,
     )
     if state.get("block_mask") is None or state.get("block_mask_key") != block_mask_key:
         state["block_mask"] = _build_svg_block_mask(
-            N, video_len, frame_size, num_frames, window_width,
+            q_len, video_len, frame_size, num_frames, window_width,
             query.device, model_type=model_type, prompt_length=prompt_length,
+            kv_len=kv_len, q_kv_offset=q_kv_offset,
         )
         state["block_mask_key"] = block_mask_key
     state["profiled_step"] = step_tracker_step
@@ -196,7 +232,15 @@ def _svg_attention(query, key, value, sparsity, num_sampled_rows,
     k = key.permute(0, 2, 1, 3).contiguous()
     v = value.permute(0, 2, 1, 3).contiguous()
 
-    q, k, v = _place_svg_heads(q, k, v, head_choices, video_len, num_frames, frame_size, text_len)
+    q, k, v = _place_svg_attention_tensors(
+        q, k, v, head_choices,
+        q_video_len=video_len,
+        q_num_frames=num_frames,
+        kv_video_len=kv_video_len,
+        kv_num_frames=kv_num_frames,
+        frame_size=frame_size,
+        text_len=text_len,
+    )
     out = _svg_flex_attention(q, k, v, block_mask=bm, model_type=model_type)
     out = _restore_svg_heads(out, head_choices, video_len, num_frames, frame_size, text_len)
     return out.permute(0, 2, 1, 3)
@@ -296,13 +340,20 @@ def _load_flash_attn_varlen_func():
 
 def _profile_masks(query, key, value, scale, context_len, video_end,
                    frame_size, num_frames, num_sampled_rows,
-                   sample_mse_max_row, model_type="wan"):
+                   sample_mse_max_row, model_type="wan",
+                   kv_context_len=None, kv_video_end=None,
+                   kv_num_frames=None, q_kv_offset=0):
     """Profile two mask candidates on sampled rows and select best per head.
 
     Returns head_choices: [B, H] tensor (0=spatial, 1=temporal).
     """
     B, N, H, D = query.shape
+    kv_len = key.shape[1]
     device = query.device
+    kv_context_len = context_len if kv_context_len is None else int(kv_context_len)
+    kv_video_end = video_end if kv_video_end is None else int(kv_video_end)
+    kv_num_frames = num_frames if kv_num_frames is None else int(kv_num_frames)
+    q_kv_offset = int(q_kv_offset or 0)
 
     num_sample = min(num_sampled_rows, N)
     sample_high = max(1, min(int(sample_mse_max_row), N))
@@ -321,15 +372,23 @@ def _profile_masks(query, key, value, scale, context_len, video_end,
     weights_dense = F.softmax(scores_sample, dim=-1)
     out_dense = torch.matmul(weights_dense, v)
 
-    all_idx = torch.arange(N, device=device)
+    all_idx = torch.arange(kv_len, device=device)
 
     mask_a = _svg_profile_mask_rows(
         "spatial", sampled_idx, all_idx, context_len, video_end,
         frame_size, num_frames, model_type=model_type,
+        kv_context_len=kv_context_len,
+        kv_video_end=kv_video_end,
+        kv_num_frames=kv_num_frames,
+        q_kv_offset=q_kv_offset,
     )
     mask_b = _svg_profile_mask_rows(
         "temporal", sampled_idx, all_idx, context_len, video_end,
         frame_size, num_frames, model_type=model_type,
+        kv_context_len=kv_context_len,
+        kv_video_end=kv_video_end,
+        kv_num_frames=kv_num_frames,
+        q_kv_offset=q_kv_offset,
     )
 
     mses = []
@@ -345,19 +404,26 @@ def _profile_masks(query, key, value, scale, context_len, video_end,
 
 
 def _svg_profile_mask_rows(mask_name, q_idx, all_idx, context_len, video_end,
-                           frame_size, num_frames, model_type="wan"):
+                           frame_size, num_frames, model_type="wan",
+                           kv_context_len=None, kv_video_end=None,
+                           kv_num_frames=None, q_kv_offset=0):
     """Build upstream SVG profiling mask rows. [num_sample, N]"""
+    kv_context_len = context_len if kv_context_len is None else int(kv_context_len)
+    kv_video_end = video_end if kv_video_end is None else int(kv_video_end)
+    kv_num_frames = num_frames if kv_num_frames is None else int(kv_num_frames)
+    q_kv_offset = int(q_kv_offset or 0)
     q = q_idx.unsqueeze(1)
     k = all_idx.unsqueeze(0)
     q_in_video = (q >= context_len) & (q < video_end)
-    k_in_video = (k >= context_len) & (k < video_end)
+    k_in_video = (k >= kv_context_len) & (k < kv_video_end)
     both_video = q_in_video & k_in_video
 
-    q_pos = q - context_len
-    k_pos = k - context_len
+    q_pos = q - context_len + q_kv_offset
+    k_pos = k - kv_context_len
+    k_pos_frame_major = k_pos
     if mask_name == "temporal":
-        q_pos = _frame_major_to_token_major(q_pos, num_frames, frame_size)
-        k_pos = _frame_major_to_token_major(k_pos, num_frames, frame_size)
+        q_pos = _frame_major_to_token_major(q_pos, kv_num_frames, frame_size)
+        k_pos = _frame_major_to_token_major(k_pos, kv_num_frames, frame_size)
     elif mask_name != "spatial":
         raise ValueError(f"Unknown svg1 profiling mask {mask_name!r}")
 
@@ -367,30 +433,40 @@ def _svg_profile_mask_rows(mask_name, q_idx, all_idx, context_len, video_end,
         is_sink = torch.zeros_like(k_in_video)
     else:
         block_thres = frame_size * 2
-        sink_pos = k_pos if mask_name == "temporal" else (k - context_len)
+        sink_pos = k_pos if mask_name == "temporal" else k_pos_frame_major
         is_sink = k_in_video & (sink_pos < frame_size)
 
     block_window = block_thres // block_size
     in_window = torch.abs(q_pos // block_size - k_pos // block_size) < block_window
+    condition_prefix = k_in_video & (k_pos_frame_major < q_kv_offset)
     video_mask = is_sink | in_window
-    return (~both_video) | video_mask
+    return (~both_video) | condition_prefix | video_mask
 
 
 def _build_svg_block_mask(N, video_len, frame_size, num_frames, window_width,
-                          device, model_type="wan", prompt_length=0):
+                          device, model_type="wan", prompt_length=0,
+                          kv_len=None, q_kv_offset=0):
     """Build the common upstream SVG FlexAttention block mask."""
     from torch.nn.attention.flex_attention import BlockMask
+    q_len = int(N)
+    kv_len = q_len if kv_len is None else int(kv_len)
+    q_kv_offset = int(q_kv_offset or 0)
 
     def mask_mod(b, h, q_idx, kv_idx):
-        return _svg_common_mask(q_idx, kv_idx, video_len, frame_size, window_width, model_type, prompt_length)
+        return _svg_common_mask(
+            q_idx, kv_idx, video_len, frame_size, window_width,
+            model_type, prompt_length, q_kv_offset=q_kv_offset,
+        )
 
     kv_num_blocks, kv_indices, full_kv_num_blocks, full_kv_indices = _svg_kv_block_partitions(
-        N,
+        q_len,
+        kv_len,
         video_len,
         frame_size,
         int(window_width),
         model_type=model_type,
         prompt_length=prompt_length,
+        q_kv_offset=q_kv_offset,
         device=device,
     )
     return BlockMask.from_kv_blocks(
@@ -400,31 +476,37 @@ def _build_svg_block_mask(N, video_len, frame_size, num_frames, window_width,
         full_kv_indices,
         BLOCK_SIZE=(128, 128),
         mask_mod=mask_mod,
-        seq_lengths=(N, N),
+        seq_lengths=(q_len, kv_len),
     )
 
 
 def _svg_kv_blocks(N, video_len, frame_size, window_width,
-                   model_type="wan", prompt_length=0, device=None):
+                   model_type="wan", prompt_length=0, device=None,
+                   kv_len=None, q_kv_offset=0):
     block_size = 128
-    num_q_blocks = math.ceil(N / block_size)
-    num_kv_blocks = math.ceil(N / block_size)
+    q_len = int(N)
+    kv_len = q_len if kv_len is None else int(kv_len)
+    q_kv_offset = int(q_kv_offset or 0)
+    num_q_blocks = math.ceil(q_len / block_size)
+    num_kv_blocks = math.ceil(kv_len / block_size)
     per_q_blocks = []
     for q_block in range(num_q_blocks):
         q_start = q_block * block_size
-        q_end = min(N, (q_block + 1) * block_size) - 1
+        q_end = min(q_len, (q_block + 1) * block_size) - 1
         blocks: set[int] = set()
         if model_type in _TEXT_TAIL_MODELS:
             _add_hunyuan_svg_blocks(
-                blocks, q_start, q_end, N, video_len, int(prompt_length or 0),
+                blocks, q_start, q_end, q_len, video_len, int(prompt_length or 0),
                 window_width, block_size, num_kv_blocks,
             )
         else:
+            if q_kv_offset > 0:
+                _add_block_range(blocks, 0, q_kv_offset - 1, block_size, num_kv_blocks)
             _add_block_range(blocks, 0, frame_size - 1, block_size, num_kv_blocks)
             _add_block_range(
                 blocks,
-                q_start - window_width,
-                q_end + window_width,
+                q_start + q_kv_offset - window_width,
+                q_end + q_kv_offset + window_width,
                 block_size,
                 num_kv_blocks,
             )
@@ -443,28 +525,34 @@ def _svg_kv_blocks(N, video_len, frame_size, window_width,
     return kv_num_blocks, kv_indices
 
 
-def _svg_kv_block_partitions(N, video_len, frame_size, window_width,
-                             model_type="wan", prompt_length=0, device=None):
+def _svg_kv_block_partitions(q_len, kv_len, video_len, frame_size, window_width,
+                             model_type="wan", prompt_length=0,
+                             q_kv_offset=0, device=None):
     block_size = 128
-    num_q_blocks = math.ceil(N / block_size)
-    num_kv_blocks = math.ceil(N / block_size)
+    q_len = int(q_len)
+    kv_len = int(kv_len)
+    q_kv_offset = int(q_kv_offset or 0)
+    num_q_blocks = math.ceil(q_len / block_size)
+    num_kv_blocks = math.ceil(kv_len / block_size)
     partial_rows = []
     full_rows = []
     for q_block in range(num_q_blocks):
         q_start = q_block * block_size
-        q_end = min(N, (q_block + 1) * block_size) - 1
+        q_end = min(q_len, (q_block + 1) * block_size) - 1
         candidates = set()
         if model_type in _TEXT_TAIL_MODELS:
             _add_hunyuan_svg_blocks(
-                candidates, q_start, q_end, N, video_len, int(prompt_length or 0),
+                candidates, q_start, q_end, q_len, video_len, int(prompt_length or 0),
                 window_width, block_size, num_kv_blocks,
             )
         else:
+            if q_kv_offset > 0:
+                _add_block_range(candidates, 0, q_kv_offset - 1, block_size, num_kv_blocks)
             _add_block_range(candidates, 0, frame_size - 1, block_size, num_kv_blocks)
             _add_block_range(
                 candidates,
-                q_start - window_width,
-                q_end + window_width,
+                q_start + q_kv_offset - window_width,
+                q_end + q_kv_offset + window_width,
                 block_size,
                 num_kv_blocks,
             )
@@ -473,10 +561,11 @@ def _svg_kv_block_partitions(N, video_len, frame_size, window_width,
         full_blocks = []
         for kv_block in sorted(candidates):
             kv_start = kv_block * block_size
-            kv_end = min(N, (kv_block + 1) * block_size) - 1
+            kv_end = min(kv_len, (kv_block + 1) * block_size) - 1
             if _svg_block_is_full(
-                q_start, q_end, kv_start, kv_end, N, video_len, frame_size,
+                q_start, q_end, kv_start, kv_end, q_len, kv_len, video_len, frame_size,
                 window_width, model_type=model_type, prompt_length=prompt_length,
+                q_kv_offset=q_kv_offset,
             ):
                 full_blocks.append(kv_block)
             else:
@@ -502,8 +591,8 @@ def _svg_block_rows_to_tensors(rows, num_q_blocks, num_kv_blocks, device=None):
     return kv_num_blocks, kv_indices
 
 
-def _svg_block_is_full(q_start, q_end, kv_start, kv_end, N, video_len, frame_size,
-                       window_width, model_type="wan", prompt_length=0):
+def _svg_block_is_full(q_start, q_end, kv_start, kv_end, q_len, kv_len, video_len, frame_size,
+                       window_width, model_type="wan", prompt_length=0, q_kv_offset=0):
     # create_block_mask pads out-of-sequence tokens with False, so padded edge
     # blocks are always partial even if every valid token in the block is kept.
     block_size = 128
@@ -511,7 +600,7 @@ def _svg_block_is_full(q_start, q_end, kv_start, kv_end, N, video_len, frame_siz
         return False
 
     if model_type in _TEXT_TAIL_MODELS:
-        real_length = min(N, video_len + int(prompt_length or 0))
+        real_length = min(q_len, video_len + int(prompt_length or 0))
         q_fake_full = q_start >= real_length
         kv_fake_full = kv_start >= real_length
         if q_fake_full and kv_fake_full:
@@ -525,8 +614,15 @@ def _svg_block_is_full(q_start, q_end, kv_start, kv_end, N, video_len, frame_siz
         temporal_full = _max_abs_between_intervals(q_start, q_end, kv_start, kv_end) < window_width
         return q_text_full or kv_text_full or temporal_full
 
+    if int(q_kv_offset or 0) > 0 and kv_end < int(q_kv_offset):
+        return True
     first_frame_full = kv_end < frame_size
-    temporal_full = _max_abs_between_intervals(q_start, q_end, kv_start, kv_end) <= window_width
+    temporal_full = _max_abs_between_intervals(
+        q_start + int(q_kv_offset or 0),
+        q_end + int(q_kv_offset or 0),
+        kv_start,
+        kv_end,
+    ) <= window_width
     return first_frame_full or temporal_full
 
 
@@ -568,7 +664,7 @@ def _add_block_range(blocks, token_start, token_end, block_size, num_blocks):
 
 
 def _svg_common_mask(q_idx, kv_idx, video_len, frame_size, window_width,
-                     model_type="wan", prompt_length=0):
+                     model_type="wan", prompt_length=0, q_kv_offset=0):
     if model_type in _TEXT_TAIL_MODELS:
         real_length = video_len + int(prompt_length or 0)
         real_mask = (kv_idx < real_length) & (q_idx < real_length)
@@ -578,9 +674,24 @@ def _svg_common_mask(q_idx, kv_idx, video_len, frame_size, window_width,
         temporal_head_mask = torch.abs(q_idx - kv_idx) < window_width
         return (real_mask & (temporal_head_mask | text_column_mask | text_row_mask)) | fake_mask
 
-    temporal_head_mask = torch.abs(q_idx - kv_idx) <= window_width
+    q_pos = q_idx + int(q_kv_offset or 0)
+    condition_prefix_mask = kv_idx < int(q_kv_offset or 0)
+    temporal_head_mask = torch.abs(q_pos - kv_idx) <= window_width
     first_frame_mask = kv_idx < frame_size
-    return first_frame_mask | temporal_head_mask
+    return condition_prefix_mask | first_frame_mask | temporal_head_mask
+
+
+def _place_svg_attention_tensors(query, key, value, head_choices,
+                                 q_video_len, q_num_frames,
+                                 kv_video_len, kv_num_frames,
+                                 frame_size, text_len=0):
+    if q_video_len == kv_video_len and q_num_frames == kv_num_frames:
+        return _place_svg_heads(query, key, value, head_choices, q_video_len, q_num_frames, frame_size, text_len)
+    return (
+        _place_svg_tensor_heads_pytorch(query, head_choices, q_video_len, q_num_frames, frame_size),
+        _place_svg_tensor_heads_pytorch(key, head_choices, kv_video_len, kv_num_frames, frame_size),
+        _place_svg_tensor_heads_pytorch(value, head_choices, kv_video_len, kv_num_frames, frame_size),
+    )
 
 
 def _place_svg_heads(query, key, value, head_choices, video_len, num_frames, frame_size, context_length=0):
@@ -593,12 +704,16 @@ def _place_svg_heads(query, key, value, head_choices, video_len, num_frames, fra
 
 def _place_svg_heads_pytorch(query, key, value, head_choices, video_len, num_frames, frame_size):
     return tuple(
-        _select_temporal_heads(
-            tensor,
-            _to_token_major(tensor, video_len, num_frames, frame_size),
-            head_choices,
-        )
+        _place_svg_tensor_heads_pytorch(tensor, head_choices, video_len, num_frames, frame_size)
         for tensor in (query, key, value)
+    )
+
+
+def _place_svg_tensor_heads_pytorch(tensor, head_choices, video_len, num_frames, frame_size):
+    return _select_temporal_heads(
+        tensor,
+        _to_token_major(tensor, video_len, num_frames, frame_size),
+        head_choices,
     )
 
 

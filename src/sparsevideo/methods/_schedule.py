@@ -59,6 +59,23 @@ def runtime_num_inference_steps(step_tracker):
     return None
 
 
+def runtime_or_config_num_inference_steps(step_tracker, config):
+    runtime_steps = runtime_num_inference_steps(step_tracker)
+    if runtime_steps is not None:
+        return runtime_steps
+
+    config_steps = config.get("num_inference_steps")
+    if config_steps is None:
+        return None
+    try:
+        config_steps = int(config_steps)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("num_inference_steps must be an integer") from exc
+    if config_steps < 1:
+        raise ValueError("num_inference_steps must be >= 1")
+    return config_steps
+
+
 def scheduler_timestep_from_tracker(step_tracker, kwargs):
     raw_timestep = kwargs.get("timestep")
     tracked_timestep = getattr(step_tracker, "timestep", None)
