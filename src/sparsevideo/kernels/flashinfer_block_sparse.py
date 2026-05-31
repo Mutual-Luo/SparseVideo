@@ -33,6 +33,7 @@ def _load_flashinfer():
 
 
 _flashinfer, _fi_sparse = _load_flashinfer()
+HAS_FLASHINFER = True
 
 
 def get_flashinfer():

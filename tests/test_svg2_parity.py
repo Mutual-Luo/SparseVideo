@@ -128,6 +128,74 @@ def test_svg2_folds_classifier_free_batch_into_batch_head_slots(monkeypatch):
     assert state["centroids_init"] is True
 
 
+def test_svg2_wan_sparse_attention_accepts_rectangular_longcat_qkv(monkeypatch):
+    from sparsevideo.methods.svg2 import method as svg2_method
+    from sparsevideo.methods.svg2 import kmeans as svg2_kmeans
+    import sparsevideo.kernels.flashinfer_block_sparse as flashinfer_module
+
+    kmeans_calls = []
+    captured = {}
+
+    def fake_triton_kmeans(x, n_clusters, iter_time, init_centroids=None, final_reassign=False):
+        kmeans_calls.append((tuple(x.shape), int(n_clusters)))
+        labels = torch.arange(x.shape[1], device=x.device).remainder(n_clusters)
+        labels = labels.expand(x.shape[0], -1).int()
+        centroids = torch.zeros(x.shape[0], n_clusters, x.shape[2], dtype=x.dtype, device=x.device)
+        sizes = torch.zeros(x.shape[0], n_clusters, dtype=torch.long, device=x.device)
+        sizes.scatter_add_(1, labels.long(), torch.ones_like(labels, dtype=torch.long))
+        return labels, centroids, sizes
+
+    def fake_dynamic_map(query_centroids, key_centroids, q_sizes, k_sizes, p, min_kc_ratio):
+        return torch.ones(
+            query_centroids.shape[0],
+            query_centroids.shape[1],
+            key_centroids.shape[1],
+            dtype=torch.bool,
+            device=query_centroids.device,
+        )
+
+    def fake_variable_block_sparse_attn(q, k, v, dynamic_map, q_sizes, k_sizes):
+        captured["q_shape"] = tuple(q.shape)
+        captured["k_shape"] = tuple(k.shape)
+        captured["v_shape"] = tuple(v.shape)
+        captured["q_sizes_sum"] = q_sizes.sum(dim=-1).tolist()
+        captured["k_sizes_sum"] = k_sizes.sum(dim=-1).tolist()
+        captured["dynamic_map_shape"] = tuple(dynamic_map.shape)
+        return q
+
+    monkeypatch.setattr(svg2_kmeans, "triton_kmeans", fake_triton_kmeans)
+    monkeypatch.setattr(svg2_method, "identify_dynamic_map", fake_dynamic_map)
+    monkeypatch.setattr(flashinfer_module, "variable_block_sparse_attn", fake_variable_block_sparse_attn)
+
+    query = torch.arange(1 * 6 * 2 * 4, dtype=torch.float32).reshape(1, 6, 2, 4)
+    key = torch.arange(1 * 10 * 2 * 4, dtype=torch.float32).reshape(1, 10, 2, 4)
+    value = key + 1000
+    state = {"centroids_init": False, "prev_q_centroids": None, "prev_k_centroids": None}
+
+    out = svg2_method._svg2_attention(
+        query,
+        key,
+        value,
+        top_p_kmeans=0.9,
+        min_kc_ratio=0.1,
+        num_q_centroids=2,
+        num_k_centroids=3,
+        kmeans_iter_init=1,
+        kmeans_iter_step=1,
+        state=state,
+        model_type="wan",
+    )
+
+    assert out.shape == query.shape
+    assert kmeans_calls == [((2, 6, 4), 2), ((2, 10, 4), 3)]
+    assert captured["q_shape"] == (2, 6, 4)
+    assert captured["k_shape"] == (2, 10, 4)
+    assert captured["v_shape"] == (2, 10, 4)
+    assert captured["q_sizes_sum"] == [6, 6]
+    assert captured["k_sizes_sum"] == [10, 10]
+    assert captured["dynamic_map_shape"] == (2, 2, 3)
+
+
 def test_svg2_wan_keeps_centroid_state_per_layer_like_upstream(monkeypatch):
     from sparsevideo.methods.svg2.method import SVG2Method
     from sparsevideo.methods.svg2 import method as svg2_method

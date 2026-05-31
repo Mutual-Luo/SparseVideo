@@ -98,7 +98,7 @@ def svoo_attention(
 ):
     """SVOO: Co-clustering + dynamic block-sparse attention.
 
-    query/key/value: [B, N, H, D]
+    query: [B, Q, H, D], key/value: [B, KV, H, D]
     """
     if not query.is_cuda:
         raise RuntimeError("svoo sparse path requires CUDA")
@@ -106,10 +106,22 @@ def svoo_attention(
     from ...kernels.co_cluster import co_cluster_tokens
     from ...kernels.flashinfer_block_sparse import variable_block_sparse_attn
 
-    B, N, H, D = query.shape
-    text_len = max(0, min(int(text_len or 0), N))
-    video_N = N - text_len
-    if video_N <= 0:
+    B, q_len, H, D = query.shape
+    kv_len = key.shape[1]
+    if value.shape[1] != kv_len:
+        raise RuntimeError(
+            "svoo sparse path requires key/value lengths to match; "
+            f"got key_len={kv_len}, value_len={value.shape[1]}"
+        )
+    text_len = max(0, min(int(text_len or 0), q_len, kv_len))
+    if text_len > 0 and q_len != kv_len:
+        raise RuntimeError(
+            "svoo text-tail sparse path requires matching query/key lengths; "
+            f"got query_len={q_len}, key_len={kv_len}"
+        )
+    q_video_N = q_len - text_len
+    kv_video_N = kv_len - text_len
+    if q_video_N <= 0 or kv_video_N <= 0:
         raise RuntimeError("svoo sparse path requires at least one video token")
 
     q_bhsd = query.permute(0, 2, 1, 3).contiguous()
@@ -117,18 +129,18 @@ def svoo_attention(
     v_bhsd = value.permute(0, 2, 1, 3).contiguous()
     # CFG batches are independent after folding batch and head into the leading
     # dimension, matching the block-sparse kernels' batch-head contract.
-    q_flat = q_bhsd.reshape(B * H, N, D)
-    k_flat = k_bhsd.reshape(B * H, N, D)
-    v_flat = v_bhsd.reshape(B * H, N, D)
-    q_video = q_flat[:, :video_N]
-    k_video = k_flat[:, :video_N]
+    q_flat = q_bhsd.reshape(B * H, q_len, D)
+    k_flat = k_bhsd.reshape(B * H, kv_len, D)
+    v_flat = v_bhsd.reshape(B * H, kv_len, D)
+    q_video = q_flat[:, :q_video_N]
+    k_video = k_flat[:, :kv_video_N]
 
     num_q_centroids = cfg["num_q_centroids"]
     num_k_centroids = cfg["num_k_centroids"]
-    nqc = min(num_q_centroids, video_N)
-    nkc = min(num_k_centroids, video_N)
+    nqc = min(num_q_centroids, q_video_N)
+    nkc = min(num_k_centroids, kv_video_N)
 
-    cache_key = (B * H, video_N, text_len, D, nqc, nkc, str(q_flat.device))
+    cache_key = (B * H, q_video_N, kv_video_N, text_len, D, nqc, nkc, str(q_flat.device))
     cached = state.get("cached_clustering")
     do_recluster = should_recluster(
         cached, cache_key, current_step, cfg.get("reuse_interval"),
@@ -198,7 +210,7 @@ def svoo_attention(
         dynamic_map = dynamic_map_4d.squeeze(1)
         q_sizes = q_sizes_4d.squeeze(1)
         k_sizes = k_sizes_4d.squeeze(1)
-        text_idx = torch.arange(video_N, N, device=q_flat.device, dtype=k_sorted_idx.dtype)
+        text_idx = torch.arange(q_video_N, q_len, device=q_flat.device, dtype=k_sorted_idx.dtype)
         text_idx = text_idx.expand(B * H, text_len)
         k_sorted_idx = torch.cat([k_sorted_idx, text_idx], dim=-1)
 
@@ -211,9 +223,9 @@ def svoo_attention(
     v_sorted_bhsd, _ = permute_tensor_by_labels_triton(
         v_bhsd, None, dim=2, sorted_indices=k_sorted_idx,
     )
-    q_sorted = q_sorted_bhsd.reshape(B * H, N, D)
-    k_sorted = k_sorted_bhsd.reshape(B * H, N, D)
-    v_sorted = v_sorted_bhsd.reshape(B * H, N, D)
+    q_sorted = q_sorted_bhsd.reshape(B * H, q_len, D)
+    k_sorted = k_sorted_bhsd.reshape(B * H, kv_len, D)
+    v_sorted = v_sorted_bhsd.reshape(B * H, kv_len, D)
     if cfg.get("enable_mem_save", True):
         del query, key, value
         del q_flat, k_flat, v_flat
@@ -229,7 +241,7 @@ def svoo_attention(
     if cfg.get("enable_mem_save", True):
         del q_sorted, k_sorted, v_sorted
 
-    out_bhsd = out_sorted.reshape(B, H, N, D)
+    out_bhsd = out_sorted.reshape(B, H, q_len, D)
     out_bhsd = apply_inverse_permutation_triton(out_bhsd, q_sorted_idx, dim=2)
     if cfg.get("enable_mem_save", True):
         del out_sorted

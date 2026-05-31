@@ -942,6 +942,117 @@ def test_svoo_sparse_path_uses_owned_triton_permutation(monkeypatch):
     assert calls == {"permute": 3, "inverse": 1}
 
 
+def test_svoo_wan_sparse_attention_accepts_rectangular_longcat_qkv(monkeypatch):
+    from sparsevideo.methods.svoo import ops as svoo_ops
+    from sparsevideo.kernels import co_cluster, flashinfer_block_sparse
+
+    calls = {"permute": 0, "inverse": 0}
+    captured = {}
+
+    def fake_co_cluster_tokens(q_tokens, k_tokens, num_q_centroids, num_k_centroids, max_iters):
+        batch_heads, q_tokens_len, head_dim = q_tokens.shape
+        k_tokens_len = k_tokens.shape[1]
+        q_labels = (
+            torch.arange(q_tokens_len, device=q_tokens.device)
+            % int(num_q_centroids)
+        ).expand(batch_heads, -1).clone()
+        k_labels = (
+            torch.arange(k_tokens_len, device=k_tokens.device)
+            % int(num_k_centroids)
+        ).expand(batch_heads, -1).clone()
+        q_centroids = torch.zeros(batch_heads, int(num_q_centroids), head_dim, device=q_tokens.device)
+        k_centroids = torch.zeros(batch_heads, int(num_k_centroids), head_dim, device=k_tokens.device)
+        q_sizes = torch.zeros(batch_heads, int(num_q_centroids), device=q_tokens.device, dtype=torch.long)
+        k_sizes = torch.zeros(batch_heads, int(num_k_centroids), device=k_tokens.device, dtype=torch.long)
+        q_sizes.scatter_add_(1, q_labels.long(), torch.ones_like(q_labels, dtype=torch.long))
+        k_sizes.scatter_add_(1, k_labels.long(), torch.ones_like(k_labels, dtype=torch.long))
+        captured["cluster_q_shape"] = tuple(q_tokens.shape)
+        captured["cluster_k_shape"] = tuple(k_tokens.shape)
+        return q_labels, q_centroids, q_sizes, k_labels, k_centroids, k_sizes
+
+    def fake_identify_dynamic_map(q_centroids, k_centroids, q_sizes, k_sizes, top_p, min_ratio):
+        return torch.ones(
+            q_centroids.shape[0],
+            q_centroids.shape[1],
+            k_centroids.shape[1],
+            dtype=torch.bool,
+            device=q_centroids.device,
+        )
+
+    def fake_permute(tensor, labels, dim, *, sorted_indices=None):
+        calls["permute"] += 1
+        assert dim == 2
+        batch, heads, seq_len, head_dim = tensor.shape
+        if sorted_indices is None:
+            sorted_indices = labels.argsort(dim=-1)
+        flat = tensor.reshape(batch * heads, seq_len, head_dim)
+        out = torch.gather(flat, 1, sorted_indices.unsqueeze(-1).expand(-1, -1, head_dim))
+        return out.reshape(batch, heads, seq_len, head_dim), sorted_indices
+
+    def fake_inverse(tensor, sorted_indices, dim):
+        calls["inverse"] += 1
+        assert dim == 2
+        batch, heads, seq_len, head_dim = tensor.shape
+        flat = tensor.reshape(batch * heads, seq_len, head_dim)
+        out = torch.empty_like(flat)
+        out.scatter_(1, sorted_indices.unsqueeze(-1).expand(-1, -1, head_dim), flat)
+        return out.reshape(batch, heads, seq_len, head_dim)
+
+    def fake_variable_block_sparse_attn(q, k, v, dynamic_map, q_sizes, k_sizes):
+        captured["kernel_q_shape"] = tuple(q.shape)
+        captured["kernel_k_shape"] = tuple(k.shape)
+        captured["kernel_v_shape"] = tuple(v.shape)
+        captured["q_sizes_sum"] = q_sizes.sum(dim=-1).tolist()
+        captured["k_sizes_sum"] = k_sizes.sum(dim=-1).tolist()
+        captured["dynamic_map_shape"] = tuple(dynamic_map.shape)
+        return q
+
+    monkeypatch.setattr(torch.Tensor, "is_cuda", property(lambda self: True))
+    monkeypatch.setattr(co_cluster, "co_cluster_tokens", fake_co_cluster_tokens)
+    monkeypatch.setattr(svoo_ops, "identify_dynamic_map", fake_identify_dynamic_map)
+    monkeypatch.setattr(svoo_ops, "permute_tensor_by_labels_triton", fake_permute)
+    monkeypatch.setattr(svoo_ops, "apply_inverse_permutation_triton", fake_inverse)
+    monkeypatch.setattr(flashinfer_block_sparse, "variable_block_sparse_attn", fake_variable_block_sparse_attn)
+
+    cfg = {
+        "num_q_centroids": 2,
+        "num_k_centroids": 3,
+        "top_p_kmeans": 0.9,
+        "min_kc_ratio": 0.0,
+        "use_dynamic_min_kc_ratio": False,
+        "sparsity_csv_path": "",
+        "reuse_interval": 1,
+        "kmeans_iter_init": 1,
+        "kmeans_iter_step": 1,
+    }
+    state = {"centroids_init": False, "cached_clustering": None}
+    query = torch.arange(1 * 4 * 2 * 3, dtype=torch.float32).reshape(1, 4, 2, 3)
+    key = torch.arange(1 * 7 * 2 * 3, dtype=torch.float32).reshape(1, 7, 2, 3)
+    value = key + 1000
+
+    out = svoo_ops.svoo_attention(
+        query,
+        key,
+        value,
+        cfg,
+        state,
+        current_step=1,
+        layer_idx=0,
+        model_type="wan",
+    )
+
+    assert out.shape == query.shape
+    assert calls == {"permute": 3, "inverse": 1}
+    assert captured["cluster_q_shape"] == (2, 4, 3)
+    assert captured["cluster_k_shape"] == (2, 7, 3)
+    assert captured["kernel_q_shape"] == (2, 4, 3)
+    assert captured["kernel_k_shape"] == (2, 7, 3)
+    assert captured["kernel_v_shape"] == (2, 7, 3)
+    assert captured["q_sizes_sum"] == [4, 4]
+    assert captured["k_sizes_sum"] == [7, 7]
+    assert captured["dynamic_map_shape"] == (2, 2, 3)
+
+
 def test_svoo_reuse_starts_from_cached_clustering():
     from sparsevideo.methods.svoo.ops import should_recluster
 

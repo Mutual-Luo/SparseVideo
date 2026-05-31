@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/logo.png" alt="SparseVideo Logo" width="400"/>
+</p>
+
 # SparseVideo [Under Development...]
 
 Plug-and-play sparse attention for video diffusion models. One line to accelerate inference — no model modifications required.

@@ -188,44 +188,57 @@ def _svg2_attention(query, key, value, top_p_kmeans, min_kc_ratio,
                     text_len=0, prompt_length=None, context_length=None):
     """SVG2: k-means clustering + block-sparse attention.
 
-    query/key/value: [B, N, H, D]
+    query: [B, Q, H, D], key/value: [B, KV, H, D]
     Sparse attention backend: flashinfer VariableBlockSparseAttentionWrapper.
     """
     from ...kernels.flashinfer_block_sparse import variable_block_sparse_attn
     from .kmeans import triton_kmeans
 
-    B, N, H, D = query.shape
+    B, q_len, H, D = query.shape
+    kv_len = key.shape[1]
+    if value.shape[1] != kv_len:
+        raise RuntimeError(
+            "svg2 sparse path requires key/value lengths to match; "
+            f"got key_len={kv_len}, value_len={value.shape[1]}"
+        )
 
     # CogVideoX classifier-free guidance arrives as a batch of negative and
     # positive prompts. The owned kernels operate on folded batch-head slots,
     # so each batch item remains independent without serializing the sparse path.
-    q_full = query.permute(0, 2, 1, 3).contiguous().reshape(B * H, N, D)
-    k_full = key.permute(0, 2, 1, 3).contiguous().reshape(B * H, N, D)
-    v_full = value.permute(0, 2, 1, 3).contiguous().reshape(B * H, N, D)
+    q_full = query.permute(0, 2, 1, 3).contiguous().reshape(B * H, q_len, D)
+    k_full = key.permute(0, 2, 1, 3).contiguous().reshape(B * H, kv_len, D)
+    v_full = value.permute(0, 2, 1, 3).contiguous().reshape(B * H, kv_len, D)
 
     text_len = int(text_len or 0)
     if model_type in ("hunyuan_video", "cogvideox", "mochi", "easyanimate") and text_len > 0:
+        if q_len != kv_len:
+            raise RuntimeError(
+                "svg2 text-tail sparse path requires matching query/key lengths; "
+                f"got query_len={q_len}, key_len={kv_len}"
+            )
         if context_length is not None and int(context_length) != text_len:
             raise RuntimeError(
                 "svg2 context_length must match the text token tail length "
                 f"seen by the processor; got context_length={int(context_length)}, text_len={text_len}"
             )
-        video_len = N - text_len
-        if video_len <= 0:
+        q_video_len = q_len - text_len
+        kv_video_len = kv_len - text_len
+        if q_video_len <= 0 or kv_video_len <= 0:
             raise RuntimeError("svg2 hunyuan sparse path could not find video tokens")
         prompt_length = _resolve_svg2_prompt_length(prompt_length, text_len)
-        q_flat = q_full[:, :video_len, :].contiguous()
-        k_flat = k_full[:, :video_len, :].contiguous()
-        v_flat = v_full[:, :video_len, :].contiguous()
+        q_flat = q_full[:, :q_video_len, :].contiguous()
+        k_flat = k_full[:, :kv_video_len, :].contiguous()
+        v_flat = v_full[:, :kv_video_len, :].contiguous()
     else:
-        video_len = N
+        q_video_len = q_len
+        kv_video_len = kv_len
         prompt_length = 0
         q_flat = q_full
         k_flat = k_full
         v_flat = v_full
 
-    nqc = min(num_q_centroids, video_len)
-    nkc = min(num_k_centroids, video_len)
+    nqc = min(num_q_centroids, q_video_len)
+    nkc = min(num_k_centroids, kv_video_len)
 
     kmeans_iters = kmeans_iter_step if state["centroids_init"] else kmeans_iter_init
     q_labels, q_centroids, q_sizes = triton_kmeans(
@@ -277,7 +290,7 @@ def _svg2_attention(query, key, value, top_p_kmeans, min_kc_ratio,
             q_sizes,
             k_sizes,
             q_sorted_idx,
-            video_len=video_len,
+            video_len=q_video_len,
             text_len=text_len,
             prompt_length=prompt_length,
         )
@@ -293,7 +306,7 @@ def _svg2_attention(query, key, value, top_p_kmeans, min_kc_ratio,
     # Unsort
     out_flat = _svg2_inverse_permutation(out_sorted, q_sorted_idx)
 
-    return out_flat.reshape(B, H, N, D).permute(0, 2, 1, 3)
+    return out_flat.reshape(B, H, q_len, D).permute(0, 2, 1, 3)
 
 
 def _svg2_dense_attention(query, key, value, attention_mask, *, model_type):
