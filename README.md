@@ -4,9 +4,8 @@
 
 # SparseVideo
 
-### One line to accelerate inference for video diffusion models  `[Under Development...]`
+#### A one-line, plug-and-play sparse attention framework for accelerating video diffusion inference.
 
-**Plug-and-play sparse attention for video diffusion models.**
 
 ## Installation
 
