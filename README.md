@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/logo.png" alt="SparseVideo Logo" width="200"/>
+  <img src="assets/logo.png" alt="SparseVideo Logo" width="260"/>
 </p>
 
 <br/>
