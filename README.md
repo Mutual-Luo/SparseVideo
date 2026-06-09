@@ -7,7 +7,7 @@
 <p align="center">A one-line, plug-and-play sparse attention framework for accelerating video diffusion inference.</p>
 
 
-## Installation
+## 📦 Installation
 
 **From PyPI**
 
@@ -23,7 +23,7 @@ cd SparseVideo
 MAX_JOBS=8 pip install -e . --no-build-isolation
 ```
 
-## Quick Start
+## 🚀 Quick Start
 
 ```diff
   import torch
@@ -38,7 +38,7 @@ MAX_JOBS=8 pip install -e . --no-build-isolation
   video = pipe("A cat playing piano", num_frames=81, num_inference_steps=50).frames[0]
 ```
 
-## Supported Sparse Attention Methods
+## ⚡ Supported Sparse Attention Methods
 
 | | Method | | Method | | Method |
 |:---:|---|:---:|---|:---:|---|
@@ -47,7 +47,7 @@ MAX_JOBS=8 pip install -e . --no-build-isolation
 | ✅ | `SVG2` [[paper]](https://arxiv.org/abs/2505.18875) | ✅ | `STA` [[paper]](https://arxiv.org/abs/2502.04507) | ✅ | `FlashOmni` [[paper]](https://arxiv.org/abs/2509.25401) |
 | ✅ | `SVG-EAR` [[paper]](https://arxiv.org/abs/2603.08982) | ✅ | `DraftAttention` [[paper]](https://arxiv.org/abs/2505.14708) | | |
 
-## Supported Frameworks
+## 🧩 Supported Frameworks
 
 Works as a drop-in, one-line replacement for both **Diffusers** and **DiffSynth-Studio** pipelines. Just call `sparsevideo.replace_attention(pipe, method=...)`, no model modifications required.
 
@@ -87,6 +87,6 @@ Supported 30 models:
 | <sub>✅</sub> | <sub>Wan 2.1-Fun 14B Control</sub> | <sub>✅</sub> | <sub>Wan 2.2 Text/Image-to-Video 5B</sub> | <sub>✅</sub> | <sub>LTX-2</sub> |
 | <sub>✅</sub> | <sub>Wan 2.1-Fun 14B InP</sub> | <sub>✅</sub> | <sub>Wan 2.2 Speech-to-Video 14B</sub> | <sub>✅</sub> | <sub>LTX-2.3</sub> |
 
-## License
+## 📄 License
 
 Apache-2.0
