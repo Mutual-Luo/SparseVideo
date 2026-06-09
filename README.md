@@ -1,6 +1,8 @@
 <p align="center">
-  <img src="assets/logo.png" alt="SparseVideo Logo" width="400"/>
+  <img src="assets/logo.png" alt="SparseVideo Logo" width="200"/>
 </p>
+
+<br/>
 
 <h1 align="center">SparseVideo</h1>
 
