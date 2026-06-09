@@ -3,6 +3,11 @@ from __future__ import annotations
 from typing import Optional, Tuple
 
 
+DIFFSYNTH_STA_UNSUPPORTED_REASON = (
+    "STA is not supported for the DiffSynth backend. Use the Diffusers backend "
+    "for STA inference."
+)
+
 STA_WAN21_T2V_13B_UNSUPPORTED_REASON = (
     "STA is temporarily unsupported for Wan2.1-T2V-1.3B. The current version "
     "has not found suitable STA parameters that balance efficiency and quality "

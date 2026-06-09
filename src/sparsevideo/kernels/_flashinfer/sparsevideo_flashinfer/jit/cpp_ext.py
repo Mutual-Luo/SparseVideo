@@ -87,6 +87,11 @@ def generate_ninja_build_for_op(
         "-shared",
         "-L$torch_home/lib",
         "-L$cuda_home/lib64",
+        "-L$cuda_home/lib",
+        "-L$cuda_home/targets/x86_64-linux/lib",
+        "-Wl,-rpath,$cuda_home/lib64",
+        "-Wl,-rpath,$cuda_home/lib",
+        "-Wl,-rpath,$cuda_home/targets/x86_64-linux/lib",
         "-lc10",
         "-lc10_cuda",
         "-ltorch_cpu",
@@ -112,8 +117,13 @@ def generate_ninja_build_for_op(
         ldflags += extra_ldflags
 
     cxx = os.environ.get("CXX", "c++")
-    cuda_home = CUDA_HOME or "/usr/local/cuda"
-    nvcc = os.environ.get("PYTORCH_NVCC", "$cuda_home/bin/nvcc")
+    cuda_home = (
+        os.environ.get("CUDA_HOME")
+        or os.environ.get("CUDA_PATH")
+        or CUDA_HOME
+        or "/usr/local/cuda"
+    )
+    nvcc = os.environ.get("PYTORCH_NVCC", f"{cuda_home}/bin/nvcc")
 
     lines = [
         "ninja_required_version = 1.3",

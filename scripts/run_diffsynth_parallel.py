@@ -6,7 +6,7 @@ prefix in each line is stripped and replaced with the assigned GPU.
 
 Usage (from repo root):
     python scripts/run_diffsynth_parallel.py
-    python scripts/run_diffsynth_parallel.py --gpus 4,5,6,7 --skip-existing
+    python scripts/run_diffsynth_parallel.py --gpus 0,1,2,3 --skip-existing
     python scripts/run_diffsynth_parallel.py --sh scripts/inference_diffsynth.sh --log-dir logs/diffsynth
     python scripts/run_diffsynth_parallel.py --skip-existing   # skip jobs that already have output videos
 """
@@ -14,6 +14,7 @@ import argparse
 import os
 import queue
 import re
+import shlex
 import subprocess
 import sys
 import threading
@@ -21,15 +22,50 @@ from datetime import datetime
 from pathlib import Path
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
+_SCRIPT_DIR = Path(__file__).resolve().parent
 _DEFAULT_OUTPUT_DIR = _REPO_ROOT / "result" / "inference" / "diffsynth"
 
 
 def _output_exists(cmd: str, model: str, method: str) -> bool:
-    """Return True if the job's output directory already contains a .mp4 file."""
-    m = re.search(r"--output-dir\s+(\S+)", cmd)
-    output_dir = Path(m.group(1)) if m else _DEFAULT_OUTPUT_DIR
-    job_dir = output_dir / model / method
-    return job_dir.is_dir() and any(job_dir.glob("*.mp4"))
+    """Return True if the exact output video expected by this command exists."""
+    return _expected_output_file(cmd, model, method).is_file()
+
+
+def _expected_output_file(cmd: str, model: str, method: str) -> Path:
+    tokens = shlex.split(cmd)
+    output_file = _cmd_option(tokens, "--output-file")
+    if output_file is not None:
+        return _resolve_repo_path(output_file)
+
+    output_dir = _resolve_repo_path(_cmd_option(tokens, "--output-dir") or str(_DEFAULT_OUTPUT_DIR))
+    seed = int(_cmd_option(tokens, "--seed") or 0)
+
+    if str(_SCRIPT_DIR) not in sys.path:
+        sys.path.insert(0, str(_SCRIPT_DIR))
+    from _infer_diffsynth.models import get_diffsynth_model_spec
+
+    spec = get_diffsynth_model_spec(model)
+    height = int(_cmd_option(tokens, "--height") or spec.default_height)
+    width = int(_cmd_option(tokens, "--width") or spec.default_width)
+    num_frames = int(_cmd_option(tokens, "--num-frames") or spec.default_num_frames)
+    return output_dir / model / method / f"seed{seed}_{height}x{width}_{num_frames}f.mp4"
+
+
+def _cmd_option(tokens: list[str], option: str) -> str | None:
+    prefix = f"{option}="
+    for i, token in enumerate(tokens):
+        if token == option and i + 1 < len(tokens):
+            return tokens[i + 1]
+        if token.startswith(prefix):
+            return token[len(prefix):]
+    return None
+
+
+def _resolve_repo_path(path: str) -> Path:
+    parsed = Path(path)
+    if parsed.is_absolute():
+        return parsed
+    return _REPO_ROOT / parsed
 
 
 # ── command extraction ────────────────────────────────────────────────────────

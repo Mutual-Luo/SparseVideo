@@ -26,6 +26,12 @@ register_method(
     config_module="sparsevideo.methods.svg2.config",
 )
 register_method(
+    "svgear",
+    module="sparsevideo.methods.svgear",
+    class_name="SVGEARMethod",
+    config_module="sparsevideo.methods.svgear.config",
+)
+register_method(
     "radial",
     module="sparsevideo.methods.radial",
     class_name="RadialMethod",

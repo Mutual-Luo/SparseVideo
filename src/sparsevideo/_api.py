@@ -9,6 +9,7 @@ from ._registry import get_method_class, list_methods as _list_methods
 from ._model_info import ModelInfo, discover_model
 from ._step_tracker import install_step_tracker
 from ._support import (
+    DIFFSYNTH_STA_UNSUPPORTED_REASON,
     LIMITED_METHODS_BY_MODEL_TYPE,
     MOCHI_SPARSE_ATTENTION_WARNING,
     unvalidated_method_reason,
@@ -235,6 +236,9 @@ def _auto_set_torch_cuda_arch_list() -> None:
 def _validate_method_support(model_info: ModelInfo, method: str) -> None:
     if method == "dense":
         return
+    if getattr(model_info, "pipeline_backend", "diffusers") == "diffsynth" and method == "sta":
+        print(f"\033[31mError:\033[0m {DIFFSYNTH_STA_UNSUPPORTED_REASON}", file=sys.stderr)
+        raise NotImplementedError(DIFFSYNTH_STA_UNSUPPORTED_REASON)
     model_reason = unsupported_method_model_reason(method, model_info.model_key)
     if model_reason is not None:
         print(f"\033[31mError:\033[0m {model_reason}", file=sys.stderr)

@@ -95,6 +95,25 @@ def infer_video_frame_shape(
     return frames, height, width
 
 
+def infer_video_frame_shape_for_attention(
+    video_len: int,
+    model_type: str,
+    seq_shape: Optional[str | tuple[int, int, int] | list[int]] = None,
+) -> tuple[int, int, int]:
+    override = parse_seq_shape(seq_shape)
+    if override is None:
+        return infer_video_frame_shape(video_len, model_type=model_type)
+
+    _, height, width = override
+    frame_size = height * width
+    if frame_size <= 0 or video_len % frame_size != 0:
+        raise ValueError(
+            f"seq_shape={override[0]}x{height}x{width} has frame_size={frame_size}, "
+            f"which does not divide video token length {video_len}"
+        )
+    return video_len // frame_size, height, width
+
+
 def infer_video_frame_count(video_len: int, model_type: str) -> int:
     return infer_video_frame_shape(video_len, model_type=model_type)[0]
 

@@ -17,6 +17,20 @@ class WarmupNotifier:
         self._warmup_announced = False
         self._sparse_announced = False
 
+    def announce_config(self, config: dict) -> None:
+        """Print warmup summary immediately at apply time if num_inference_steps is in config."""
+        if self._warmup_announced:
+            return
+        num_inference_steps = config.get("num_inference_steps")
+        ratio = config.get("dense_warmup_step_ratio")
+        if num_inference_steps is None or ratio is None:
+            return
+        warmup_steps = int(floor(float(ratio) * int(num_inference_steps)))
+        if warmup_steps <= 0:
+            return
+        self._warmup_announced = True
+        print(f"[sparsevideo:{self._method_name}] Dense warmup: steps 1-{warmup_steps}/{num_inference_steps} ({warmup_steps / num_inference_steps:.0%})")
+
     def notify(self, is_warmup: bool, step, num_inference_steps, warmup_steps: int) -> None:
         if is_warmup and not self._warmup_announced:
             self._warmup_announced = True

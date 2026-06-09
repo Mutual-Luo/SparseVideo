@@ -428,7 +428,12 @@ class BlockSparseAttentionWrapper:
             )
 
             kv_lens_arr_host = (kv_indptr_host[1:] - kv_indptr_host[:-1]) * self.C
-            self._kv_lens_buffer[: len(kv_lens_arr_host)].copy_(
+            required_size = len(kv_lens_arr_host)
+            if required_size > self._kv_lens_buffer.shape[0]:
+                self._kv_lens_buffer = torch.empty(
+                    (required_size,), dtype=torch.int32, device=self.device
+                )
+            self._kv_lens_buffer[:required_size].copy_(
                 kv_lens_arr_host,
             )
 
@@ -446,7 +451,7 @@ class BlockSparseAttentionWrapper:
                     ].copy_(vector_sparse_indptr_host, non_blocking=non_blocking)
                     kv_indptr_host = vector_sparse_indptr_host
 
-            self._plan_info = self._cached_module.plan(
+            plan_args = [
                 self._float_workspace_buffer,
                 self._int_workspace_buffer,
                 self._pin_memory_int_workspace_buffer,
@@ -462,7 +467,18 @@ class BlockSparseAttentionWrapper:
                 head_dim,
                 head_dim,
                 causal,
-            )
+                -1,  # window_left
+            ]
+            if self._backend == "fa2":
+                plan_args.append(-1)  # fixed_split_size
+                plan_args.append(False)  # disable_split_kv
+                plan_args.append(0)  # num_colocated_ctas
+            try:
+                self._plan_info = self._cached_module.plan(*plan_args)
+            except TypeError as exc:
+                if "expected at most 15" not in str(exc) and "received 19" not in str(exc):
+                    raise
+                self._plan_info = self._cached_module.plan(*plan_args[:15])
 
         self._pos_encoding_mode = pos_encoding_mode
         self._use_fp16_qk_reduction = use_fp16_qk_reduction

@@ -16,6 +16,8 @@ from sparsevideo.methods.radial.method import (
     _radial_attention,
     _radial_block_sizes,
     _radial_flashinfer_attention,
+    _radial_flashinfer_variable_video_attention,
+    _radial_rectangular_bsr_mask,
     _radial_sage_attention,
     _radial_bsr_mask,
     _radial_window_width,
@@ -219,6 +221,129 @@ def test_radial_block_sizes_use_partial_final_block():
     assert sizes.tolist() == [128, 128, 128, 6]
 
 
+def test_radial_bsr_mask_keeps_non_aligned_frame_tail_block():
+    frame_size = 1560
+    block_size = 128
+
+    mask = _radial_bsr_mask(
+        vid_len=2 * frame_size,
+        block_size=block_size,
+        frame_size=frame_size,
+        num_frames=2,
+        decay_factor=0.2,
+        model_type="wan",
+    )
+
+    frame_0_end_block = (frame_size - 1) // block_size
+    frame_1_start_block = frame_size // block_size
+    frame_1_end_block = (2 * frame_size - 1) // block_size
+    assert mask[frame_0_end_block].any()
+    assert mask[frame_1_start_block:frame_1_end_block + 1].any(dim=1).all()
+
+
+def test_radial_rectangular_longcat_mask_uses_condition_prefix_as_sink():
+    mask = _radial_rectangular_bsr_mask(
+        q_vid_len=11 * 64,
+        kv_vid_len=21 * 64,
+        block_size=64,
+        frame_size=64,
+        q_num_frames=11,
+        kv_num_frames=21,
+        q_kv_offset=10 * 64,
+        decay_factor=0.2,
+        model_type="wan",
+    )
+
+    assert mask.shape == (11, 21)
+    assert mask[:, :10].all()
+
+
+def test_radial_attention_uses_longcat_seq_shape_for_rectangular_qkv(monkeypatch):
+    captured = {}
+
+    def fake_flashinfer_attention(query, key, value, video_mask, video_len, tail_len,
+                                  block_size, pre_defined_mask=None, kv_video_len=None):
+        captured["query_len"] = query.shape[1]
+        captured["key_len"] = key.shape[1]
+        captured["video_len"] = video_len
+        captured["kv_video_len"] = kv_video_len
+        captured["mask_shape"] = tuple(video_mask.shape)
+        captured["prefix_sink"] = bool(video_mask[:, :10].all().item())
+        return query
+
+    monkeypatch.setattr(torch.Tensor, "is_cuda", property(lambda self: True))
+    monkeypatch.setattr(
+        "sparsevideo.methods.radial.method._radial_flashinfer_attention",
+        fake_flashinfer_attention,
+    )
+
+    query = torch.randn(1, 11 * 64, 2, 4)
+    key = torch.randn(1, 21 * 64, 2, 4)
+
+    out = _radial_attention(
+        query,
+        key,
+        key,
+        decay_factor=0.2,
+        block_mask_cache={},
+        block_size=64,
+        model_type="wan",
+        seq_shape=(21, 8, 8),
+    )
+
+    assert out is query
+    assert captured == {
+        "query_len": 11 * 64,
+        "key_len": 21 * 64,
+        "video_len": 11 * 64,
+        "kv_video_len": 21 * 64,
+        "mask_shape": (11, 21),
+        "prefix_sink": True,
+    }
+
+
+def test_radial_variable_flashinfer_attention_accepts_rectangular_qkv(monkeypatch):
+    captured = {}
+
+    def fake_variable_block_sparse_attn(q, k, v, dynamic_map, q_sizes, k_sizes, return_lse=False):
+        captured["q_shape"] = tuple(q.shape)
+        captured["k_shape"] = tuple(k.shape)
+        captured["v_shape"] = tuple(v.shape)
+        captured["dynamic_map_shape"] = tuple(dynamic_map.shape)
+        captured["q_sizes_sum"] = q_sizes.sum(dim=-1).tolist()
+        captured["k_sizes_sum"] = k_sizes.sum(dim=-1).tolist()
+        return q
+
+    monkeypatch.setattr(
+        "sparsevideo.kernels.flashinfer_block_sparse.variable_block_sparse_attn",
+        fake_variable_block_sparse_attn,
+    )
+
+    query = torch.randn(1, 130, 2, 4)
+    key = torch.randn(1, 260, 2, 4)
+    video_mask = torch.ones(3, 5, dtype=torch.bool)
+
+    out = _radial_flashinfer_variable_video_attention(
+        query,
+        key,
+        key,
+        video_mask,
+        130,
+        260,
+        64,
+    )
+
+    assert out.shape == query.shape
+    assert captured == {
+        "q_shape": (2, 130, 4),
+        "k_shape": (2, 260, 4),
+        "v_shape": (2, 260, 4),
+        "dynamic_map_shape": (2, 3, 5),
+        "q_sizes_sum": [130, 130],
+        "k_sizes_sum": [260, 260],
+    }
+
+
 def test_radial_bsr_conversion_keeps_indptr_and_indices_on_requested_device():
     mask = torch.tensor(
         [
@@ -253,6 +378,134 @@ def test_radial_bsr_conversion_accepts_cuda_masks_without_device_mixing():
     assert indices.device.type == "cuda"
     assert indptr.cpu().tolist() == [0, 1, 3]
     assert indices.cpu().tolist() == [0, 0, 1]
+
+
+def _new_bsr_wrapper_for_plan_test(fi_sparse):
+    wrapper = object.__new__(fi_sparse.BlockSparseAttentionWrapper)
+    wrapper.device = torch.device("cpu")
+    wrapper._float_workspace_buffer = torch.empty(1, dtype=torch.uint8)
+    wrapper._int_workspace_buffer = torch.empty(1, dtype=torch.uint8)
+    wrapper._pin_memory_int_workspace_buffer = torch.empty(1, dtype=torch.uint8)
+    wrapper._kv_lens_buffer = torch.empty(1, dtype=torch.int32)
+    wrapper._backend = "fa2"
+    return wrapper
+
+
+def test_radial_vendored_bsr_plan_uses_current_flashinfer_fa2_abi(monkeypatch):
+    import sparsevideo_flashinfer.sparse as fi_sparse
+
+    captured = {}
+
+    class FakeModule:
+        def plan(self, *args):
+            captured["args"] = args
+            return "plan-info"
+
+    monkeypatch.setattr(
+        fi_sparse,
+        "get_batch_prefill_module",
+        lambda backend, *args: FakeModule(),
+    )
+
+    wrapper = _new_bsr_wrapper_for_plan_test(fi_sparse)
+    indptr = torch.tensor([0, 1], dtype=torch.int32)
+    indices = torch.tensor([0], dtype=torch.int32)
+
+    wrapper.plan(
+        indptr,
+        indices,
+        M=128,
+        N=128,
+        R=128,
+        C=128,
+        num_qo_heads=1,
+        num_kv_heads=1,
+        head_dim=128,
+        q_data_type=torch.bfloat16,
+        kv_data_type=torch.bfloat16,
+        o_data_type=torch.bfloat16,
+    )
+
+    assert wrapper._plan_info == "plan-info"
+    assert len(captured["args"]) == 19
+    assert captured["args"][15:] == (-1, -1, False, 0)
+
+
+def test_radial_vendored_bsr_plan_keeps_legacy_flashinfer_fallback(monkeypatch):
+    import sparsevideo_flashinfer.sparse as fi_sparse
+
+    calls = []
+
+    class LegacyModule:
+        def plan(self, *args):
+            calls.append(args)
+            if len(calls) == 1:
+                raise TypeError("expected at most 15 arguments but received 19")
+            return "legacy-plan-info"
+
+    monkeypatch.setattr(
+        fi_sparse,
+        "get_batch_prefill_module",
+        lambda backend, *args: LegacyModule(),
+    )
+
+    wrapper = _new_bsr_wrapper_for_plan_test(fi_sparse)
+    indptr = torch.tensor([0, 1], dtype=torch.int32)
+    indices = torch.tensor([0], dtype=torch.int32)
+
+    wrapper.plan(
+        indptr,
+        indices,
+        M=128,
+        N=128,
+        R=128,
+        C=128,
+        num_qo_heads=1,
+        num_kv_heads=1,
+        head_dim=128,
+        q_data_type=torch.bfloat16,
+        kv_data_type=torch.bfloat16,
+        o_data_type=torch.bfloat16,
+    )
+
+    assert wrapper._plan_info == "legacy-plan-info"
+    assert [len(args) for args in calls] == [19, 15]
+
+
+def test_flashinfer_jit_cuda_home_prefers_current_python_env_over_path_nvcc(monkeypatch, tmp_path):
+    from sparsevideo.kernels import flashinfer_block_sparse
+
+    python_root = tmp_path / "python-env"
+    path_root = tmp_path / "path-env"
+    for root in (python_root, path_root):
+        (root / "bin").mkdir(parents=True)
+        (root / "include").mkdir()
+        (root / "lib64").mkdir()
+        (root / "bin" / "nvcc").write_text("")
+        (root / "include" / "cuda_runtime.h").write_text("")
+        (root / "lib64" / "libcudart.so").write_text("")
+
+    monkeypatch.delenv("CUDA_HOME", raising=False)
+    monkeypatch.delenv("CUDA_PATH", raising=False)
+    monkeypatch.delenv("PYTORCH_NVCC", raising=False)
+    monkeypatch.setattr(flashinfer_block_sparse.sys, "prefix", str(python_root))
+    monkeypatch.setattr(flashinfer_block_sparse.sys, "base_prefix", str(python_root))
+    monkeypatch.setattr(
+        flashinfer_block_sparse.sys,
+        "executable",
+        str(python_root / "bin" / "python"),
+    )
+    monkeypatch.setattr(
+        flashinfer_block_sparse.shutil,
+        "which",
+        lambda name: str(path_root / "bin" / "nvcc") if name == "nvcc" else None,
+    )
+
+    flashinfer_block_sparse._ensure_cuda_home_for_flashinfer_jit()
+
+    assert flashinfer_block_sparse.os.environ["CUDA_HOME"] == str(python_root)
+    assert flashinfer_block_sparse.os.environ["CUDA_PATH"] == str(python_root)
+    assert flashinfer_block_sparse.os.environ["PYTORCH_NVCC"] == str(python_root / "bin" / "nvcc")
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA/FlashInfer")
@@ -614,7 +867,6 @@ def test_radial_use_sage_dense_warmup_uses_owned_sageattention_nhd(monkeypatch):
 
 
 def test_radial_sage_hunyuan_mask_keeps_text_kv_columns_like_upstream(monkeypatch):
-    import sys
     import types
 
     captured = {}
@@ -627,10 +879,9 @@ def test_radial_sage_hunyuan_mask_keeps_text_kv_columns_like_upstream(monkeypatc
         return torch.zeros_like(q)
 
     monkeypatch.setattr("sparsevideo.methods.radial.method._cuda_arch", lambda device: "sm80")
-    monkeypatch.setitem(
-        sys.modules,
-        "flashinfer",
-        types.SimpleNamespace(single_prefill_with_kv_cache=fake_single_prefill_with_kv_cache),
+    monkeypatch.setattr(
+        "sparsevideo.kernels.flashinfer_block_sparse.get_flashinfer",
+        lambda: types.SimpleNamespace(single_prefill_with_kv_cache=fake_single_prefill_with_kv_cache),
     )
 
     batch_size, video_len, tail_len, heads, dim = 1, 256, 128, 2, 4
@@ -661,7 +912,7 @@ def test_radial_sage_hunyuan_mask_keeps_text_kv_columns_like_upstream(monkeypatc
 
 
 def test_radial_sage_hunyuan_partial_video_tail_crops_kv_blocks(monkeypatch):
-    import sys
+    import types
 
     captured = {}
 
@@ -673,10 +924,9 @@ def test_radial_sage_hunyuan_partial_video_tail_crops_kv_blocks(monkeypatch):
         return torch.zeros_like(q)
 
     monkeypatch.setattr("sparsevideo.methods.radial.method._cuda_arch", lambda device: "sm80")
-    monkeypatch.setitem(
-        sys.modules,
-        "flashinfer",
-        types.SimpleNamespace(single_prefill_with_kv_cache=fake_single_prefill_with_kv_cache),
+    monkeypatch.setattr(
+        "sparsevideo.kernels.flashinfer_block_sparse.get_flashinfer",
+        lambda: types.SimpleNamespace(single_prefill_with_kv_cache=fake_single_prefill_with_kv_cache),
     )
 
     batch_size, video_len, tail_len, heads, dim = 1, 130, 5, 2, 4

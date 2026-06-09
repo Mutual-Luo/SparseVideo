@@ -15,6 +15,7 @@ PUBLIC_METHODS = [
     "sta",
     "svg1",
     "svg2",
+    "svgear",
     "svoo",
 ]
 

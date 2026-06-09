@@ -338,11 +338,12 @@ _SPECS: Tuple[DiffSynthModelSpec, ...] = (
         pipeline_kind="wan",
         pipeline="WanVideoPipeline",
         description="DiffSynth Wan2.2 speech-to-video 14B",
-        default_height=704,
-        default_width=1248,
-        default_num_frames=121,
+        default_height=448,
+        default_width=832,
+        default_num_frames=81,
         default_fps=16,
-        required_inputs=("input_audio",),
+        default_num_inference_steps=40,
+        required_inputs=("input_image", "input_audio"),
         config_model_key="wan22-t2v-a14b",
     ),
     DiffSynthModelSpec(
@@ -350,7 +351,7 @@ _SPECS: Tuple[DiffSynthModelSpec, ...] = (
         aliases=("wan22-fun-control-a14b",),
         pipeline_kind="wan",
         pipeline="WanVideoPipeline",
-        description="DiffSynth Wan2.2-Fun A14B Control high-noise DiT",
+        description="DiffSynth Wan2.2-Fun A14B Control high/low-noise DiTs",
         default_height=704,
         default_width=1248,
         default_num_frames=121,
@@ -362,7 +363,7 @@ _SPECS: Tuple[DiffSynthModelSpec, ...] = (
         aliases=("wan22-fun-control-camera-a14b",),
         pipeline_kind="wan",
         pipeline="WanVideoPipeline",
-        description="DiffSynth Wan2.2-Fun A14B Control-Camera high-noise DiT",
+        description="DiffSynth Wan2.2-Fun A14B Control-Camera high/low-noise DiTs",
         default_height=704,
         default_width=1248,
         default_num_frames=121,
@@ -652,7 +653,8 @@ def resolve_diffsynth_model_paths(
     elif spec.key in _WAN22_FUN_REPOS:
         repo = _WAN22_FUN_REPOS[spec.key]
         _add_wan_common_components(add, dit_repo=repo, vae_version="21")
-        add("dit", ((repo, "high_noise_model/diffusion_pytorch_model*.safetensors"),))
+        add("dit_high_noise", ((repo, "high_noise_model/diffusion_pytorch_model*.safetensors"),))
+        add("dit_low_noise", ((repo, "low_noise_model/diffusion_pytorch_model*.safetensors"),))
     elif spec.key == "longcat-video":
         _add_wan_common_components(add, dit_repo="LongCat-Video", vae_version="21")
         add("dit", (("LongCat-Video", "dit/diffusion_pytorch_model*.safetensors"),))
@@ -737,6 +739,8 @@ def load_diffsynth_pipeline(
                 _wan_model_config_order(resolved),
                 ModelConfig,
                 offload_device=offload_device,
+                offload_dtype=torch_dtype,
+                onload_device=device,
             ),
             tokenizer_config=ModelConfig(path=str(_single_path(resolved, "tokenizer"))),
             audio_processor_config=None,
@@ -758,6 +762,8 @@ def load_diffsynth_pipeline(
                 ("text_encoder", "dit", "vae", "audio_dit", "audio_vae", "dual_tower_bridge"),
                 ModelConfig,
                 offload_device=offload_device,
+                offload_dtype=torch_dtype,
+                onload_device=device,
             ),
             tokenizer_config=ModelConfig(path=str(_single_path(resolved, "mova_tokenizer"))),
             use_usp=use_usp,
@@ -777,6 +783,8 @@ def load_diffsynth_pipeline(
                 _ltx2_model_config_order(resolved),
                 ModelConfig,
                 offload_device=offload_device,
+                offload_dtype=torch_dtype,
+                onload_device=device,
             ),
             tokenizer_config=ModelConfig(path=str(_single_path(resolved, "tokenizer"))),
             vram_limit=vram_limit,
@@ -786,8 +794,43 @@ def load_diffsynth_pipeline(
 
     if enable_vram_management and hasattr(pipe, "enable_vram_management"):
         pipe.enable_vram_management()
+    _pin_unmanaged_iteration_models(pipe, device)
     pipe._sparsevideo_model_key = resolved.spec.key
     return pipe, resolved
+
+
+def _pin_unmanaged_iteration_models(pipe: Any, device: str) -> None:
+    """Pin in-iteration submodules that DiffSynth VRAM management never onloads.
+
+    ``load_models_to_device`` only onloads modules that carry an ``offload``/``onload``
+    hook (DiffSynth's AutoWrapped VRAM layers). Some in-iteration models contain
+    sub-networks that are not wrapped at all -- e.g. Wan-Animate's
+    ``animate_adapter.motion_encoder``/``face_encoder`` (StyleGAN-style nets) sit
+    next to the wrapped ``face_adapter``. Those unwrapped sub-networks stay on the
+    offload device forever and their forward fails with a CPU/CUDA weight mismatch.
+    Move every fully-unmanaged subtree to the compute device; managed subtrees are
+    left for DiffSynth to onload/offload.
+    """
+    import torch
+
+    def has_offload_hook(module: torch.nn.Module) -> bool:
+        return any(
+            hasattr(m, "offload") or hasattr(m, "onload")
+            for m in module.modules()
+        )
+
+    def pin_unmanaged(module: torch.nn.Module) -> None:
+        if not has_offload_hook(module):
+            module.to(device)  # fully unmanaged subtree -> keep it resident
+            return
+        for child in module.children():
+            pin_unmanaged(child)
+
+    names = set(getattr(pipe, "in_iteration_models", ())) | set(getattr(pipe, "in_iteration_models_2", ()))
+    for name in names:
+        model = getattr(pipe, name, None)
+        if isinstance(model, torch.nn.Module):
+            pin_unmanaged(model)
 
 
 def save_diffsynth_output(
@@ -1119,6 +1162,8 @@ def _model_configs_from_components(
     model_config_cls,
     *,
     offload_device: Optional[str],
+    offload_dtype: Any,
+    onload_device: str,
 ) -> List[Any]:
     configs = []
     seen_paths = set()
@@ -1131,6 +1176,13 @@ def _model_configs_from_components(
         kwargs = {"path": path}
         if offload_device:
             kwargs["offload_device"] = offload_device
+            kwargs["offload_dtype"] = offload_dtype
+            kwargs["onload_device"] = onload_device
+            kwargs["onload_dtype"] = offload_dtype
+            kwargs["preparing_device"] = onload_device
+            kwargs["preparing_dtype"] = offload_dtype
+            kwargs["computation_device"] = onload_device
+            kwargs["computation_dtype"] = offload_dtype
         configs.append(model_config_cls(**kwargs))
     return configs
 

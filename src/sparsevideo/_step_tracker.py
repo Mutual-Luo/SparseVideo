@@ -25,6 +25,7 @@ class StepTracker:
         self.global_step: int = 0
         self.loop: int = 0
         self.timestep: float = 0.0
+        self.seq_shape: Optional[tuple] = None
         self._model_type = model_type
         self._prev_timestep: Optional[float] = None
         self._num_inference_steps_fn = num_inference_steps_fn

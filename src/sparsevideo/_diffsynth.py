@@ -192,6 +192,7 @@ def install_diffsynth_model_fn_tracker(pipe: Any, step_tracker: StepTracker):
         timestep = _extract_bound_timestep(signature, args, kwargs)
         if timestep is not None:
             step_tracker.observe_timestep(timestep)
+        step_tracker.seq_shape = _diffsynth_wan_seq_shape(signature, args, kwargs)
         return model_fn(*args, **kwargs)
 
     pipe.model_fn = wrapped_model_fn
@@ -522,6 +523,7 @@ def _patch_diffsynth_wan_attention_forward(
             timestep=getattr(step_tracker, "timestep", None),
             cache_key_suffix=path,
             pipeline_backend="diffsynth",
+            seq_shape=_diffsynth_wan_attention_seq_shape(step_tracker, query.shape[1]),
         )
         return hidden_states.flatten(2, 3).type_as(q)
 
@@ -543,6 +545,22 @@ def _patch_diffsynth_wan_attention_forward(
                 pass
 
     return restore
+
+
+def _diffsynth_wan_attention_seq_shape(step_tracker, q_len):
+    """Return the stashed Wan grid only when it matches the attention sequence.
+
+    Guards against grids we did not model (vace, camera control, sequence parallel):
+    a mismatched product falls back to None so the methods keep their current
+    token-count heuristic instead of raising.
+    """
+    seq_shape = getattr(step_tracker, "seq_shape", None)
+    if seq_shape is None or len(seq_shape) != 3:
+        return None
+    grid_f, grid_h, grid_w = seq_shape
+    if grid_f * grid_h * grid_w != int(q_len):
+        return None
+    return seq_shape
 
 
 def _patch_diffsynth_longcat_attention_process(
@@ -569,6 +587,7 @@ def _patch_diffsynth_longcat_attention_process(
             timestep=getattr(step_tracker, "timestep", None),
             cache_key_suffix=path,
             pipeline_backend="diffsynth",
+            seq_shape=shape,
         )
         return hidden_states.transpose(1, 2).contiguous().type_as(q)
 
@@ -753,3 +772,42 @@ def _extract_bound_timestep(signature, args, kwargs):
     except TypeError:
         return None
     return bound.arguments.get("timestep")
+
+
+def _diffsynth_wan_seq_shape(signature, args, kwargs):
+    """Recover the (frames, height, width) patch grid seen by Wan self-attention.
+
+    DiffSynth's ``model_fn_wan_video`` patchifies ``latents`` with ``dit.patch_size``
+    and, for Fun reference models, prepends one reference frame to the token
+    sequence (``f += 1``). The patched attention forward only receives q/k/v, so we
+    stash the grid here for the sparse methods, which would otherwise mis-factor the
+    token count (e.g. 34320 reference tokens guessed as 33x26x40 instead of 22x30x52).
+    """
+    bound = _bind_model_fn_arguments(signature, args, kwargs)
+    if bound is None:
+        return None
+    dit = bound.get("dit")
+    latents = bound.get("latents")
+    patch = getattr(dit, "patch_size", None)
+    if not torch.is_tensor(latents) or latents.ndim != 5 or patch is None or len(patch) != 3:
+        return None
+    frames, height, width = int(latents.shape[2]), int(latents.shape[3]), int(latents.shape[4])
+    pf, ph, pw = int(patch[0]), int(patch[1]), int(patch[2])
+    if pf <= 0 or ph <= 0 or pw <= 0 or frames % pf or height % ph or width % pw:
+        return None
+    grid_f, grid_h, grid_w = frames // pf, height // ph, width // pw
+    if bound.get("reference_latents") is not None:
+        grid_f += 1
+    if grid_f <= 0 or grid_h <= 0 or grid_w <= 0:
+        return None
+    return (grid_f, grid_h, grid_w)
+
+
+def _bind_model_fn_arguments(signature, args, kwargs):
+    if signature is None:
+        return dict(kwargs)
+    try:
+        bound = signature.bind_partial(*args, **kwargs)
+    except TypeError:
+        return None
+    return dict(bound.arguments)

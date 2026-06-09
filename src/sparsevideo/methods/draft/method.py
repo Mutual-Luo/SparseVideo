@@ -4,7 +4,7 @@ import torch
 import torch.nn.functional as F
 
 from .._base import SparseMethod
-from .._layout import infer_video_frame_shape, infer_video_token_layout
+from .._layout import infer_video_frame_shape, infer_video_frame_shape_for_attention, infer_video_token_layout
 from .._schedule import configured_dense_warmup_layer_count, configured_dense_warmup_requires_dense, runtime_or_config_num_inference_steps
 from ...processors.allegro import SparseAllegroAttnProcessor
 from ...processors.cogvideox import SparseCogVideoXAttnProcessor
@@ -120,6 +120,7 @@ class DraftMethod(SparseMethod):
                 expected_text_len=cfg["text_len"],
                 batch_size=cfg["batch_size"],
                 attention_mask=attention_mask,
+                seq_shape=kwargs.get("seq_shape"),
                 backend_trace=backend_trace,
             )
             self.record_runtime_dispatch(
@@ -213,7 +214,7 @@ def _load_flash_attn_varlen_func():
 def _draft_attention(query, key, value, sparsity_ratio, pool_h, pool_w,
                      model_type="wan", text_len=0, latent_h=None, latent_w=None,
                      visual_len=None, expected_text_len=None, batch_size=None,
-                     attention_mask=None,
+                     attention_mask=None, seq_shape=None,
                      backend_trace=None):
     """Draft Attention: upstream reorg + percentile mask + block-sparse execution.
 
@@ -240,6 +241,7 @@ def _draft_attention(query, key, value, sparsity_ratio, pool_h, pool_w,
             model_type=model_type,
             latent_h=latent_h,
             latent_w=latent_w,
+            seq_shape=seq_shape,
         )
         _validate_configured_int("latent_h", latent_h, frame_h)
         _validate_configured_int("latent_w", latent_w, frame_w)
@@ -548,7 +550,7 @@ def _crop_draft_video_canvas(out, *, context_len, tail_len, T, frame_h, frame_w,
     return torch.cat(parts, dim=1)
 
 
-def _infer_draft_frame_shape(video_len, model_type="wan", latent_h=None, latent_w=None):
+def _infer_draft_frame_shape(video_len, model_type="wan", latent_h=None, latent_w=None, seq_shape=None):
     if latent_h is not None and latent_w is not None:
         frame_h = int(latent_h)
         frame_w = int(latent_w)
@@ -561,6 +563,8 @@ def _infer_draft_frame_shape(video_len, model_type="wan", latent_h=None, latent_
                 f"video_len={video_len}"
             )
         return video_len // frame_size, frame_h, frame_w
+    if seq_shape is not None:
+        return infer_video_frame_shape_for_attention(video_len, model_type=model_type, seq_shape=seq_shape)
     return infer_video_frame_shape(video_len, model_type=model_type)
 
 

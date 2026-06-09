@@ -807,8 +807,8 @@ def test_svg1_wan_sparse_attention_accepts_rectangular_longcat_qkv(monkeypatch):
     monkeypatch.setattr(svg1_method, "_profile_masks", fake_profile)
     monkeypatch.setattr(svg1_method, "_svg_flex_attention", fake_flex)
 
-    query = torch.randn(1, 6, 2, 4)
-    key = torch.randn(1, 12, 2, 4)
+    query = torch.randn(1, 22, 2, 4)
+    key = torch.randn(1, 42, 2, 4)
 
     out = _svg_attention(
         query,
@@ -820,24 +820,25 @@ def test_svg1_wan_sparse_attention_accepts_rectangular_longcat_qkv(monkeypatch):
         state={},
         step_tracker_step=1,
         model_type="wan",
+        seq_shape=(21, 1, 2),
     )
 
     assert out.shape == query.shape
     assert calls["profile"] == {
-        "query_len": 6,
-        "key_len": 12,
-        "video_end": 6,
-        "frame_size": 3,
-        "num_frames": 2,
-        "kv_video_end": 12,
-        "kv_num_frames": 4,
-        "q_kv_offset": 6,
+        "query_len": 22,
+        "key_len": 42,
+        "video_end": 22,
+        "frame_size": 2,
+        "num_frames": 11,
+        "kv_video_end": 42,
+        "kv_num_frames": 21,
+        "q_kv_offset": 20,
     }
     assert calls["flex"] == {
-        "query_shape": (1, 2, 6, 4),
-        "key_shape": (1, 2, 12, 4),
-        "value_shape": (1, 2, 12, 4),
-        "block_mask_shape": (1, 1, 6, 12),
+        "query_shape": (1, 2, 22, 4),
+        "key_shape": (1, 2, 42, 4),
+        "value_shape": (1, 2, 42, 4),
+        "block_mask_shape": (1, 1, 22, 42),
     }
 
 

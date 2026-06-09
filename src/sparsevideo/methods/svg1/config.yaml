@@ -19,13 +19,33 @@ model_defaults:
     context_length: null
     prompt_length: null
   wan21-fun-1.3b-control:
-    dense_warmup_step_ratio: 0.1
-    dense_warmup_layer_ratio: 0.03
+    dense_warmup_step_ratio: 0.15
+    dense_warmup_layer_ratio: 0.05
     num_sampled_rows: 64
     sample_mse_max_row: 10000
-    sparsity: 0.3
+    sparsity: 0.4
     context_length: null
     prompt_length: null
+  wan21-fun-14b-control:
+    dense_warmup_step_ratio: 0.15
+    dense_warmup_layer_ratio: 0.05
+    sparsity: 0.4
+  wan21-fun-v11-1.3b-control:
+    dense_warmup_step_ratio: 0.15
+    dense_warmup_layer_ratio: 0.05
+    sparsity: 0.4
+  wan21-fun-v11-1.3b-control-camera:
+    dense_warmup_step_ratio: 0.15
+    dense_warmup_layer_ratio: 0.05
+    sparsity: 0.4
+  wan21-fun-v11-14b-control:
+    dense_warmup_step_ratio: 0.15
+    dense_warmup_layer_ratio: 0.05
+    sparsity: 0.4
+  wan21-fun-v11-14b-control-camera:
+    dense_warmup_step_ratio: 0.15
+    dense_warmup_layer_ratio: 0.05
+    sparsity: 0.4
   wan21-t2v-14b:
     dense_warmup_step_ratio: 0.1
     dense_warmup_layer_ratio: 0.03
@@ -42,6 +62,14 @@ model_defaults:
     sparsity: 0.3
     context_length: null
     prompt_length: null
+  wan22-t2v-a14b-conservative:
+    dense_warmup_step_ratio: 0.15
+    dense_warmup_layer_ratio: 0.05
+    num_sampled_rows: 64
+    sample_mse_max_row: 10000
+    sparsity: 0.4
+    context_length: null
+    prompt_length: null
   wan22-fun-a14b-control:
     dense_warmup_step_ratio: 0.1
     dense_warmup_layer_ratio: 0.03
@@ -51,11 +79,11 @@ model_defaults:
     context_length: null
     prompt_length: null
   wan22-ti2v-5b:
-    dense_warmup_step_ratio: 0.1
-    dense_warmup_layer_ratio: 0.03
+    dense_warmup_step_ratio: 0.15
+    dense_warmup_layer_ratio: 0.05
     num_sampled_rows: 64
     sample_mse_max_row: 10000
-    sparsity: 0.3
+    sparsity: 0.4
     context_length: null
     prompt_length: null
   hunyuan-t2v:
@@ -80,6 +108,19 @@ model_defaults:
     num_sampled_rows: 64
     sample_mse_max_row: 10000
     sparsity: 0.3
+    context_length: null
+    prompt_length: null
+  longcat-video:
+    # LongCat is a condition-prefix continuation model (KV > Q); the generic Wan
+    # defaults under-attend the later generation frames, leaving a vertical seam
+    # and quality collapse past ~2.5s. sparsity=0.7 (chosen from a 0.3/0.5/0.7/0.9
+    # sweep) keeps enough attention to anchor the tail frames; a longer dense
+    # warmup further stabilizes them.
+    dense_warmup_step_ratio: 0.15
+    dense_warmup_layer_ratio: 0.05
+    num_sampled_rows: 64
+    sample_mse_max_row: 10000
+    sparsity: 0.7
     context_length: null
     prompt_length: null
   hunyuan-i2v:
@@ -107,11 +148,11 @@ model_defaults:
     context_length: null
     prompt_length: null
   wan22-animate-14b:
-    dense_warmup_step_ratio: 0.1
-    dense_warmup_layer_ratio: 0.03
+    dense_warmup_step_ratio: 0.15
+    dense_warmup_layer_ratio: 0.05
     num_sampled_rows: 64
     sample_mse_max_row: 10000
-    sparsity: 0.3
+    sparsity: 0.4
     context_length: null
     prompt_length: null
   wan21-vace-1.3b:

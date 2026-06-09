@@ -22,8 +22,82 @@ import torch.nn.functional as F
 import triton
 import triton.language as tl
 
+
+def _cuda_root_has_runtime_library(root: Path) -> bool:
+    for lib_dir in (
+        root / "lib64",
+        root / "lib",
+        root / "targets" / "x86_64-linux" / "lib",
+    ):
+        if any(lib_dir.glob("libcudart.so*")):
+            return True
+    return False
+
+
+def _cuda_root_has_toolkit(root: Path) -> bool:
+    return (
+        (root / "bin" / "nvcc").exists()
+        and (
+            (root / "include" / "cuda_runtime.h").exists()
+            or (root / "targets" / "x86_64-linux" / "include" / "cuda_runtime.h").exists()
+        )
+        and _cuda_root_has_runtime_library(root)
+    )
+
+
+def _candidate_cuda_roots():
+    seen = set()
+
+    def emit(root):
+        root = Path(root).expanduser().resolve()
+        if root in seen:
+            return
+        seen.add(root)
+        yield root
+
+    for name in ("CUDA_HOME", "CUDA_PATH"):
+        value = os.environ.get(name)
+        if value:
+            yield from emit(value)
+
+    pytorch_nvcc = os.environ.get("PYTORCH_NVCC")
+    if pytorch_nvcc:
+        yield from emit(Path(pytorch_nvcc).expanduser().resolve().parents[1])
+
+    prefixes = [Path(sys.prefix).resolve(), *Path(sys.executable).resolve().parents]
+    base_prefix = Path(getattr(sys, "base_prefix", sys.prefix)).resolve()
+    if base_prefix not in prefixes:
+        prefixes.append(base_prefix)
+    for root in prefixes:
+        yield from emit(root)
+
+    nvcc = shutil.which("nvcc")
+    if nvcc:
+        yield from emit(Path(nvcc).resolve().parents[1])
+
+    yield from emit(Path("/usr/local/cuda"))
+
+
+def _configure_cuda_env(root: Path) -> None:
+    os.environ["CUDA_HOME"] = str(root)
+    os.environ["CUDA_PATH"] = str(root)
+    os.environ["PYTORCH_NVCC"] = str(root / "bin" / "nvcc")
+    bin_dir = str(root / "bin")
+    path = os.environ.get("PATH", "")
+    if bin_dir not in path.split(os.pathsep):
+        os.environ["PATH"] = bin_dir + os.pathsep + path
+
+
+def _ensure_cuda_home_for_flashinfer_jit() -> None:
+    for root in _candidate_cuda_roots():
+        if _cuda_root_has_toolkit(root):
+            _configure_cuda_env(root)
+            return
+
+
 def _load_flashinfer():
     """Load the vendored sparsevideo_flashinfer bundled with sparsevideo."""
+    _ensure_cuda_home_for_flashinfer_jit()
     _vendor = Path(__file__).resolve().parent / "_flashinfer"
     if _vendor.exists() and str(_vendor) not in sys.path:
         sys.path.insert(0, str(_vendor))
@@ -86,56 +160,6 @@ def _trim_head_dim(result, head_dim: int):
         out, lse = result
         return out[..., :head_dim].contiguous(), lse
     return result[..., :head_dim].contiguous()
-
-
-def _cuda_root_has_toolkit(root: Path) -> bool:
-    return (
-        (root / "bin" / "nvcc").exists()
-        and (
-            (root / "include" / "cuda_runtime.h").exists()
-            or (root / "targets" / "x86_64-linux" / "include" / "cuda_runtime.h").exists()
-        )
-    )
-
-
-def _candidate_cuda_roots():
-    for name in ("CUDA_HOME", "CUDA_PATH"):
-        value = os.environ.get(name)
-        if value:
-            yield Path(value).expanduser()
-
-    nvcc = shutil.which("nvcc")
-    if nvcc:
-        yield Path(nvcc).resolve().parents[1]
-
-    prefixes = [Path(sys.prefix).resolve()]
-    base_prefix = Path(getattr(sys, "base_prefix", sys.prefix)).resolve()
-    if base_prefix not in prefixes:
-        prefixes.append(base_prefix)
-    prefixes.extend(Path(sys.executable).resolve().parents)
-    prefixes.append(Path("/usr/local/cuda"))
-
-    seen = set()
-    for root in prefixes:
-        if root in seen:
-            continue
-        seen.add(root)
-        yield root
-
-
-def _ensure_cuda_home_for_flashinfer_jit() -> None:
-    if os.environ.get("CUDA_HOME") or os.environ.get("CUDA_PATH"):
-        return
-
-    for root in _candidate_cuda_roots():
-        if _cuda_root_has_toolkit(root):
-            os.environ["CUDA_HOME"] = str(root)
-            os.environ.setdefault("CUDA_PATH", str(root))
-            bin_dir = str(root / "bin")
-            path = os.environ.get("PATH", "")
-            if bin_dir not in path.split(os.pathsep):
-                os.environ["PATH"] = bin_dir + os.pathsep + path
-            return
 
 
 # ---------------------------------------------------------------------------
@@ -690,3 +714,242 @@ def build_bsr_from_mask(
     ).to(device)
     indices = mask.nonzero(as_tuple=False)[:, 1].to(dtype_i).to(device)
     return indptr, indices
+
+
+# ---------------------------------------------------------------------------
+# Error-Aware Reduction (EAR) pruned block-sparse attention
+#
+# Ported from Sparse-VideoGen (SVG-EAR, branch ear-wan22-support). Selected
+# blocks (mask == 1) run exact token attention via the package's FlashInfer
+# variable-block-sparse path; pruned blocks (mask == 0) are approximated by
+# their key/value centroids and merged back with an online-softmax update so
+# their contribution is recovered rather than dropped.
+# ---------------------------------------------------------------------------
+
+
+@triton.jit
+def _fused_qc_kernel_opt(
+    Q,
+    K_centroids,
+    V_centroids,
+    block_mask_map,
+    block_col_sz,
+    O_flash,
+    LSE_flash,
+    QC_INDPTR,
+    LSE_final,
+    Out,
+    stride_qh,
+    stride_qs,
+    stride_qd,
+    stride_ch,
+    stride_cn,
+    stride_cd,
+    stride_mb,
+    stride_mh,
+    stride_mq,
+    stride_mk,
+    stride_szb,
+    stride_szh,
+    stride_szn,
+    stride_ipb,
+    stride_iph,
+    stride_ipn,
+    sm_scale,
+    B,
+    H,
+    S,
+    D: tl.constexpr,
+    KC_NUM: tl.constexpr,
+    BLOCK_M: tl.constexpr,
+    BLOCK_N: tl.constexpr,
+):
+    # Each program handles one query cluster for one (batch, head) pair.
+    qc_idx = tl.program_id(0)
+    bh_idx = tl.program_id(1)
+    batch_idx = bh_idx // H
+    head_idx = bh_idx % H
+
+    # Query cluster boundaries are stored as an indptr array.
+    qc_indptr_ptr = QC_INDPTR + batch_idx * stride_ipb + head_idx * stride_iph + qc_idx * stride_ipn
+    start_s = tl.load(qc_indptr_ptr)
+    end_s = tl.load(qc_indptr_ptr + 1)
+
+    LN2 = 0.69314718056
+    offs_d = tl.arange(0, D)
+
+    # These bases point to the metadata and inputs for the current query cluster.
+    mask_base = block_mask_map + batch_idx * stride_mb + head_idx * stride_mh + qc_idx * stride_mq
+    size_base = block_col_sz + batch_idx * stride_szb + head_idx * stride_szh
+
+    q_base = Q + bh_idx * stride_qh
+    o_flash_base = O_flash + bh_idx * stride_qh
+    lse_flash_base = LSE_flash + bh_idx * S
+    k_centroids_base = K_centroids + bh_idx * stride_ch
+    v_centroids_base = V_centroids + bh_idx * stride_ch
+
+    for m_start in range(start_s, end_s, BLOCK_M):
+        # Process the current query cluster in BLOCK_M-sized chunks.
+        m_offsets = m_start + tl.arange(0, BLOCK_M)
+        m_mask = m_offsets < end_s
+
+        # FlashInfer returns logsumexp in log2 space, so convert it back to natural log space.
+        lse_f = tl.load(lse_flash_base + m_offsets, mask=m_mask, other=-float("inf"))
+        m_i = lse_f * LN2
+        l_i = tl.where(m_mask, 1.0, 0.0)
+
+        q_ptrs = q_base + m_offsets[:, None] * stride_qs + offs_d[None, :]
+        q = tl.load(q_ptrs, mask=m_mask[:, None], other=0.0)
+
+        # Initialize the accumulator from the token-level FlashInfer output.
+        acc_ptrs = o_flash_base + m_offsets[:, None] * stride_qs + offs_d[None, :]
+        acc = tl.load(acc_ptrs, mask=m_mask[:, None], other=0.0).to(tl.float32)
+
+        for n_start in range(0, KC_NUM, BLOCK_N):
+            # Iterate over centroid blocks and only keep entries with mask == 0.
+            n_offsets = n_start + tl.arange(0, BLOCK_N)
+            n_mask = n_offsets < KC_NUM
+
+            k_ptrs = k_centroids_base + n_offsets[:, None] * stride_cn + offs_d[None, :]
+            k = tl.load(k_ptrs, mask=n_mask[:, None], other=0.0)
+
+            scores = tl.dot(q, tl.trans(k)) * sm_scale
+
+            # Cluster sizes act as log-priors for centroid attention.
+            weights = tl.load(size_base + n_offsets * stride_szn, mask=n_mask, other=0.0)
+            scores += tl.math.log(weights[None, :] + 1e-6)
+
+            masks = tl.load(mask_base + n_offsets * stride_mk, mask=n_mask, other=1)
+            scores = tl.where((masks == 0)[None, :] & n_mask[None, :], scores, -float("inf"))
+
+            # Merge centroid attention with the existing FlashInfer statistics using stable softmax updates.
+            m_ij = tl.max(scores, axis=1)
+            m_next = tl.maximum(m_i, m_ij)
+
+            alpha = tl.math.exp(m_i - m_next)
+            p = tl.math.exp(scores - m_next[:, None])
+
+            l_tile = tl.sum(p, axis=1)
+            l_i_next = l_i * alpha + l_tile
+
+            v_ptrs = v_centroids_base + n_offsets[:, None] * stride_cn + offs_d[None, :]
+            v = tl.load(v_ptrs, mask=n_mask[:, None], other=0.0)
+
+            acc = acc * alpha[:, None] + tl.dot(p.to(v.dtype), v)
+
+            m_i = m_next
+            l_i = l_i_next
+
+        # Normalize the merged accumulator back to the final attention output.
+        out_final = acc / l_i[:, None]
+
+        tl.store(LSE_final + bh_idx * S + m_offsets, m_i + tl.math.log(l_i), mask=m_mask)
+        tl.store(
+            Out + bh_idx * stride_qh + m_offsets[:, None] * stride_qs + offs_d[None, :],
+            out_final.to(Out.dtype.element_ty),
+            mask=m_mask[:, None],
+        )
+
+
+def dynamic_block_sparse_prune_fwd_flashinfer(
+    q: torch.Tensor,             # [B, H, S, D]
+    k: torch.Tensor,             # [B, H, S, D]
+    v: torch.Tensor,             # [B, H, S, D]
+    k_centroids: torch.Tensor,   # [B, H, kc, D]
+    v_centroids: torch.Tensor,   # [B, H, kc, D]
+    block_mask_map: torch.Tensor,  # [B, H, qc, kc] bool — selected blocks (FlashInfer)
+    block_row_sz: torch.Tensor,    # [B, H, qc] int
+    block_col_sz: torch.Tensor,    # [B, H, kc] int
+    sm_scale: Optional[float] = None,
+    prune_mask: Optional[torch.Tensor] = None,  # [B, H, qc, kc] bool — blocks NOT approximated by centroids
+) -> torch.Tensor:               # [B, H, S, D]
+    """Run selected-block token attention via FlashInfer, then fuse the pruned
+    blocks' centroid attention with Triton (EAR path).
+
+    ``block_mask_map`` (mask == 1) selects blocks that get exact token attention.
+    The centroid-approximation step approximates blocks where ``prune_mask`` == 0.
+    When ``prune_mask`` is None it defaults to ``block_mask_map`` (every non-selected
+    block is approximated). Passing a distinct ``prune_mask`` lets callers fully
+    exclude certain blocks (e.g. video→padding-text) from BOTH paths.
+    """
+    B, H, S, D = q.shape
+    qc_num, kc_num = block_mask_map.shape[-2:]
+    scale = sm_scale if sm_scale is not None else D ** -0.5
+    num_heads = B * H
+
+    assert block_mask_map.shape == (B, H, qc_num, kc_num)
+    if prune_mask is None:
+        prune_mask = block_mask_map
+    assert prune_mask.shape == (B, H, qc_num, kc_num)
+
+    # --- Part 1: FlashInfer for selected blocks (mask == 1) ---
+    # Reuse the package's variable-block-sparse path (head-dim padding, chunking,
+    # memory-efficient plan). LSE comes back in the same log2 space the fused
+    # kernel expects.
+    o_flash, lse_flash = variable_block_sparse_attn(
+        q.reshape(num_heads, S, D),
+        k.reshape(num_heads, S, D),
+        v.reshape(num_heads, S, D),
+        block_mask_map.reshape(num_heads, qc_num, kc_num),
+        block_row_sz.reshape(num_heads, qc_num),
+        block_col_sz.reshape(num_heads, kc_num),
+        sm_scale=scale,
+        return_lse=True,
+    )
+    o_flash = o_flash.contiguous()
+    lse_flash = lse_flash.contiguous()
+
+    # --- Part 2: Triton for pruned blocks via centroids (mask == 0) ---
+    qc_indptr = torch.zeros((B, H, qc_num + 1), device=q.device, dtype=torch.int32)
+    qc_indptr[..., 1:] = torch.cumsum(block_row_sz.to(q.device), dim=-1)
+
+    q_flat = q.reshape(num_heads, S, D).contiguous()
+    k_centroids_flat = k_centroids.reshape(num_heads, kc_num, D).contiguous()
+    v_centroids_flat = v_centroids.reshape(num_heads, kc_num, D).contiguous()
+    block_col_sz = block_col_sz.contiguous()
+    prune_mask = prune_mask.contiguous()
+
+    o_final = torch.empty((num_heads, S, D), device=q.device, dtype=q.dtype)
+    lse_final = torch.empty((num_heads, S), device=q.device, dtype=torch.float32)
+    grid = (qc_num, num_heads)
+
+    _fused_qc_kernel_opt[grid](
+        Q=q_flat,
+        K_centroids=k_centroids_flat,
+        V_centroids=v_centroids_flat,
+        block_mask_map=prune_mask,
+        block_col_sz=block_col_sz,
+        O_flash=o_flash,
+        LSE_flash=lse_flash,
+        QC_INDPTR=qc_indptr,
+        LSE_final=lse_final,
+        Out=o_final,
+        stride_qh=q_flat.stride(0),
+        stride_qs=q_flat.stride(1),
+        stride_qd=q_flat.stride(2),
+        stride_ch=k_centroids_flat.stride(0),
+        stride_cn=k_centroids_flat.stride(1),
+        stride_cd=k_centroids_flat.stride(2),
+        stride_mb=prune_mask.stride(0),
+        stride_mh=prune_mask.stride(1),
+        stride_mq=prune_mask.stride(2),
+        stride_mk=prune_mask.stride(3),
+        stride_szb=block_col_sz.stride(0),
+        stride_szh=block_col_sz.stride(1),
+        stride_szn=block_col_sz.stride(2),
+        stride_ipb=qc_indptr.stride(0),
+        stride_iph=qc_indptr.stride(1),
+        stride_ipn=qc_indptr.stride(2),
+        sm_scale=scale,
+        B=B,
+        H=H,
+        S=S,
+        D=D,
+        KC_NUM=kc_num,
+        BLOCK_M=128,
+        BLOCK_N=64,
+        num_warps=4,
+        num_stages=2,
+    )
+
+    return o_final.reshape(B, H, S, D)

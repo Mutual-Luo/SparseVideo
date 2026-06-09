@@ -22,7 +22,7 @@
 #   FLF2V/Inp:    --prompt-file example/flf2v/1.txt --input-image example/flf2v/1_first.png --end-image example/flf2v/1_last.png
 #   Control:      --prompt-file example/control/1.txt --control-video example/control/1.mp4
 #   V11-Ctrl:     above + --reference-image example/control/1_ref.png
-#   Camera:       --prompt-file example/i2v/1.txt --input-image example/i2v/1.jpg --camera-control-direction zoom_in
+#   Camera:       --prompt-file example/i2v/1.txt --input-image example/i2v/1.jpg --camera-control-direction In
 #   VACE:         --prompt-file example/inpainting/prompt.txt --vace-video example/inpainting/src_video.mp4 --vace-video-mask example/inpainting/src_mask.mp4
 #   Animate:      --prompt-file example/animate/1.txt --animate-pose-video example/animate/process_results/src_pose.mp4 --animate-face-video example/animate/process_results/src_face.mp4
 #   S2V:          --prompt-file example/s2v/1.txt --input-image example/s2v/1.png --s2v-pose-video example/s2v/pose.mp4 --input-audio example/s2v/1.wav
@@ -222,16 +222,16 @@ CUDA_VISIBLE_DEVICES=2 python scripts/infer_diffsynth.py --model wan21-fun-v11-1
 CUDA_VISIBLE_DEVICES=3 python scripts/infer_diffsynth.py --model wan21-fun-v11-1.3b-control --method svoo       --prompt-file example/control/1.txt --control-video example/control/1.mp4 --reference-image example/control/1_ref.png
 
 # ── wan21-fun-v11-1.3b-control-camera ────────────────────────────────────────
-CUDA_VISIBLE_DEVICES=0 python scripts/infer_diffsynth.py --model wan21-fun-v11-1.3b-control-camera --method dense      --prompt-file example/i2v/1.txt --input-image example/i2v/1.jpg --camera-control-direction zoom_in
-CUDA_VISIBLE_DEVICES=1 python scripts/infer_diffsynth.py --model wan21-fun-v11-1.3b-control-camera --method svg1       --prompt-file example/i2v/1.txt --input-image example/i2v/1.jpg --camera-control-direction zoom_in
-CUDA_VISIBLE_DEVICES=2 python scripts/infer_diffsynth.py --model wan21-fun-v11-1.3b-control-camera --method svg2       --prompt-file example/i2v/1.txt --input-image example/i2v/1.jpg --camera-control-direction zoom_in
-CUDA_VISIBLE_DEVICES=3 python scripts/infer_diffsynth.py --model wan21-fun-v11-1.3b-control-camera --method spargeattn --prompt-file example/i2v/1.txt --input-image example/i2v/1.jpg --camera-control-direction zoom_in
-CUDA_VISIBLE_DEVICES=0 python scripts/infer_diffsynth.py --model wan21-fun-v11-1.3b-control-camera --method radial     --prompt-file example/i2v/1.txt --input-image example/i2v/1.jpg --camera-control-direction zoom_in
-CUDA_VISIBLE_DEVICES=1 python scripts/infer_diffsynth.py --model wan21-fun-v11-1.3b-control-camera --method sta        --prompt-file example/i2v/1.txt --input-image example/i2v/1.jpg --camera-control-direction zoom_in
-CUDA_VISIBLE_DEVICES=2 python scripts/infer_diffsynth.py --model wan21-fun-v11-1.3b-control-camera --method draft      --prompt-file example/i2v/1.txt --input-image example/i2v/1.jpg --camera-control-direction zoom_in
-CUDA_VISIBLE_DEVICES=3 python scripts/infer_diffsynth.py --model wan21-fun-v11-1.3b-control-camera --method adacluster --prompt-file example/i2v/1.txt --input-image example/i2v/1.jpg --camera-control-direction zoom_in
-CUDA_VISIBLE_DEVICES=0 python scripts/infer_diffsynth.py --model wan21-fun-v11-1.3b-control-camera --method flashomni  --prompt-file example/i2v/1.txt --input-image example/i2v/1.jpg --camera-control-direction zoom_in
-CUDA_VISIBLE_DEVICES=1 python scripts/infer_diffsynth.py --model wan21-fun-v11-1.3b-control-camera --method svoo       --prompt-file example/i2v/1.txt --input-image example/i2v/1.jpg --camera-control-direction zoom_in
+CUDA_VISIBLE_DEVICES=0 python scripts/infer_diffsynth.py --model wan21-fun-v11-1.3b-control-camera --method dense      --prompt-file example/i2v/1.txt --input-image example/i2v/1.jpg --camera-control-direction In
+CUDA_VISIBLE_DEVICES=1 python scripts/infer_diffsynth.py --model wan21-fun-v11-1.3b-control-camera --method svg1       --prompt-file example/i2v/1.txt --input-image example/i2v/1.jpg --camera-control-direction In
+CUDA_VISIBLE_DEVICES=2 python scripts/infer_diffsynth.py --model wan21-fun-v11-1.3b-control-camera --method svg2       --prompt-file example/i2v/1.txt --input-image example/i2v/1.jpg --camera-control-direction In
+CUDA_VISIBLE_DEVICES=3 python scripts/infer_diffsynth.py --model wan21-fun-v11-1.3b-control-camera --method spargeattn --prompt-file example/i2v/1.txt --input-image example/i2v/1.jpg --camera-control-direction In
+CUDA_VISIBLE_DEVICES=0 python scripts/infer_diffsynth.py --model wan21-fun-v11-1.3b-control-camera --method radial     --prompt-file example/i2v/1.txt --input-image example/i2v/1.jpg --camera-control-direction In
+CUDA_VISIBLE_DEVICES=1 python scripts/infer_diffsynth.py --model wan21-fun-v11-1.3b-control-camera --method sta        --prompt-file example/i2v/1.txt --input-image example/i2v/1.jpg --camera-control-direction In
+CUDA_VISIBLE_DEVICES=2 python scripts/infer_diffsynth.py --model wan21-fun-v11-1.3b-control-camera --method draft      --prompt-file example/i2v/1.txt --input-image example/i2v/1.jpg --camera-control-direction In
+CUDA_VISIBLE_DEVICES=3 python scripts/infer_diffsynth.py --model wan21-fun-v11-1.3b-control-camera --method adacluster --prompt-file example/i2v/1.txt --input-image example/i2v/1.jpg --camera-control-direction In
+CUDA_VISIBLE_DEVICES=0 python scripts/infer_diffsynth.py --model wan21-fun-v11-1.3b-control-camera --method flashomni  --prompt-file example/i2v/1.txt --input-image example/i2v/1.jpg --camera-control-direction In
+CUDA_VISIBLE_DEVICES=1 python scripts/infer_diffsynth.py --model wan21-fun-v11-1.3b-control-camera --method svoo       --prompt-file example/i2v/1.txt --input-image example/i2v/1.jpg --camera-control-direction In
 
 # ── wan21-fun-v11-14b-control ─────────────────────────────────────────────────
 CUDA_VISIBLE_DEVICES=2 python scripts/infer_diffsynth.py --model wan21-fun-v11-14b-control --method dense      --prompt-file example/control/1.txt --control-video example/control/1.mp4 --reference-image example/control/1_ref.png
@@ -246,16 +246,16 @@ CUDA_VISIBLE_DEVICES=2 python scripts/infer_diffsynth.py --model wan21-fun-v11-1
 CUDA_VISIBLE_DEVICES=3 python scripts/infer_diffsynth.py --model wan21-fun-v11-14b-control --method svoo       --prompt-file example/control/1.txt --control-video example/control/1.mp4 --reference-image example/control/1_ref.png
 
 # ── wan21-fun-v11-14b-control-camera ─────────────────────────────────────────
-CUDA_VISIBLE_DEVICES=0 python scripts/infer_diffsynth.py --model wan21-fun-v11-14b-control-camera --method dense      --prompt-file example/i2v/1.txt --input-image example/i2v/1.jpg --camera-control-direction zoom_in
-CUDA_VISIBLE_DEVICES=1 python scripts/infer_diffsynth.py --model wan21-fun-v11-14b-control-camera --method svg1       --prompt-file example/i2v/1.txt --input-image example/i2v/1.jpg --camera-control-direction zoom_in
-CUDA_VISIBLE_DEVICES=2 python scripts/infer_diffsynth.py --model wan21-fun-v11-14b-control-camera --method svg2       --prompt-file example/i2v/1.txt --input-image example/i2v/1.jpg --camera-control-direction zoom_in
-CUDA_VISIBLE_DEVICES=3 python scripts/infer_diffsynth.py --model wan21-fun-v11-14b-control-camera --method spargeattn --prompt-file example/i2v/1.txt --input-image example/i2v/1.jpg --camera-control-direction zoom_in
-CUDA_VISIBLE_DEVICES=0 python scripts/infer_diffsynth.py --model wan21-fun-v11-14b-control-camera --method radial     --prompt-file example/i2v/1.txt --input-image example/i2v/1.jpg --camera-control-direction zoom_in
-CUDA_VISIBLE_DEVICES=1 python scripts/infer_diffsynth.py --model wan21-fun-v11-14b-control-camera --method sta        --prompt-file example/i2v/1.txt --input-image example/i2v/1.jpg --camera-control-direction zoom_in
-CUDA_VISIBLE_DEVICES=2 python scripts/infer_diffsynth.py --model wan21-fun-v11-14b-control-camera --method draft      --prompt-file example/i2v/1.txt --input-image example/i2v/1.jpg --camera-control-direction zoom_in
-CUDA_VISIBLE_DEVICES=3 python scripts/infer_diffsynth.py --model wan21-fun-v11-14b-control-camera --method adacluster --prompt-file example/i2v/1.txt --input-image example/i2v/1.jpg --camera-control-direction zoom_in
-CUDA_VISIBLE_DEVICES=0 python scripts/infer_diffsynth.py --model wan21-fun-v11-14b-control-camera --method flashomni  --prompt-file example/i2v/1.txt --input-image example/i2v/1.jpg --camera-control-direction zoom_in
-CUDA_VISIBLE_DEVICES=1 python scripts/infer_diffsynth.py --model wan21-fun-v11-14b-control-camera --method svoo       --prompt-file example/i2v/1.txt --input-image example/i2v/1.jpg --camera-control-direction zoom_in
+CUDA_VISIBLE_DEVICES=0 python scripts/infer_diffsynth.py --model wan21-fun-v11-14b-control-camera --method dense      --prompt-file example/i2v/1.txt --input-image example/i2v/1.jpg --camera-control-direction In
+CUDA_VISIBLE_DEVICES=1 python scripts/infer_diffsynth.py --model wan21-fun-v11-14b-control-camera --method svg1       --prompt-file example/i2v/1.txt --input-image example/i2v/1.jpg --camera-control-direction In
+CUDA_VISIBLE_DEVICES=2 python scripts/infer_diffsynth.py --model wan21-fun-v11-14b-control-camera --method svg2       --prompt-file example/i2v/1.txt --input-image example/i2v/1.jpg --camera-control-direction In
+CUDA_VISIBLE_DEVICES=3 python scripts/infer_diffsynth.py --model wan21-fun-v11-14b-control-camera --method spargeattn --prompt-file example/i2v/1.txt --input-image example/i2v/1.jpg --camera-control-direction In
+CUDA_VISIBLE_DEVICES=0 python scripts/infer_diffsynth.py --model wan21-fun-v11-14b-control-camera --method radial     --prompt-file example/i2v/1.txt --input-image example/i2v/1.jpg --camera-control-direction In
+CUDA_VISIBLE_DEVICES=1 python scripts/infer_diffsynth.py --model wan21-fun-v11-14b-control-camera --method sta        --prompt-file example/i2v/1.txt --input-image example/i2v/1.jpg --camera-control-direction In
+CUDA_VISIBLE_DEVICES=2 python scripts/infer_diffsynth.py --model wan21-fun-v11-14b-control-camera --method draft      --prompt-file example/i2v/1.txt --input-image example/i2v/1.jpg --camera-control-direction In
+CUDA_VISIBLE_DEVICES=3 python scripts/infer_diffsynth.py --model wan21-fun-v11-14b-control-camera --method adacluster --prompt-file example/i2v/1.txt --input-image example/i2v/1.jpg --camera-control-direction In
+CUDA_VISIBLE_DEVICES=0 python scripts/infer_diffsynth.py --model wan21-fun-v11-14b-control-camera --method flashomni  --prompt-file example/i2v/1.txt --input-image example/i2v/1.jpg --camera-control-direction In
+CUDA_VISIBLE_DEVICES=1 python scripts/infer_diffsynth.py --model wan21-fun-v11-14b-control-camera --method svoo       --prompt-file example/i2v/1.txt --input-image example/i2v/1.jpg --camera-control-direction In
 
 # ── wan22-ti2v-5b ────────────────────────────────────────────────────────────
 CUDA_VISIBLE_DEVICES=2 python scripts/infer_diffsynth.py --model wan22-ti2v-5b --method dense      --prompt-file example/t2v/1.txt
@@ -294,16 +294,16 @@ CUDA_VISIBLE_DEVICES=2 python scripts/infer_diffsynth.py --model wan22-fun-a14b-
 CUDA_VISIBLE_DEVICES=3 python scripts/infer_diffsynth.py --model wan22-fun-a14b-control --method svoo       --prompt-file example/control/1.txt --control-video example/control/1.mp4 --reference-image example/control/1_ref.png
 
 # ── wan22-fun-a14b-control-camera ─────────────────────────────────────────────
-CUDA_VISIBLE_DEVICES=0 python scripts/infer_diffsynth.py --model wan22-fun-a14b-control-camera --method dense      --prompt-file example/i2v/1.txt --input-image example/i2v/1.jpg --camera-control-direction zoom_in
-CUDA_VISIBLE_DEVICES=1 python scripts/infer_diffsynth.py --model wan22-fun-a14b-control-camera --method svg1       --prompt-file example/i2v/1.txt --input-image example/i2v/1.jpg --camera-control-direction zoom_in
-CUDA_VISIBLE_DEVICES=2 python scripts/infer_diffsynth.py --model wan22-fun-a14b-control-camera --method svg2       --prompt-file example/i2v/1.txt --input-image example/i2v/1.jpg --camera-control-direction zoom_in
-CUDA_VISIBLE_DEVICES=3 python scripts/infer_diffsynth.py --model wan22-fun-a14b-control-camera --method spargeattn --prompt-file example/i2v/1.txt --input-image example/i2v/1.jpg --camera-control-direction zoom_in
-CUDA_VISIBLE_DEVICES=0 python scripts/infer_diffsynth.py --model wan22-fun-a14b-control-camera --method radial     --prompt-file example/i2v/1.txt --input-image example/i2v/1.jpg --camera-control-direction zoom_in
-CUDA_VISIBLE_DEVICES=1 python scripts/infer_diffsynth.py --model wan22-fun-a14b-control-camera --method sta        --prompt-file example/i2v/1.txt --input-image example/i2v/1.jpg --camera-control-direction zoom_in
-CUDA_VISIBLE_DEVICES=2 python scripts/infer_diffsynth.py --model wan22-fun-a14b-control-camera --method draft      --prompt-file example/i2v/1.txt --input-image example/i2v/1.jpg --camera-control-direction zoom_in
-CUDA_VISIBLE_DEVICES=3 python scripts/infer_diffsynth.py --model wan22-fun-a14b-control-camera --method adacluster --prompt-file example/i2v/1.txt --input-image example/i2v/1.jpg --camera-control-direction zoom_in
-CUDA_VISIBLE_DEVICES=0 python scripts/infer_diffsynth.py --model wan22-fun-a14b-control-camera --method flashomni  --prompt-file example/i2v/1.txt --input-image example/i2v/1.jpg --camera-control-direction zoom_in
-CUDA_VISIBLE_DEVICES=1 python scripts/infer_diffsynth.py --model wan22-fun-a14b-control-camera --method svoo       --prompt-file example/i2v/1.txt --input-image example/i2v/1.jpg --camera-control-direction zoom_in
+CUDA_VISIBLE_DEVICES=0 python scripts/infer_diffsynth.py --model wan22-fun-a14b-control-camera --method dense      --prompt-file example/i2v/1.txt --input-image example/i2v/1.jpg --camera-control-direction In
+CUDA_VISIBLE_DEVICES=1 python scripts/infer_diffsynth.py --model wan22-fun-a14b-control-camera --method svg1       --prompt-file example/i2v/1.txt --input-image example/i2v/1.jpg --camera-control-direction In
+CUDA_VISIBLE_DEVICES=2 python scripts/infer_diffsynth.py --model wan22-fun-a14b-control-camera --method svg2       --prompt-file example/i2v/1.txt --input-image example/i2v/1.jpg --camera-control-direction In
+CUDA_VISIBLE_DEVICES=3 python scripts/infer_diffsynth.py --model wan22-fun-a14b-control-camera --method spargeattn --prompt-file example/i2v/1.txt --input-image example/i2v/1.jpg --camera-control-direction In
+CUDA_VISIBLE_DEVICES=0 python scripts/infer_diffsynth.py --model wan22-fun-a14b-control-camera --method radial     --prompt-file example/i2v/1.txt --input-image example/i2v/1.jpg --camera-control-direction In
+CUDA_VISIBLE_DEVICES=1 python scripts/infer_diffsynth.py --model wan22-fun-a14b-control-camera --method sta        --prompt-file example/i2v/1.txt --input-image example/i2v/1.jpg --camera-control-direction In
+CUDA_VISIBLE_DEVICES=2 python scripts/infer_diffsynth.py --model wan22-fun-a14b-control-camera --method draft      --prompt-file example/i2v/1.txt --input-image example/i2v/1.jpg --camera-control-direction In
+CUDA_VISIBLE_DEVICES=3 python scripts/infer_diffsynth.py --model wan22-fun-a14b-control-camera --method adacluster --prompt-file example/i2v/1.txt --input-image example/i2v/1.jpg --camera-control-direction In
+CUDA_VISIBLE_DEVICES=0 python scripts/infer_diffsynth.py --model wan22-fun-a14b-control-camera --method flashomni  --prompt-file example/i2v/1.txt --input-image example/i2v/1.jpg --camera-control-direction In
+CUDA_VISIBLE_DEVICES=1 python scripts/infer_diffsynth.py --model wan22-fun-a14b-control-camera --method svoo       --prompt-file example/i2v/1.txt --input-image example/i2v/1.jpg --camera-control-direction In
 
 # ── longcat-video ─────────────────────────────────────────────────────────────
 CUDA_VISIBLE_DEVICES=2 python scripts/infer_diffsynth.py --model longcat-video --method dense      --prompt-file example/t2v/1.txt --longcat-video example/animate/1.mp4

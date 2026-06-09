@@ -11,8 +11,10 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import subprocess
 import sys
 import time
+import warnings
 from pathlib import Path
 from typing import Any, Dict, Mapping
 
@@ -51,6 +53,59 @@ EXPECTED_SPARSE_BACKENDS = {
     "svg2": {"flashinfer"},
     "svoo": {"svoo_flashinfer"},
 }
+_S2V_FIRST_CLIP_DROP_FRAMES = 3
+_S2V_MOTION_FRAMES = 73
+_CAMERA_CONTROL_DIRECTIONS = {
+    "Left",
+    "Right",
+    "Up",
+    "Down",
+    "LeftUp",
+    "LeftDown",
+    "RightUp",
+    "RightDown",
+    "In",
+    "Out",
+}
+_CAMERA_CONTROL_DIRECTION_ALIASES = {
+    "left": "Left",
+    "right": "Right",
+    "up": "Up",
+    "down": "Down",
+    "leftup": "LeftUp",
+    "left_up": "LeftUp",
+    "leftdown": "LeftDown",
+    "left_down": "LeftDown",
+    "rightup": "RightUp",
+    "right_up": "RightUp",
+    "rightdown": "RightDown",
+    "right_down": "RightDown",
+    "in": "In",
+    "zoom_in": "In",
+    "zoomin": "In",
+    "out": "Out",
+    "zoom_out": "Out",
+    "zoomout": "Out",
+}
+_WAN21_FUN_CONTROL_CONSERVATIVE_CONFIG_MODELS = {
+    "wan21-fun-1.3b-control",
+    "wan21-fun-14b-control",
+    "wan21-fun-v11-1.3b-control",
+    "wan21-fun-v11-1.3b-control-camera",
+    "wan21-fun-v11-14b-control",
+    "wan21-fun-v11-14b-control-camera",
+}
+_EXACT_CONSERVATIVE_CONFIG_MODELS_BY_METHOD = {
+    "draft": _WAN21_FUN_CONTROL_CONSERVATIVE_CONFIG_MODELS | {"wan22-ti2v-5b"},
+    "flashomni": _WAN21_FUN_CONTROL_CONSERVATIVE_CONFIG_MODELS
+    | {"wan21-i2v-14b-480p", "wan22-animate-14b", "wan22-i2v-a14b"},
+    "radial": _WAN21_FUN_CONTROL_CONSERVATIVE_CONFIG_MODELS | {"wan22-animate-14b"},
+    "svg1": _WAN21_FUN_CONTROL_CONSERVATIVE_CONFIG_MODELS | {"wan22-animate-14b", "wan22-ti2v-5b"},
+}
+_EXACT_CONSERVATIVE_CONFIG_KEY_OVERRIDES = {
+    ("radial", "wan22-t2v-a14b"): "wan22-t2v-a14b-conservative",
+    ("svg1", "wan22-t2v-a14b"): "wan22-t2v-a14b-conservative",
+}
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -70,6 +125,7 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         spec = get_diffsynth_model_spec(args.model)
+        num_frames = _resolve_num_frames(args, spec)
         num_inference_steps = _resolve_num_inference_steps(args, spec)
         runtime_options = _resolve_runtime_options(args)
         payload["model"] = spec.key
@@ -78,7 +134,7 @@ def main(argv: list[str] | None = None) -> int:
                 "model_arg": args.model,
                 "height": args.height or spec.default_height,
                 "width": args.width or spec.default_width,
-                "num_frames": args.num_frames or spec.default_num_frames,
+                "num_frames": num_frames,
                 "fps": args.fps or spec.default_fps,
                 "num_inference_steps": num_inference_steps,
                 "seed": args.seed,
@@ -154,20 +210,29 @@ def main(argv: list[str] | None = None) -> int:
                 return 0
 
             prompt = _read_prompt(args)
-            call_kwargs = _build_call_kwargs(args, prompt)
             if args.output_file is not None:
                 output_file = Path(args.output_file)
             else:
                 h = args.height or spec.default_height
                 w = args.width or spec.default_width
-                n = args.num_frames or spec.default_num_frames
+                n = _resolve_num_frames(args, spec)
                 output_file = args.output_dir / args.model / args.method / f"seed{args.seed}_{h}x{w}_{n}f.mp4"
             output_file.parent.mkdir(parents=True, exist_ok=True)
 
             denoise_timer = _DenoiseTimer()
             generate_started = time.perf_counter()
-            with denoise_timer:
-                video = pipe(**call_kwargs)
+            if spec.key == "wan22-s2v-14b":
+                with denoise_timer:
+                    video, call_kwargs, s2v_metadata = _generate_s2v_official_style(
+                        pipe,
+                        args,
+                        prompt,
+                    )
+            else:
+                call_kwargs = _build_call_kwargs(args, prompt)
+                s2v_metadata = {}
+                with denoise_timer:
+                    video = pipe(**call_kwargs)
             generate_sec = time.perf_counter() - generate_started
             payload["generate_summary"] = handle.summary()
             payload["sparse_attention_handle"] = payload["generate_summary"]
@@ -182,6 +247,16 @@ def main(argv: list[str] | None = None) -> int:
                 quality=args.video_quality,
                 audio_sample_rate=diffsynth_output_audio_sample_rate(pipe),
             )
+            if _should_mux_s2v_input_audio(args, spec, output_metadata):
+                output_metadata.update(
+                    _mux_input_audio_into_video(
+                        output_file,
+                        args.input_audio,
+                        start_time=args.audio_start_time,
+                        duration=args.audio_duration,
+                    )
+                )
+            output_metadata.update(s2v_metadata)
             payload.update(
                 {
                     "status": "ok",
@@ -374,6 +449,8 @@ def _validate_generation_inputs(args, *, check_paths: bool = False) -> None:
     shape_error = _generation_shape_error(spec, args)
     if shape_error is not None:
         raise ValueError(shape_error)
+    if args.camera_control_direction is not None:
+        _normalize_camera_control_direction(args.camera_control_direction)
 
 
 def _missing_preload_input_paths(args) -> list[str]:
@@ -394,7 +471,7 @@ def _missing_preload_input_paths(args) -> list[str]:
 def _generation_shape_error(spec, args) -> str | None:
     height = args.height or spec.default_height
     width = args.width or spec.default_width
-    num_frames = args.num_frames or spec.default_num_frames
+    num_frames = _resolve_num_frames(args, spec)
     if spec.pipeline == "LTX2AudioVideoPipeline":
         return _shape_error(
             spec.key,
@@ -416,6 +493,12 @@ def _generation_shape_error(spec, args) -> str | None:
             time_remainder=1,
         )
     return None
+
+
+def _resolve_num_frames(args, spec) -> int:
+    if args.num_frames is not None:
+        return args.num_frames
+    return spec.default_num_frames
 
 
 def _shape_error(
@@ -559,7 +642,7 @@ def _build_call_kwargs(args, prompt: str) -> Dict[str, Any]:
 
     height = args.height or spec.default_height
     width = args.width or spec.default_width
-    num_frames = args.num_frames or spec.default_num_frames
+    num_frames = _resolve_num_frames(args, spec)
     num_inference_steps = _resolve_num_inference_steps(args, spec)
     kwargs: Dict[str, Any] = {
         "prompt": prompt,
@@ -632,7 +715,15 @@ def _build_call_kwargs(args, prompt: str) -> Dict[str, Any]:
         path = getattr(args, name, None)
         if path is not None:
             target_name = "retake_video" if spec.pipeline == "LTX2AudioVideoPipeline" and name == "input_video" else name
-            if name == "longcat_video":
+            if spec.key == "wan22-s2v-14b" and name == "s2v_pose_video":
+                kwargs[target_name] = _load_s2v_pose_frames_for_call(
+                    path,
+                    height=height,
+                    width=width,
+                    num_frames=num_frames - 1,
+                    fps=args.fps or spec.default_fps,
+                )
+            elif name == "longcat_video":
                 # longcat_video is the condition clip; total latent = condition + generation.
                 # Truncate to half of num_frames so there is room for noise latents.
                 max_frames = num_frames // 2
@@ -704,7 +795,7 @@ def _build_call_kwargs(args, prompt: str) -> Dict[str, Any]:
         if args.tile_stride is not None:
             kwargs["tile_stride"] = args.tile_stride
         if args.camera_control_direction is not None:
-            kwargs["camera_control_direction"] = args.camera_control_direction
+            kwargs["camera_control_direction"] = _normalize_camera_control_direction(args.camera_control_direction)
         if args.camera_control_speed is not None:
             kwargs["camera_control_speed"] = args.camera_control_speed
         if args.camera_control_origin is not None:
@@ -760,6 +851,167 @@ def _build_call_kwargs(args, prompt: str) -> Dict[str, Any]:
     return kwargs
 
 
+def _generate_s2v_official_style(pipe, args, prompt: str):
+    spec = get_diffsynth_model_spec(args.model)
+    _validate_generation_inputs(args)
+
+    height = args.height or spec.default_height
+    width = args.width or spec.default_width
+    num_frames = _resolve_num_frames(args, spec)
+    infer_frames = num_frames - 1
+    if infer_frames <= 0:
+        raise ValueError("Wan2.2 S2V requires num_frames > 1.")
+    fps = args.fps or spec.default_fps
+    tile_size = args.tile_size or (30, 52)
+    tile_stride = args.tile_stride or (15, 26)
+    tiled = not args.no_tiled
+
+    input_audio, audio_sample_rate = _load_audio_input_for_call(
+        args.input_audio,
+        start_time=args.audio_start_time,
+        duration=args.audio_duration,
+        as_numpy=True,
+        target_sample_rate=16000,
+    )
+
+    import torch
+    from diffsynth.pipelines.wan_video import WanVideoUnit_S2V
+
+    unit = WanVideoUnit_S2V()
+    audio_embeds = unit.process_audio(
+        pipe,
+        input_audio,
+        audio_sample_rate,
+        num_frames,
+        fps=fps,
+        return_all=True,
+    )
+    num_repeat = len(audio_embeds)
+    if num_repeat <= 0:
+        raise RuntimeError("Wan2.2 S2V audio preprocessing produced no clips.")
+
+    pose_latents = None
+    if args.s2v_pose_video is not None:
+        pose_video = _load_s2v_pose_frames_for_call(
+            args.s2v_pose_video,
+            height=height,
+            width=width,
+            num_frames=infer_frames * num_repeat,
+            fps=fps,
+        )
+        pose_latents = unit.process_pose_cond(
+            pipe,
+            pose_video,
+            num_frames,
+            height,
+            width,
+            tiled,
+            tile_size,
+            tile_stride,
+            num_repeats=num_repeat,
+            return_all=True,
+        )
+
+    input_image = _load_image(args.input_image) if args.input_image is not None else None
+    base_kwargs = _build_s2v_official_call_kwargs(
+        args,
+        prompt,
+        input_image=input_image,
+        height=height,
+        width=width,
+        num_frames=num_frames,
+        tiled=tiled,
+        tile_size=tile_size,
+        tile_stride=tile_stride,
+    )
+
+    video = []
+    motion_video = None
+    last_call_kwargs = {}
+    for clip_idx in range(num_repeat):
+        call_kwargs = dict(base_kwargs)
+        call_kwargs["audio_embeds"] = audio_embeds[clip_idx]
+        if pose_latents is not None:
+            call_kwargs["s2v_pose_latents"] = pose_latents[clip_idx]
+        call_kwargs["motion_video"] = motion_video
+        last_call_kwargs = call_kwargs
+
+        current_clip_tensor = pipe(**call_kwargs)
+        current_clip_tensor = current_clip_tensor[:, :, -infer_frames:, :, :]
+        if clip_idx == 0:
+            current_clip_tensor = current_clip_tensor[:, :, _S2V_FIRST_CLIP_DROP_FRAMES:, :, :]
+        overlap_frames_num = min(_S2V_MOTION_FRAMES, current_clip_tensor.shape[2])
+        if motion_video is None:
+            motion_video = current_clip_tensor[:, :, -overlap_frames_num:, :, :].clone()
+        else:
+            motion_video = torch.cat(
+                (
+                    motion_video[:, :, overlap_frames_num:, :, :],
+                    current_clip_tensor[:, :, -overlap_frames_num:, :, :],
+                ),
+                dim=2,
+            )
+        video.extend(pipe.vae_output_to_video(current_clip_tensor))
+
+    return video, last_call_kwargs, {
+        "s2v_official_style": True,
+        "s2v_num_clips": num_repeat,
+        "s2v_infer_frames_per_clip": infer_frames,
+        "s2v_first_clip_drop_frames": _S2V_FIRST_CLIP_DROP_FRAMES,
+    }
+
+
+def _build_s2v_official_call_kwargs(
+    args,
+    prompt: str,
+    *,
+    input_image,
+    height: int,
+    width: int,
+    num_frames: int,
+    tiled: bool,
+    tile_size: tuple[int, int],
+    tile_stride: tuple[int, int],
+) -> Dict[str, Any]:
+    spec = get_diffsynth_model_spec(args.model)
+    kwargs: Dict[str, Any] = {
+        "prompt": prompt,
+        "negative_prompt": args.negative_prompt,
+        "input_image": input_image,
+        "seed": args.seed,
+        "height": height,
+        "width": width,
+        "num_frames": num_frames,
+        "num_inference_steps": _resolve_num_inference_steps(args, spec),
+        "cfg_scale": args.cfg_scale if args.cfg_scale is not None else spec.default_cfg_scale,
+        "tiled": tiled,
+        "tile_size": tile_size,
+        "tile_stride": tile_stride,
+        "sigma_shift": args.sigma_shift if args.sigma_shift is not None else spec.default_sigma_shift,
+        "switch_DiT_boundary": (
+            args.switch_dit_boundary
+            if args.switch_dit_boundary is not None
+            else spec.default_switch_dit_boundary
+        ),
+        "cfg_merge": args.cfg_merge,
+        "framewise_decoding": args.framewise_decoding,
+        "output_type": "floatpoint",
+    }
+    if args.rand_device is not None:
+        kwargs["rand_device"] = args.rand_device
+    if args.denoising_strength is not None:
+        kwargs["denoising_strength"] = args.denoising_strength
+    if args.sliding_window_size is not None:
+        kwargs["sliding_window_size"] = args.sliding_window_size
+    if args.sliding_window_stride is not None:
+        kwargs["sliding_window_stride"] = args.sliding_window_stride
+    if args.tea_cache_l1_thresh is not None:
+        kwargs["tea_cache_l1_thresh"] = args.tea_cache_l1_thresh
+    if args.tea_cache_model_id is not None:
+        kwargs["tea_cache_model_id"] = args.tea_cache_model_id
+    return kwargs
+
+
 def _load_image(path: Path):
     from PIL import Image
 
@@ -797,6 +1049,72 @@ def _load_video_frames(path: Path, *, height: int | None, width: int | None, num
     if num_frames is not None:
         data.set_length(min(num_frames, len(data)))
     return data.raw_data()
+
+
+def _load_s2v_pose_frames_for_call(
+    path: Path,
+    *,
+    height: int,
+    width: int,
+    num_frames: int,
+    fps: int | float,
+):
+    try:
+        return _load_s2v_pose_frames(path, height=height, width=width, num_frames=num_frames, fps=fps)
+    except TypeError as exc:
+        if "num_frames" not in str(exc) and "fps" not in str(exc):
+            raise
+        return _load_video_frames(path, height=height, width=width, num_frames=num_frames)
+
+
+def _load_s2v_pose_frames(path: Path, *, height: int, width: int, num_frames: int, fps: int | float):
+    from diffsynth.utils.data import VideoData
+    import cv2 as _cv2
+
+    path = Path(path)
+    if num_frames <= 0:
+        return []
+    if path.is_dir():
+        data = VideoData(image_folder=str(path), height=height, width=width)
+        source_fps = None
+    else:
+        data = VideoData(video_file=str(path), height=height, width=width)
+        cap = _cv2.VideoCapture(str(path))
+        source_fps = float(cap.get(_cv2.CAP_PROP_FPS) or 0.0)
+        cap.release()
+
+    total_frames = len(data)
+    if total_frames <= 0:
+        return []
+    indices = _s2v_pose_frame_indices(
+        total_frames=total_frames,
+        num_frames=num_frames,
+        source_fps=source_fps,
+        target_fps=float(fps),
+    )
+    return [data[int(index)] for index in indices]
+
+
+def _s2v_pose_frame_indices(
+    *,
+    total_frames: int,
+    num_frames: int,
+    source_fps: float | None,
+    target_fps: float,
+) -> list[int]:
+    if num_frames <= 0 or total_frames <= 0:
+        return []
+    if source_fps is not None and source_fps > 0 and target_fps > 0:
+        return [
+            min(total_frames - 1, max(0, int(round(i * source_fps / target_fps))))
+            for i in range(num_frames)
+        ]
+    if num_frames == 1:
+        return [0]
+    return [
+        min(total_frames - 1, max(0, int(round(i * (total_frames - 1) / (num_frames - 1)))))
+        for i in range(num_frames)
+    ]
 
 
 def _load_video_frames_for_call(
@@ -944,10 +1262,19 @@ def _build_method_config(args, spec) -> Dict[str, Any]:
     method_config = default_method_config(
         args.method,
         num_inference_steps=_resolve_num_inference_steps(args, spec),
-        model_key=spec.config_model_key or spec.key,
+        model_key=_method_config_model_key(args.method, spec),
     )
     method_config.update(normalize_method_config(args.method, user_config))
     return method_config
+
+
+def _method_config_model_key(method: str, spec) -> str:
+    override = _EXACT_CONSERVATIVE_CONFIG_KEY_OVERRIDES.get((method, spec.key))
+    if override is not None:
+        return override
+    if spec.key in _EXACT_CONSERVATIVE_CONFIG_MODELS_BY_METHOD.get(method, set()):
+        return spec.key
+    return spec.config_model_key or spec.key
 
 
 def _parse_value(value: str) -> Any:
@@ -986,6 +1313,17 @@ def _parse_float_tuple(value: str) -> tuple[float, ...]:
         return tuple(float(item) for item in parsed)
     except (TypeError, ValueError) as exc:
         raise argparse.ArgumentTypeError(f"expected float tuple, got {value!r}") from exc
+
+
+def _normalize_camera_control_direction(value: str) -> str:
+    text = value.strip()
+    if text in _CAMERA_CONTROL_DIRECTIONS:
+        return text
+    key = text.replace("-", "_").replace(" ", "_").lower()
+    if key in _CAMERA_CONTROL_DIRECTION_ALIASES:
+        return _CAMERA_CONTROL_DIRECTION_ALIASES[key]
+    valid = ", ".join(sorted(_CAMERA_CONTROL_DIRECTIONS))
+    raise ValueError(f"Invalid --camera-control-direction {value!r}; expected one of: {valid}")
 
 
 def _parse_regions(value: str) -> list[tuple[float, float]]:
@@ -1115,6 +1453,89 @@ def _runtime_count(value: Any) -> int:
         return int(value or 0)
     except (TypeError, ValueError):
         return 0
+
+
+def _should_mux_s2v_input_audio(args, spec, output_metadata: Mapping[str, Any]) -> bool:
+    return (
+        spec.key == "wan22-s2v-14b"
+        and args.input_audio is not None
+        and output_metadata.get("output_type") == "video"
+    )
+
+
+def _mux_input_audio_into_video(
+    output_file: Path,
+    audio_file: Path,
+    *,
+    start_time: float = 0.0,
+    duration: float | None = None,
+) -> Dict[str, Any]:
+    output_path = Path(output_file)
+    audio_path = Path(audio_file)
+    tmp_path = output_path.with_name(f".{output_path.stem}.with-audio{output_path.suffix}")
+    try:
+        tmp_path.unlink()
+    except FileNotFoundError:
+        pass
+
+    cmd = ["ffmpeg", "-y", "-v", "error"]
+    if start_time and start_time > 0:
+        cmd.extend(["-ss", f"{start_time:.6f}"])
+    if duration is not None and duration > 0:
+        cmd.extend(["-t", f"{duration:.6f}"])
+    cmd.extend(
+        [
+            "-i",
+            str(audio_path),
+            "-i",
+            str(output_path),
+            "-map",
+            "1:v:0",
+            "-map",
+            "0:a:0",
+            "-c:v",
+            "copy",
+            "-c:a",
+            "aac",
+            "-shortest",
+            str(tmp_path),
+        ]
+    )
+    # Muxing is a post-processing nicety: the silent video is already saved at
+    # output_path. Retry once (ffmpeg can transiently exit non-zero under heavy
+    # concurrent load) and, on persistent failure, keep the silent video instead
+    # of failing the whole generation.
+    last_error = None
+    for _attempt in range(2):
+        proc = subprocess.run(cmd, capture_output=True, text=True)
+        if proc.returncode == 0:
+            os.replace(tmp_path, output_path)
+            return {
+                "output_type": "video_input_audio",
+                "audio_file": str(audio_path),
+                "audio_muxed": True,
+                "audio_start_time": float(start_time or 0.0),
+                "audio_duration": duration,
+                "output_size": output_path.stat().st_size,
+            }
+        last_error = (proc.stderr or "").strip() or f"ffmpeg exited {proc.returncode}"
+    try:
+        tmp_path.unlink()
+    except FileNotFoundError:
+        pass
+    warnings.warn(
+        f"Failed to mux input audio into {output_path.name}; keeping the silent video. "
+        f"ffmpeg error: {last_error}",
+        RuntimeWarning,
+        stacklevel=2,
+    )
+    return {
+        "output_type": "video",
+        "audio_file": str(audio_path),
+        "audio_muxed": False,
+        "audio_mux_error": last_error,
+        "output_size": output_path.stat().st_size,
+    }
 
 
 def _jsonable(data: Mapping[str, Any]) -> Dict[str, Any]:

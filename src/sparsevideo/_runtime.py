@@ -958,6 +958,17 @@ def draft_block_sparse_load_status() -> Dict[str, Any]:
     return status
 
 
+def _cuda_root_has_runtime_library(root: Path) -> bool:
+    for lib_dir in (
+        root / "lib64",
+        root / "lib",
+        root / "targets" / "x86_64-linux" / "lib",
+    ):
+        if any(lib_dir.glob("libcudart.so*")):
+            return True
+    return False
+
+
 def _cuda_root_has_toolkit(root: Path) -> bool:
     return (
         (root / "bin" / "nvcc").exists()
@@ -965,30 +976,39 @@ def _cuda_root_has_toolkit(root: Path) -> bool:
             (root / "include" / "cuda_runtime.h").exists()
             or (root / "targets" / "x86_64-linux" / "include" / "cuda_runtime.h").exists()
         )
+        and _cuda_root_has_runtime_library(root)
     )
 
 
 def _cuda_toolkit_status() -> Dict[str, Any]:
     candidates: List[Path] = []
+
+    def add_candidate(root: Path | str) -> None:
+        resolved = Path(root).expanduser().resolve()
+        if resolved not in candidates:
+            candidates.append(resolved)
+
     for name in ("CUDA_HOME", "CUDA_PATH"):
         value = os.environ.get(name)
         if value:
-            candidates.append(Path(value).expanduser())
+            add_candidate(value)
 
-    nvcc = shutil.which("nvcc")
-    if nvcc:
-        candidates.append(Path(nvcc).resolve().parents[1])
+    pytorch_nvcc = os.environ.get("PYTORCH_NVCC")
+    if pytorch_nvcc:
+        add_candidate(Path(pytorch_nvcc).expanduser().resolve().parents[1])
 
-    prefixes = [Path(sys.prefix).resolve()]
+    prefixes = [Path(sys.prefix).resolve(), *Path(sys.executable).resolve().parents]
     base_prefix = Path(getattr(sys, "base_prefix", sys.prefix)).resolve()
     if base_prefix not in prefixes:
         prefixes.append(base_prefix)
-    prefixes.extend(Path(sys.executable).resolve().parents)
-    prefixes.append(Path("/usr/local/cuda"))
-
     for root in prefixes:
-        if root not in candidates:
-            candidates.append(root)
+        add_candidate(root)
+
+    nvcc = shutil.which("nvcc")
+    if nvcc:
+        add_candidate(Path(nvcc).resolve().parents[1])
+
+    add_candidate(Path("/usr/local/cuda"))
 
     for root in candidates:
         if _cuda_root_has_toolkit(root):

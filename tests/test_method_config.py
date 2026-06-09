@@ -57,6 +57,7 @@ def test_public_methods_are_registered():
         "sta",
         "svg1",
         "svg2",
+        "svgear",
         "svoo",
     ]
 
@@ -114,6 +115,7 @@ def test_public_default_config_keys_are_exposed():
     required_keys = {
         "svg1": {"sparsity", "context_length", "prompt_length"},
         "svg2": {"top_p_kmeans", "context_length", "prompt_length"},
+        "svgear": {"top_p_kmeans", "gamma", "context_length", "prompt_length"},
         "draft": {"sparsity_ratio"},
         "adacluster": {"topk_num"},
         "sta": {"tile_size", "window_size", "STA_mode"},

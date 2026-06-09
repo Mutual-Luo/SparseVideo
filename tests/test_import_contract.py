@@ -45,6 +45,7 @@ print(json.dumps({{
         "sta",
         "svg1",
         "svg2",
+        "svgear",
         "svoo",
     ]
     assert payload["svoo_imported"] is False
@@ -627,6 +628,64 @@ def test_flashinfer_load_status_rejects_training_free_package(monkeypatch, tmp_p
     assert status["training_free_package_detected"] is True
     assert status["import_error_type"] == "ImportError"
     assert "training_free" in status["import_error"]
+
+
+def _make_fake_cuda_root(tmp_path, name, *, with_runtime=True):
+    root = tmp_path / name
+    (root / "bin").mkdir(parents=True)
+    (root / "include").mkdir()
+    (root / "bin" / "nvcc").write_text("")
+    (root / "include" / "cuda_runtime.h").write_text("")
+    if with_runtime:
+        (root / "lib64").mkdir()
+        (root / "lib64" / "libcudart.so").write_text("")
+    return root
+
+
+def test_cuda_toolkit_status_prefers_current_python_env_over_path_nvcc(monkeypatch, tmp_path):
+    from sparsevideo import _runtime
+
+    python_root = _make_fake_cuda_root(tmp_path, "python-env")
+    path_root = _make_fake_cuda_root(tmp_path, "path-env")
+    monkeypatch.delenv("CUDA_HOME", raising=False)
+    monkeypatch.delenv("CUDA_PATH", raising=False)
+    monkeypatch.delenv("PYTORCH_NVCC", raising=False)
+    monkeypatch.setattr(_runtime.sys, "prefix", str(python_root))
+    monkeypatch.setattr(_runtime.sys, "base_prefix", str(python_root))
+    monkeypatch.setattr(_runtime.sys, "executable", str(python_root / "bin" / "python"))
+    monkeypatch.setattr(
+        _runtime.shutil,
+        "which",
+        lambda name: str(path_root / "bin" / "nvcc") if name == "nvcc" else None,
+    )
+
+    status = _runtime._cuda_toolkit_status()
+
+    assert status["available"] is True
+    assert status["root"] == str(python_root)
+    assert status["nvcc_path"] == str(python_root / "bin" / "nvcc")
+
+
+def test_cuda_toolkit_status_rejects_roots_without_cudart(monkeypatch, tmp_path):
+    from sparsevideo import _runtime
+
+    path_root = _make_fake_cuda_root(tmp_path, "path-env", with_runtime=False)
+    monkeypatch.delenv("CUDA_HOME", raising=False)
+    monkeypatch.delenv("CUDA_PATH", raising=False)
+    monkeypatch.delenv("PYTORCH_NVCC", raising=False)
+    monkeypatch.setattr(_runtime.sys, "prefix", str(tmp_path / "empty-python-env"))
+    monkeypatch.setattr(_runtime.sys, "base_prefix", str(tmp_path / "empty-python-env"))
+    monkeypatch.setattr(_runtime.sys, "executable", str(tmp_path / "empty-python-env" / "bin" / "python"))
+    monkeypatch.setattr(
+        _runtime.shutil,
+        "which",
+        lambda name: str(path_root / "bin" / "nvcc") if name == "nvcc" else None,
+    )
+
+    status = _runtime._cuda_toolkit_status()
+
+    assert status["available"] is False
+    assert status["root"] is None
 
 
 def test_adacluster_load_status_detects_owned_triton_apis(monkeypatch, tmp_path):

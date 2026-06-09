@@ -501,18 +501,63 @@ def test_resolve_diffsynth_wan21_fun_control_camera_requires_image_and_camera_di
     )
 
 
-def test_resolve_diffsynth_wan22_fun_control_uses_high_noise_dit(tmp_path):
+def test_resolve_diffsynth_wan22_fun_control_requires_high_low_noise_dits(tmp_path):
     _make_wan21_common(tmp_path)
     _touch(tmp_path / "Wan2.2-Fun-A14B-Control/high_noise_model/diffusion_pytorch_model.safetensors")
 
     resolved = resolve_diffsynth_model_paths("wan22-fun-a14b-control", model_root=tmp_path)
 
+    assert not resolved.complete
+    assert "Wan2.2-Fun-A14B-Control/low_noise_model/diffusion_pytorch_model*.safetensors" in str(
+        resolved.missing
+    )
+
+    _touch(tmp_path / "Wan2.2-Fun-A14B-Control/low_noise_model/diffusion_pytorch_model.safetensors")
+
+    resolved = resolve_diffsynth_model_paths("wan22-fun-a14b-control", model_root=tmp_path)
+
     assert resolved.complete
     assert resolved.spec.required_inputs == ("control_video", "reference_image")
-    assert resolved.components["dit"] == (
+    assert (resolved.spec.default_height, resolved.spec.default_width, resolved.spec.default_num_frames) == (
+        704,
+        1248,
+        121,
+    )
+    assert resolved.components["dit_high_noise"] == (
         tmp_path / "Wan2.2-Fun-A14B-Control/high_noise_model/diffusion_pytorch_model.safetensors",
     )
+    assert resolved.components["dit_low_noise"] == (
+        tmp_path / "Wan2.2-Fun-A14B-Control/low_noise_model/diffusion_pytorch_model.safetensors",
+    )
     assert "image_encoder" not in resolved.components
+
+
+def test_resolve_diffsynth_wan22_fun_control_camera_requires_high_low_noise_dits(tmp_path):
+    _make_wan21_common(tmp_path)
+    _touch(
+        tmp_path
+        / "Wan2.2-Fun-A14B-Control-Camera/high_noise_model/diffusion_pytorch_model.safetensors"
+    )
+    _touch(
+        tmp_path
+        / "Wan2.2-Fun-A14B-Control-Camera/low_noise_model/diffusion_pytorch_model.safetensors"
+    )
+
+    resolved = resolve_diffsynth_model_paths("wan22-fun-a14b-control-camera", model_root=tmp_path)
+
+    assert resolved.complete
+    assert resolved.spec.required_inputs == ("input_image", "camera_control_direction")
+    assert (resolved.spec.default_height, resolved.spec.default_width, resolved.spec.default_num_frames) == (
+        704,
+        1248,
+        121,
+    )
+    assert resolved.components["dit_high_noise"] == (
+        tmp_path / "Wan2.2-Fun-A14B-Control-Camera/high_noise_model/diffusion_pytorch_model.safetensors",
+    )
+    assert resolved.components["dit_low_noise"] == (
+        tmp_path / "Wan2.2-Fun-A14B-Control-Camera/low_noise_model/diffusion_pytorch_model.safetensors",
+    )
 
 
 def test_resolve_diffsynth_wan22_animate_uses_wan21_vae(tmp_path):
@@ -854,6 +899,42 @@ def test_load_diffsynth_wan22_a14b_uses_high_low_noise_config_order(monkeypatch,
         "Wan2.2-T2V-A14B/low_noise_model/diffusion_pytorch_model.safetensors",
         "Wan2.1-T2V-1.3B/models_t5_umt5-xxl-enc-bf16.pth",
         "Wan2.1-T2V-1.3B/Wan2.1_VAE.pth",
+    ]
+    assert [config.kwargs["offload_device"] for config in calls["model_configs"]] == [
+        "cpu",
+        "cpu",
+        "cpu",
+        "cpu",
+    ]
+    assert [config.kwargs["offload_dtype"] for config in calls["model_configs"]] == [
+        "bf16",
+        "bf16",
+        "bf16",
+        "bf16",
+    ]
+    assert [config.kwargs["onload_device"] for config in calls["model_configs"]] == [
+        "cpu",
+        "cpu",
+        "cpu",
+        "cpu",
+    ]
+    assert [config.kwargs["onload_dtype"] for config in calls["model_configs"]] == [
+        "bf16",
+        "bf16",
+        "bf16",
+        "bf16",
+    ]
+    assert [config.kwargs["preparing_device"] for config in calls["model_configs"]] == [
+        "cpu",
+        "cpu",
+        "cpu",
+        "cpu",
+    ]
+    assert [config.kwargs["computation_device"] for config in calls["model_configs"]] == [
+        "cpu",
+        "cpu",
+        "cpu",
+        "cpu",
     ]
     assert calls["enabled_vram_management"] is True
     assert pipe._sparsevideo_model_key == "wan22-t2v-a14b"
@@ -1801,7 +1882,7 @@ def test_infer_diffsynth_requires_s2v_audio_for_generation():
     infer = _load_infer_module()
     args = infer.build_parser().parse_args(["--model", "wan22-s2v-14b"])
 
-    with pytest.raises(ValueError, match="requires --input-audio"):
+    with pytest.raises(ValueError, match="requires --input-image, --input-audio"):
         infer._build_call_kwargs(args, "prompt")
 
 
@@ -1819,9 +1900,11 @@ def test_infer_diffsynth_rejects_shape_that_diffsynth_would_round():
 def test_infer_diffsynth_builds_s2v_audio_and_video_kwargs(monkeypatch, tmp_path):
     infer = _load_infer_module()
     audio = tmp_path / "speech.wav"
+    image = tmp_path / "image.png"
     pose = tmp_path / "pose"
     motion = tmp_path / "motion"
     audio_calls = {}
+    pose_calls = {}
 
     def fake_load_audio(path, *, start_time=0.0, duration=None, as_numpy=True):
         audio_calls.update(
@@ -1837,14 +1920,33 @@ def test_infer_diffsynth_builds_s2v_audio_and_video_kwargs(monkeypatch, tmp_path
     monkeypatch.setattr(infer, "_load_audio_input", fake_load_audio)
     monkeypatch.setattr(
         infer,
+        "_load_s2v_pose_frames_for_call",
+        lambda path, *, height, width, num_frames, fps: pose_calls.update(
+            {
+                "path": Path(path),
+                "height": height,
+                "width": width,
+                "num_frames": num_frames,
+                "fps": fps,
+            }
+        )
+        or [f"{Path(path).name}:{height}x{width}:{num_frames}:{fps}"],
+    )
+    monkeypatch.setattr(
+        infer,
         "_load_video_frames",
         lambda path, *, height, width: [f"{Path(path).name}:{height}x{width}"],
     )
+    monkeypatch.setattr(infer, "_load_image", lambda path: f"image:{Path(path).name}")
 
+    audio.write_bytes(b"audio")
+    image.write_bytes(b"image")
     args = infer.build_parser().parse_args(
         [
             "--model",
             "wan22-s2v-14b",
+            "--input-image",
+            str(image),
             "--input-audio",
             str(audio),
             "--s2v-pose-video",
@@ -1872,8 +1974,176 @@ def test_infer_diffsynth_builds_s2v_audio_and_video_kwargs(monkeypatch, tmp_path
     }
     assert kwargs["input_audio"] == [0.0, 1.0]
     assert kwargs["audio_sample_rate"] == 22050
-    assert kwargs["s2v_pose_video"] == ["pose:128x256"]
+    assert kwargs["input_image"] == "image:image.png"
+    assert kwargs["num_frames"] == 81
+    assert pose_calls == {
+        "path": pose,
+        "height": 128,
+        "width": 256,
+        "num_frames": 80,
+        "fps": 16,
+    }
+    assert kwargs["s2v_pose_video"] == ["pose:128x256:80:16"]
     assert kwargs["motion_video"] == ["motion:128x256"]
+
+
+def test_infer_diffsynth_s2v_num_frames_use_official_clip_length(tmp_path):
+    infer = _load_infer_module()
+    audio = tmp_path / "speech.wav"
+    audio.write_bytes(b"audio")
+
+    args = infer.build_parser().parse_args(["--model", "wan22-s2v-14b", "--input-audio", str(audio)])
+    spec = infer.get_diffsynth_model_spec(args.model)
+
+    assert infer._resolve_num_frames(args, spec) == 81
+
+    explicit = infer.build_parser().parse_args(
+        ["--model", "wan22-s2v-14b", "--input-audio", str(audio), "--num-frames", "121"]
+    )
+
+    assert infer._resolve_num_frames(explicit, spec) == 121
+
+
+def test_infer_diffsynth_s2v_pose_indices_follow_target_fps():
+    infer = _load_infer_module()
+
+    indices = infer._s2v_pose_frame_indices(total_frames=350, num_frames=8, source_fps=50.0, target_fps=16.0)
+
+    assert indices == [0, 3, 6, 9, 12, 16, 19, 22]
+
+
+def test_infer_diffsynth_s2v_generation_matches_official_chunk_flow(monkeypatch, tmp_path):
+    pytest.importorskip("diffsynth")
+    import torch
+    import diffsynth.pipelines.wan_video as wan_video
+
+    infer = _load_infer_module()
+    audio = tmp_path / "speech.wav"
+    image = tmp_path / "image.png"
+    pose = tmp_path / "pose.mp4"
+    audio.write_bytes(b"audio")
+    image.write_bytes(b"image")
+    pose.write_bytes(b"pose")
+    calls = {}
+
+    class FakeUnit:
+        def process_audio(self, pipe, input_audio, audio_sample_rate, num_frames, fps=16, return_all=False):
+            calls["audio"] = {
+                "input_audio": input_audio,
+                "audio_sample_rate": audio_sample_rate,
+                "num_frames": num_frames,
+                "fps": fps,
+                "return_all": return_all,
+            }
+            return ["audio-embeds"]
+
+        def process_pose_cond(
+            self,
+            pipe,
+            s2v_pose_video,
+            num_frames,
+            height,
+            width,
+            tiled,
+            tile_size,
+            tile_stride,
+            *,
+            num_repeats=1,
+            return_all=False,
+        ):
+            calls["pose_cond"] = {
+                "s2v_pose_video": s2v_pose_video,
+                "num_frames": num_frames,
+                "height": height,
+                "width": width,
+                "tiled": tiled,
+                "tile_size": tile_size,
+                "tile_stride": tile_stride,
+                "num_repeats": num_repeats,
+                "return_all": return_all,
+            }
+            return ["pose-latents"]
+
+    class FakePipe:
+        def __init__(self):
+            self.calls = []
+
+        def __call__(self, **kwargs):
+            self.calls.append(kwargs)
+            return torch.zeros(1, 3, 81, 2, 2)
+
+        def vae_output_to_video(self, tensor):
+            return [f"frame-{idx}" for idx in range(tensor.shape[2])]
+
+    monkeypatch.setattr(wan_video, "WanVideoUnit_S2V", FakeUnit)
+    monkeypatch.setattr(infer, "_load_image", lambda path: f"image:{Path(path).name}")
+    monkeypatch.setattr(
+        infer,
+        "_load_audio_input_for_call",
+        lambda path, **kwargs: (calls.setdefault("audio_load", {"path": Path(path), **kwargs}) or "audio-array", 16000),
+    )
+    monkeypatch.setattr(
+        infer,
+        "_load_s2v_pose_frames_for_call",
+        lambda path, **kwargs: calls.setdefault("pose_load", {"path": Path(path), **kwargs}) or ["pose-frame"],
+    )
+
+    args = infer.build_parser().parse_args(
+        [
+            "--model",
+            "wan22-s2v-14b",
+            "--input-image",
+            str(image),
+            "--input-audio",
+            str(audio),
+            "--s2v-pose-video",
+            str(pose),
+        ]
+    )
+    pipe = FakePipe()
+
+    video, kwargs, metadata = infer._generate_s2v_official_style(pipe, args, "prompt")
+
+    assert len(video) == 77
+    assert calls["audio_load"]["target_sample_rate"] == 16000
+    assert calls["audio"]["num_frames"] == 81
+    assert calls["audio"]["return_all"] is True
+    assert calls["pose_load"]["num_frames"] == 80
+    assert calls["pose_load"]["fps"] == 16
+    assert calls["pose_cond"]["num_repeats"] == 1
+    assert pipe.calls[0]["audio_embeds"] == "audio-embeds"
+    assert pipe.calls[0]["s2v_pose_latents"] == "pose-latents"
+    assert pipe.calls[0]["output_type"] == "floatpoint"
+    assert "input_audio" not in pipe.calls[0]
+    assert kwargs == pipe.calls[0]
+    assert metadata["s2v_official_style"] is True
+    assert metadata["s2v_first_clip_drop_frames"] == 3
+
+
+def test_infer_diffsynth_muxes_s2v_input_audio(monkeypatch, tmp_path):
+    infer = _load_infer_module()
+    video = tmp_path / "out.mp4"
+    audio = tmp_path / "speech.wav"
+    video.write_bytes(b"video")
+    audio.write_bytes(b"audio")
+    calls = {}
+
+    def fake_run(cmd, *, check):
+        calls["cmd"] = cmd
+        calls["check"] = check
+        Path(cmd[-1]).write_bytes(b"muxed")
+
+    monkeypatch.setattr(infer.subprocess, "run", fake_run)
+
+    metadata = infer._mux_input_audio_into_video(video, audio, start_time=1.5, duration=2.0)
+
+    assert calls["check"] is True
+    assert calls["cmd"][:7] == ["ffmpeg", "-y", "-v", "error", "-ss", "1.500000", "-t"]
+    assert "-map" in calls["cmd"]
+    assert video.read_bytes() == b"muxed"
+    assert metadata["output_type"] == "video_input_audio"
+    assert metadata["audio_file"] == str(audio)
+    assert metadata["audio_muxed"] is True
 
 
 def test_infer_diffsynth_audio_input_uses_torchaudio_when_torchcodec_is_missing(monkeypatch, tmp_path):
@@ -2045,6 +2315,49 @@ def test_infer_diffsynth_builds_vace_mask_as_repeated_image_and_wan_options(monk
     assert kwargs["framewise_decoding"] is True
     assert kwargs["output_type"] == "floatpoint"
     assert set(kwargs) <= _call_signature_params(WanVideoPipeline)
+
+
+def test_infer_diffsynth_camera_control_direction_aliases_are_normalized(monkeypatch, tmp_path):
+    infer = _load_infer_module()
+    image = tmp_path / "input.png"
+    image.write_bytes(b"image")
+    monkeypatch.setattr(infer, "_load_image", lambda path: f"image:{Path(path).name}")
+
+    args = infer.build_parser().parse_args(
+        [
+            "--model",
+            "wan21-fun-v11-1.3b-control-camera",
+            "--input-image",
+            str(image),
+            "--camera-control-direction",
+            "zoom_in",
+        ]
+    )
+
+    kwargs = infer._build_call_kwargs(args, "prompt")
+
+    assert kwargs["camera_control_direction"] == "In"
+
+
+def test_infer_diffsynth_camera_control_direction_rejects_unknown_value(monkeypatch, tmp_path):
+    infer = _load_infer_module()
+    image = tmp_path / "input.png"
+    image.write_bytes(b"image")
+    monkeypatch.setattr(infer, "_load_image", lambda path: f"image:{Path(path).name}")
+
+    args = infer.build_parser().parse_args(
+        [
+            "--model",
+            "wan21-fun-v11-1.3b-control-camera",
+            "--input-image",
+            str(image),
+            "--camera-control-direction",
+            "zoom_inward",
+        ]
+    )
+
+    with pytest.raises(ValueError, match="Invalid --camera-control-direction"):
+        infer._build_call_kwargs(args, "prompt")
 
 
 def test_infer_diffsynth_builds_vace_mask_video_as_frames(monkeypatch, tmp_path):
@@ -2519,6 +2832,202 @@ def test_infer_diffsynth_build_method_config_does_not_add_fallback_keys():
     method_config = infer._build_method_config(args, spec)
 
     assert "allow_triton_fallback" not in method_config
+
+
+def test_infer_diffsynth_fun_control_uses_conservative_sparse_defaults():
+    infer = _load_infer_module()
+    expected = {
+        "draft": {"dense_warmup_step_ratio": 0.15, "dense_warmup_layer_ratio": 0.05, "sparsity_ratio": 0.85},
+        "flashomni": {
+            "dense_warmup_step_ratio": 0.15,
+            "dense_warmup_layer_ratio": 0.05,
+            "threshold_q": 0.35,
+            "threshold_kv": 0.02,
+            "fresh_threshold": 4,
+            "N": 4,
+            "S_q": 0.2,
+        },
+        "radial": {"dense_warmup_step_ratio": 0.15, "dense_warmup_layer_ratio": 0.05, "decay_factor": 0.3},
+        "svg1": {"dense_warmup_step_ratio": 0.15, "dense_warmup_layer_ratio": 0.05, "sparsity": 0.4},
+    }
+
+    for method, subset in expected.items():
+        args = infer.build_parser().parse_args(
+            [
+                "--model",
+                "wan21-fun-v11-14b-control",
+                "--method",
+                method,
+            ]
+        )
+        spec = infer.get_diffsynth_model_spec(args.model)
+        method_config = infer._build_method_config(args, spec)
+        for key, value in subset.items():
+            assert method_config[key] == value
+
+
+def test_infer_diffsynth_fun_control_conservative_defaults_do_not_change_t2v():
+    infer = _load_infer_module()
+    expected = {
+        "draft": {"dense_warmup_step_ratio": 0.1, "dense_warmup_layer_ratio": 0.03, "sparsity_ratio": 0.75},
+        "flashomni": {
+            "dense_warmup_step_ratio": 0.1,
+            "dense_warmup_layer_ratio": 0.03,
+            "threshold_q": 0.5,
+            "threshold_kv": 0.05,
+            "fresh_threshold": 6,
+            "N": 6,
+            "S_q": 0.3,
+        },
+        "radial": {"dense_warmup_step_ratio": 0.1, "dense_warmup_layer_ratio": 0.03, "decay_factor": 0.2},
+        "svg1": {"dense_warmup_step_ratio": 0.1, "dense_warmup_layer_ratio": 0.03, "sparsity": 0.3},
+    }
+
+    for method, subset in expected.items():
+        args = infer.build_parser().parse_args(
+            [
+                "--model",
+                "wan21-t2v-14b",
+                "--method",
+                method,
+            ]
+        )
+        spec = infer.get_diffsynth_model_spec(args.model)
+        method_config = infer._build_method_config(args, spec)
+        for key, value in subset.items():
+            assert method_config[key] == value
+
+
+def test_infer_diffsynth_conditioned_backbones_use_scoped_conservative_defaults():
+    infer = _load_infer_module()
+    cases = [
+        (
+            "wan21-i2v-14b-480p",
+            "flashomni",
+            {
+                "dense_warmup_step_ratio": 0.15,
+                "dense_warmup_layer_ratio": 0.05,
+                "threshold_q": 0.35,
+                "threshold_kv": 0.02,
+                "fresh_threshold": 4,
+                "N": 4,
+                "S_q": 0.2,
+            },
+        ),
+        (
+            "wan22-animate-14b",
+            "flashomni",
+            {
+                "dense_warmup_step_ratio": 0.15,
+                "dense_warmup_layer_ratio": 0.05,
+                "threshold_q": 0.35,
+                "threshold_kv": 0.02,
+                "fresh_threshold": 4,
+                "N": 4,
+                "S_q": 0.2,
+            },
+        ),
+        (
+            "wan22-animate-14b",
+            "radial",
+            {"dense_warmup_step_ratio": 0.15, "dense_warmup_layer_ratio": 0.05, "decay_factor": 0.3},
+        ),
+        (
+            "wan22-animate-14b",
+            "svg1",
+            {"dense_warmup_step_ratio": 0.15, "dense_warmup_layer_ratio": 0.05, "sparsity": 0.4},
+        ),
+        (
+            "wan22-i2v-a14b",
+            "flashomni",
+            {
+                "dense_warmup_step_ratio": 0.15,
+                "dense_warmup_layer_ratio": 0.05,
+                "threshold_q": 0.35,
+                "threshold_kv": 0.02,
+                "fresh_threshold": 4,
+                "N": 4,
+                "S_q": 0.2,
+            },
+        ),
+        (
+            "wan22-t2v-a14b",
+            "radial",
+            {"dense_warmup_step_ratio": 0.15, "dense_warmup_layer_ratio": 0.05, "decay_factor": 0.3},
+        ),
+        (
+            "wan22-t2v-a14b",
+            "svg1",
+            {"dense_warmup_step_ratio": 0.15, "dense_warmup_layer_ratio": 0.05, "sparsity": 0.4},
+        ),
+        (
+            "wan22-ti2v-5b",
+            "draft",
+            {"dense_warmup_step_ratio": 0.15, "dense_warmup_layer_ratio": 0.05, "sparsity_ratio": 0.85},
+        ),
+        (
+            "wan22-ti2v-5b",
+            "svg1",
+            {"dense_warmup_step_ratio": 0.15, "dense_warmup_layer_ratio": 0.05, "sparsity": 0.4},
+        ),
+    ]
+
+    for model, method, subset in cases:
+        args = infer.build_parser().parse_args(["--model", model, "--method", method])
+        spec = infer.get_diffsynth_model_spec(args.model)
+        method_config = infer._build_method_config(args, spec)
+        for key, value in subset.items():
+            assert method_config[key] == value
+
+
+def test_infer_diffsynth_i2v_480p_flashomni_defaults_do_not_change_720p():
+    infer = _load_infer_module()
+    args = infer.build_parser().parse_args(["--model", "wan21-i2v-14b-720p", "--method", "flashomni"])
+    spec = infer.get_diffsynth_model_spec(args.model)
+
+    method_config = infer._build_method_config(args, spec)
+
+    assert infer._method_config_model_key(args.method, spec) == "wan21-i2v-14b"
+    assert method_config["dense_warmup_step_ratio"] == 0.1
+    assert method_config["dense_warmup_layer_ratio"] == 0.03
+    assert method_config["threshold_q"] == 0.5
+    assert method_config["threshold_kv"] == 0.05
+    assert method_config["N"] == 6
+    assert method_config["S_q"] == 0.3
+
+
+def test_infer_diffsynth_wan22_t2v_conservative_defaults_do_not_change_shared_config_users():
+    infer = _load_infer_module()
+    cases = [
+        (
+            "wan22-s2v-14b",
+            "radial",
+            {"dense_warmup_step_ratio": 0.1, "dense_warmup_layer_ratio": 0.03, "decay_factor": 0.2},
+        ),
+        (
+            "wan22-s2v-14b",
+            "svg1",
+            {"dense_warmup_step_ratio": 0.1, "dense_warmup_layer_ratio": 0.03, "sparsity": 0.3},
+        ),
+        (
+            "wan22-fun-a14b-control-camera",
+            "radial",
+            {"dense_warmup_step_ratio": 0.1, "dense_warmup_layer_ratio": 0.03, "decay_factor": 0.2},
+        ),
+        (
+            "wan22-fun-a14b-control-camera",
+            "svg1",
+            {"dense_warmup_step_ratio": 0.1, "dense_warmup_layer_ratio": 0.03, "sparsity": 0.3},
+        ),
+    ]
+
+    for model, method, subset in cases:
+        args = infer.build_parser().parse_args(["--model", model, "--method", method])
+        spec = infer.get_diffsynth_model_spec(args.model)
+        method_config = infer._build_method_config(args, spec)
+        assert infer._method_config_model_key(args.method, spec) == "wan22-t2v-a14b"
+        for key, value in subset.items():
+            assert method_config[key] == value
 
 
 def test_infer_diffsynth_cpu_offload_flags_map_to_diffsynth_vram_management():

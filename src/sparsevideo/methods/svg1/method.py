@@ -6,7 +6,7 @@ import torch
 import torch.nn.functional as F
 
 from .._base import SparseMethod
-from .._layout import infer_video_frame_count, infer_video_token_layout
+from .._layout import infer_video_frame_shape_for_attention, infer_video_token_layout
 from .._schedule import configured_dense_warmup_layer_count, configured_dense_warmup_requires_dense, runtime_or_config_num_inference_steps, scheduler_timestep_from_tracker
 from ...processors.allegro import SparseAllegroAttnProcessor
 from ...processors.cogvideox import SparseCogVideoXAttnProcessor
@@ -87,6 +87,7 @@ class SVG1Method(SparseMethod):
                 text_len=kwargs.get("text_len", 0),
                 prompt_length=prompt_length,
                 context_length=cfg.get("context_length"),
+                seq_shape=kwargs.get("seq_shape"),
             )
             self.record_runtime_dispatch(
                 "sparse",
@@ -136,7 +137,7 @@ def _svg1_dense_backend_name(query, attention_mask, model_type):
 def _svg_attention(query, key, value, sparsity, num_sampled_rows,
                    sample_mse_max_row, state, step_tracker_step,
                    model_type="wan", text_len=0, prompt_length=None,
-                   context_length=None):
+                   context_length=None, seq_shape=None):
     """SVG stripe-based sparse attention with per-head profiling.
 
     query: [B, Q, H, D], key/value: [B, KV, H, D]
@@ -171,8 +172,12 @@ def _svg_attention(query, key, value, sparsity, num_sampled_rows,
     if not query.is_cuda:
         raise RuntimeError("svg1 sparse path requires CUDA")
 
-    num_frames = infer_video_frame_count(video_len, model_type=model_type)
-    frame_size = video_len // num_frames
+    num_frames, frame_h, frame_w = infer_video_frame_shape_for_attention(
+        video_len,
+        model_type=model_type,
+        seq_shape=seq_shape,
+    )
+    frame_size = frame_h * frame_w
     video_end = context_len + num_frames * frame_size
     q_kv_offset = 0
     kv_video_len = video_len

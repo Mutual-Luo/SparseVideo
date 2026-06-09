@@ -12,7 +12,10 @@ import torch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 import sparsevideo
-from sparsevideo._diffsynth import _patch_diffsynth_ltx2_attention_forward
+from sparsevideo._diffsynth import (
+    _patch_diffsynth_longcat_attention_process,
+    _patch_diffsynth_ltx2_attention_forward,
+)
 from sparsevideo._model_info import discover_model
 from sparsevideo._step_tracker import StepTracker
 from sparsevideo.processors.allegro import SparseAllegroAttnProcessor
@@ -399,6 +402,7 @@ class CogVideoXImageToVideoPipeline(_Pipe):
 NEW_BACKBONE_PROCESSOR_METHODS = [
     ("svg1", {}),
     ("svg2", {}),
+    ("svgear", {}),
     ("spargeattn", {}),
     ("radial", {}),
     ("sta", {}),
@@ -412,6 +416,7 @@ DIFFSYNTH_APPLY_METHODS = [
     ("dense", {}),
     ("svg1", {}),
     ("svg2", {}),
+    ("svgear", {}),
     ("spargeattn", {}),
     ("radial", {}),
     ("sta", {}),
@@ -475,7 +480,7 @@ def test_public_apply_alias_installs_and_restores_sparse_processor():
 
 @pytest.mark.parametrize(
     "method",
-    ["svg1", "svg2", "spargeattn", "radial", "sta", "draft", "adacluster", "flashomni", "svoo"],
+    ["svg1", "svg2", "svgear", "spargeattn", "radial", "sta", "draft", "adacluster", "flashomni", "svoo"],
 )
 def test_apply_wan22_dual_transformer_uses_local_layer_indices(method):
     pipe = _Pipe(WanTinyTransformer())
@@ -1137,6 +1142,37 @@ def test_diffsynth_longcat_process_patch_rejects_invalid_heads_shape():
             attn._process_attn(q, q, q, shape=None)
     finally:
         handle.restore()
+
+
+def test_diffsynth_longcat_process_patch_passes_seq_shape_to_sparse_method():
+    pipe = DiffSynthLongCatVideoPipeline()
+    attn = pipe.dit.blocks[0].attn
+    q = torch.randn(1, 2, 4, 3)
+    seen = {}
+
+    def attn_fn(query, key, value, attention_mask, **kwargs):
+        seen["query_shape"] = tuple(query.shape)
+        seen["key_shape"] = tuple(key.shape)
+        seen["seq_shape"] = kwargs.get("seq_shape")
+        return query
+
+    restore = _patch_diffsynth_longcat_attention_process(
+        attn,
+        attn_fn,
+        StepTracker(model_type="wan"),
+        "dit.blocks.0.attn._process_attn",
+    )
+    try:
+        out = attn._process_attn(q, q, q, (1, 2, 2))
+    finally:
+        restore()
+
+    assert out.shape == q.shape
+    assert seen == {
+        "query_shape": (1, 4, 2, 3),
+        "key_shape": (1, 4, 2, 3),
+        "seq_shape": (1, 2, 2),
+    }
 
 
 @pytest.mark.parametrize(

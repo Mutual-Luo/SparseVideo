@@ -73,6 +73,13 @@ class _FlashOmniPaperMMDiTState:
         self.last_dispatch: str | None = None
         self.cache_suffix_states: dict[object, _FlashOmniPaperMMDiTState] = {}
         self.attention_shape_key: object | None = None
+        # Classifier-free guidance issues two model_fn calls at the SAME denoising
+        # step (positive + negative). StepTracker dedupes the timestep so both see
+        # the same step, but the first pass mutates has_symbols() and would flip the
+        # second pass to a different dispatch. Cache the first pass's schedule so
+        # both CFG passes at one step take the same branch.
+        self.schedule_decision_step: object | None = None
+        self.schedule_decision: _FlashOmniPaperMMDiTSchedule | None = None
 
     def has_symbols(self) -> bool:
         return self.sparse_q is not None and self.sparse_kv is not None
@@ -1004,13 +1011,21 @@ def _flashomni_paper_mmdit_attention(query, key, value, tau_q, tau_kv, N, D, S_q
         int(trim.kv_text_len),
     )
     state = _flashomni_paper_state_for_attention_shape(state, shape_key)
-    schedule = _flashomni_paper_mmdit_schedule(
-        _flashomni_paper_mmdit_effective_step(step, current),
-        fresh_threshold=int(N),
-        first_enhance=int(first_enhance),
-        num_inference_steps=int(num_inference_steps),
-        has_symbols=state.has_symbols(),
-    )
+    effective_step = _flashomni_paper_mmdit_effective_step(step, current)
+    if effective_step is not None and state.schedule_decision_step == effective_step and state.schedule_decision is not None:
+        # Second classifier-free pass at this step: reuse the first pass's decision
+        # so positive and negative branches do not diverge mid-step.
+        schedule = state.schedule_decision
+    else:
+        schedule = _flashomni_paper_mmdit_schedule(
+            effective_step,
+            fresh_threshold=int(N),
+            first_enhance=int(first_enhance),
+            num_inference_steps=int(num_inference_steps),
+            has_symbols=state.has_symbols(),
+        )
+        state.schedule_decision_step = effective_step
+        state.schedule_decision = schedule
 
     if schedule.compute_symbols:
         _flashomni_trace_hunyuan_memory(cache_dic, current, "attention.policy.before")
