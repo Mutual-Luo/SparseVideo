@@ -2,9 +2,9 @@
   <img src="assets/logo.png" alt="SparseVideo Logo" width="400"/>
 </p>
 
-# SparseVideo
+<h1 align="center">SparseVideo</h1>
 
-#### A one-line, plug-and-play sparse attention framework for accelerating video diffusion inference.
+<p align="center">A one-line, plug-and-play sparse attention framework for accelerating video diffusion inference.</p>
 
 
 ## Installation
