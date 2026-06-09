@@ -9,8 +9,18 @@
 
 ## Installation
 
+**From PyPI**
+
 ```bash
 pip install sparsevideo --no-build-isolation
+```
+
+**From source**
+
+```bash
+git clone https://github.com/Mutual-Luo/SparseVideo.git
+cd SparseVideo
+MAX_JOBS=8 pip install -e . --no-build-isolation
 ```
 
 ## Quick Start
