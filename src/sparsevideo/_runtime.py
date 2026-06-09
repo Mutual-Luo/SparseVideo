@@ -143,8 +143,15 @@ def _native_kernel_dirs() -> List[Path]:
     if env_root:
         dirs.append(_reject_training_free_path(Path(env_root), env_name="SPARSEVIDEO_NATIVE_KERNEL_ROOT"))
 
-    repo_root = _repo_root()
-    dirs.append(repo_root / "src" / "sparsevideo" / "kernels" / "native" / "build")
+    # Resolve relative to the installed package so this works for both editable
+    # (src/sparsevideo) and pip-installed (site-packages/sparsevideo) layouts, and
+    # mirror fused_norm_rope._candidate_native_kernel_dirs() so status detection
+    # agrees with the runtime loader.
+    native_root = Path(__file__).resolve().parent / "kernels" / "native"
+    # Primary: pip install (setup.py BuildExtension) output location.
+    dirs.append(native_root / "svg_svoo_fused")
+    # Legacy: sparsevideo-build-kernels / standalone build.py output.
+    dirs.append(native_root / "build")
     return dirs
 
 
