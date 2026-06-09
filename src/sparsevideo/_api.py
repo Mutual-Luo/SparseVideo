@@ -12,6 +12,7 @@ from ._support import (
     DIFFSYNTH_STA_UNSUPPORTED_REASON,
     LIMITED_METHODS_BY_MODEL_TYPE,
     MOCHI_SPARSE_ATTENTION_WARNING,
+    STA_UNSUPPORTED_REASON,
     unvalidated_method_reason,
     unsupported_method_model_reason,
 )
@@ -236,6 +237,9 @@ def _auto_set_torch_cuda_arch_list() -> None:
 def _validate_method_support(model_info: ModelInfo, method: str) -> None:
     if method == "dense":
         return
+    if method == "sta":
+        print(f"\033[31mError:\033[0m {STA_UNSUPPORTED_REASON}", file=sys.stderr)
+        raise NotImplementedError(STA_UNSUPPORTED_REASON)
     if getattr(model_info, "pipeline_backend", "diffusers") == "diffsynth" and method == "sta":
         print(f"\033[31mError:\033[0m {DIFFSYNTH_STA_UNSUPPORTED_REASON}", file=sys.stderr)
         raise NotImplementedError(DIFFSYNTH_STA_UNSUPPORTED_REASON)

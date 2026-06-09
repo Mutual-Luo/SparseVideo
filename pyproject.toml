@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=68", "wheel"]
+requires = ["setuptools>=77", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -8,10 +8,11 @@ version = "0.1.0"
 description = "Plug-and-play sparse attention for video diffusion models"
 requires-python = ">=3.10"
 license = "Apache-2.0"
+license-files = ["LICENSE", "NOTICE"]
 readme = "README.md"
 keywords = ["sparse-attention", "video-diffusion", "inference", "triton", "cuda"]
 authors = [
-    { name = "SparseVideo Contributors" },
+    { name = "Jiayi Luo" },
 ]
 classifiers = [
     "Development Status :: 3 - Alpha",
@@ -22,10 +23,15 @@ classifiers = [
     "Programming Language :: Python :: 3.12",
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
+# Everything needed to run is declared here so that, with torch already present
+# (required to compile the kernels, exactly like flash-attn), a single
+#   pip install sparsevideo --no-build-isolation
+# pulls in every runtime dependency automatically — no piecemeal setup.
 dependencies = [
     "torch>=2.1.0",
     "diffusers>=0.30.0",
     "einops>=0.6.0",
+    "pyyaml>=5.4",
     "jinja2>=3.0",
     "filelock>=3.0",
     "packaging>=21.0",
@@ -33,13 +39,19 @@ dependencies = [
     "diffsynth>=2.0.12",
 ]
 
+[project.optional-dependencies]
+# flashinfer-python is the only heavy, torch/CUDA-version-coupled backend, kept
+# optional so a version mismatch can never break the base install. Needed only
+# for the `flashomni` method:  pip install sparsevideo[flashinfer]
+flashinfer = ["flashinfer-python>=0.1.0"]
+all = ["flashinfer-python>=0.1.0"]
+dev = ["pytest>=7.0", "ruff>=0.4.0"]
+
 [project.urls]
 Repository = "https://github.com/Mutual-Luo/SparseVideo"
 
-
 [project.scripts]
 sparsevideo-build-kernels = "sparsevideo.kernels._build:main"
-
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -3,6 +3,11 @@ from __future__ import annotations
 from typing import Optional, Tuple
 
 
+STA_UNSUPPORTED_REASON = (
+    "STA is not supported in this release. Please choose another method, "
+    "e.g. 'svg2', 'svoo', 'spargeattn', or 'radial'."
+)
+
 DIFFSYNTH_STA_UNSUPPORTED_REASON = (
     "STA is not supported for the DiffSynth backend. Use the Diffusers backend "
     "for STA inference."

@@ -1,0 +1,23 @@
+SparseVideo
+Copyright 2026 Jiayi Luo, Beihang University & Zhongguanchun Academy
+
+Licensed under the Apache License, Version 2.0 (the "License"); see the LICENSE
+file for the full terms.
+
+This product bundles and/or builds upon the third-party software components
+listed below, each under its own license. The full license texts are retained
+alongside the corresponding sources within this distribution.
+
+  - FlashInfer (Apache-2.0) — github.com/flashinfer-ai/flashinfer
+      src/sparsevideo/kernels/_flashinfer/  (incl. derived flashomni runtime)
+  - spdlog (MIT, (c) 2016 Gabi Melman) — github.com/gabime/spdlog
+      src/sparsevideo/kernels/_flashinfer/spdlog/
+  - SpargeAttn (Apache-2.0) — github.com/thu-ml/SpargeAttn
+      src/sparsevideo/kernels/native/spargeattn/
+  - SageAttention (Apache-2.0) — github.com/thu-ml/SageAttention
+      src/sparsevideo/kernels/native/sageattention/
+  - Block-Sparse-Attention (BSD-3-Clause) — github.com/mit-han-lab/Block-Sparse-Attention
+      src/sparsevideo/kernels/native/draft_block_sparse/
+
+NVIDIA CUTLASS (BSD-3-Clause) is a build-time-only dependency: it is not shipped
+in this package and is fetched at the pinned ref by kernels/_cutlass.py.

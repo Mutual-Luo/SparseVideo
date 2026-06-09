@@ -106,6 +106,15 @@ def _preflight(nvcc: str) -> None:
         torch_cuda_major = torch_cuda_minor = None
         torch_cuda = "unknown"
 
+    # --- torch must be a CUDA build ---
+    if torch_cuda_major is None:
+        errors.append(
+            "torch is not a CUDA build (torch.version.cuda is empty), so the native "
+            "kernels cannot be compiled.\n"
+            "  Install a CUDA build of torch matching your toolkit, e.g.\n"
+            "    pip install torch --index-url https://download.pytorch.org/whl/cu121"
+        )
+
     # --- major-version mismatch ---
     if nvcc_major is not None and torch_cuda_major is not None:
         if nvcc_major != torch_cuda_major:
@@ -173,27 +182,42 @@ def _preflight(nvcc: str) -> None:
 ext_modules: list = []
 cmdclass: dict = {}
 
-_cuda_ready = False
-try:
-    import torch
-    if torch.cuda.is_available() or os.environ.get("FORCE_CUDA") == "1":
-        _nvcc = _find_nvcc()
-        if _nvcc:
-            _set_cuda_home_from_nvcc(_nvcc)
+# This is a CUDA/C++ extension package: by default the native kernels are compiled
+# at install time (like flash-attn). The build environment is validated up front
+# (torch present, nvcc found, nvcc/torch CUDA versions compatible, GPU arch >= sm80)
+# and the install aborts early with actionable guidance if anything is wrong.
+# Set SPARSEVIDEO_SKIP_CUDA_BUILD=1 to install the pure-Python layer only (Triton/
+# JIT methods still work; native-CUDA methods raise a clear ImportError at runtime).
+_skip_cuda = os.environ.get("SPARSEVIDEO_SKIP_CUDA_BUILD") == "1"
+_build_cmds = ("build", "build_ext", "bdist_wheel", "install", "develop", "editable_wheel")
+_building = any(cmd in sys.argv for cmd in _build_cmds)
 
-        from torch.utils.cpp_extension import BuildExtension
-        _cuda_ready = True
-except Exception:
-    pass
+if _building and not _skip_cuda:
+    try:
+        import torch  # noqa: F401
+    except ImportError:
+        raise SystemExit(
+            "\n[sparsevideo] torch is required to compile the native kernels but is not "
+            "installed.\n"
+            "  Install a CUDA build of torch first, then install with build isolation off:\n"
+            "    pip install torch\n"
+            "    pip install sparsevideo --no-build-isolation\n"
+            "  (Or set SPARSEVIDEO_SKIP_CUDA_BUILD=1 to install the pure-Python layer only.)\n"
+        )
 
-if _cuda_ready:
     _nvcc = _find_nvcc()
+    if _nvcc:
+        _set_cuda_home_from_nvcc(_nvcc)
+
+    from torch.utils.cpp_extension import BuildExtension
+
     if _nvcc is None:
         raise SystemExit(
-            "\n[sparsevideo] nvcc not found.\n"
+            "\n[sparsevideo] nvcc not found — cannot compile the native kernels.\n"
             "  Install the CUDA compiler into your current Python environment, e.g.:\n"
             "    conda install -c nvidia cuda-nvcc\n"
             "  or set CUDA_HOME to your CUDA toolkit root.\n"
+            "  (Or set SPARSEVIDEO_SKIP_CUDA_BUILD=1 to install the pure-Python layer only.)\n"
         )
 
     _preflight(_nvcc)
@@ -221,19 +245,35 @@ def _native_package_data() -> list[str]:
     pkg_base = _SRC / "sparsevideo"
     collected: set[str] = set()
     source_globs = [
-        "**/*.cu", "**/*.cuh", "**/*.cpp",
-        "**/*.h",
+        "**/*.cu", "**/*.cuh", "**/*.cpp", "**/*.cc",
+        "**/*.h", "**/*.hpp", "**/*.inc",
         "**/*.json",
         "**/setup.py", "**/setup.sh", "**/build.py",
         "**/CMakeLists.txt", "**/Makefile",
+        "**/LICENSE", "**/LICENSE.txt",
     ]
     for pattern in source_globs:
         for p in native.glob(pattern):
             if "cutlass" in p.parts:
                 continue
             collected.add(str(p.relative_to(pkg_base)))
-    for p in native.glob("**/*.so"):
-        if "cutlass" not in p.parts:
+    # Prebuilt .so artifacts are platform/CUDA-specific and are never shipped in
+    # the source distribution; build_ext produces them at install time.
+    return sorted(collected)
+
+
+def _methods_data() -> list[str]:
+    """Collect per-method runtime data files loaded relative to ``__file__``.
+
+    Each method's ``config.py`` reads its ``config.yaml`` at import time, and the
+    svoo method reads its sparsity-profile CSVs at runtime. These must ship in the
+    wheel or an installed (non-editable) package raises FileNotFoundError on use.
+    """
+    methods = _SRC / "sparsevideo" / "methods"
+    pkg_base = _SRC / "sparsevideo"
+    collected: set[str] = set()
+    for pattern in ("**/config.yaml", "svoo/sparsity_profiles/*.csv"):
+        for p in methods.glob(pattern):
             collected.add(str(p.relative_to(pkg_base)))
     return sorted(collected)
 
@@ -250,6 +290,9 @@ def _flashinfer_vendor_data() -> list[str]:
             continue
         if "cutlass" in p.parts or "__pycache__" in p.parts:
             continue
+        # Never ship prebuilt binaries; they are platform/CUDA-specific.
+        if p.suffix in {".so", ".pyd", ".dll", ".dylib", ".o", ".a"}:
+            continue
         collected.add(str(p.relative_to(pkg_base)))
     return sorted(collected)
 
@@ -258,7 +301,7 @@ setup(
     packages=find_packages("src"),
     package_dir={"": "src"},
     package_data={
-        "sparsevideo": _native_package_data() + _flashinfer_vendor_data() + ["methods/sta/*.json"],
+        "sparsevideo": _native_package_data() + _flashinfer_vendor_data() + _methods_data(),
     },
     ext_modules=ext_modules,
     cmdclass=cmdclass,

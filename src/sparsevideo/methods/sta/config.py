@@ -33,12 +33,14 @@ def default_config(**context):
     config = copy_config_defaults(CONFIG_DEFAULTS)
     model_key = context.get("model_key")
     apply_model_defaults(config, MODEL_DEFAULTS, context)
+    # When a precomputed mask strategy file is available it is used; otherwise the
+    # path is left unset and STA falls back to its default sliding-window logic.
     if model_key in _SKIP_OWNED_MASK_STRATEGY:
         pass
     elif (owned_strategy := _owned_model_mask_strategy(model_key)) is not None:
         config["mask_strategy_file_path"] = owned_strategy
-    elif model_key == "wan21-t2v-14b":
+    elif model_key == "wan21-t2v-14b" and Path(_WAN_MASK_STRATEGY).exists():
         config["mask_strategy_file_path"] = _WAN_MASK_STRATEGY
-    elif model_key in ("hunyuan-t2v", "hunyuan-i2v"):
+    elif model_key in ("hunyuan-t2v", "hunyuan-i2v") and Path(_HUNYUAN_MASK_STRATEGY).exists():
         config["mask_strategy_file_path"] = _HUNYUAN_MASK_STRATEGY
     return config
