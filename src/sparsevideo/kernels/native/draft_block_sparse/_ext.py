@@ -77,7 +77,9 @@ def get_extensions() -> list:
         CUDAExtension(
             name="sparsevideo.kernels.native.draft_block_sparse.block_sparse_attn_cuda",
             sources=sources,
-            include_dirs=[str(cutlass_include)],
+            # flash_api.cpp does #include "flash.h", which lives in src/; the .cu
+            # sources include their sibling headers there too.
+            include_dirs=[str(src_dir), str(cutlass_include)],
             extra_compile_args={
                 "cxx": ["-O3", "-std=c++17"] + generator_flag + draft_flags,
                 "nvcc": [

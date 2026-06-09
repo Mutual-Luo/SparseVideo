@@ -13,9 +13,10 @@ from pathlib import Path
 
 ROOT = Path(__file__).parent.resolve()
 
-# flashinfer headers (include/) live next to our vendored sparsevideo_flashinfer package
+# flashinfer headers (include/) live in the vendored package at kernels/_flashinfer/.
+# _ext.py is at kernels/native/svg_svoo_fused/, so kernels/ is parents[2].
 _FLASHINFER_INCLUDE = (
-    Path(__file__).resolve().parents[3] / "_flashinfer" / "include"
+    Path(__file__).resolve().parents[2] / "_flashinfer" / "include"
 )
 
 
