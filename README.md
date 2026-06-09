@@ -53,7 +53,7 @@ Works as a drop-in, one-line replacement for both **Diffusers** and **DiffSynth-
 
 ### Diffusers
 
-Supported models:
+Supported 34 models:
 
 | | Model | | Model | | Model |
 |:---:|---|:---:|---|:---:|---|
@@ -72,7 +72,7 @@ Supported models:
 
 ### DiffSynth-Studio
 
-Supported models:
+Supported 30 models:
 
 | | Model | | Model | | Model |
 |:---:|---|:---:|---|:---:|---|
