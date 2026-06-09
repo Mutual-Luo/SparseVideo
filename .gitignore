@@ -3,6 +3,9 @@ training_free
 training_free/*
 kernels/flash-attention/
 
+# Test suite (kept local, not tracked or shipped)
+tests/
+
 # Python bytecode and test caches
 __pycache__/
 *.py[cod]
