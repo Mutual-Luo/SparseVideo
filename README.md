@@ -38,7 +38,7 @@ MAX_JOBS=8 pip install -e . --no-build-isolation
   video = pipe("A cat playing piano", num_frames=81, num_inference_steps=50).frames[0]
 ```
 
-## Supported Sparse Attention DiT Methods
+## Supported Sparse Attention Methods
 
 | | Method | | Method | | Method |
 |:---:|---|:---:|---|:---:|---|
