@@ -763,6 +763,7 @@ def _fused_qc_kernel_opt(
     KC_NUM: tl.constexpr,
     BLOCK_M: tl.constexpr,
     BLOCK_N: tl.constexpr,
+    BLOCK_D: tl.constexpr,
 ):
     # Each program handles one query cluster for one (batch, head) pair.
     qc_idx = tl.program_id(0)
@@ -776,7 +777,9 @@ def _fused_qc_kernel_opt(
     end_s = tl.load(qc_indptr_ptr + 1)
 
     LN2 = 0.69314718056
-    offs_d = tl.arange(0, D)
+    # Pad the head-dim block to a power of 2 (tl.arange requirement) and mask
+    # offs_d < D so non-power-of-2 head dims (e.g. Allegro's 96) compile correctly.
+    offs_d = tl.arange(0, BLOCK_D)
 
     # These bases point to the metadata and inputs for the current query cluster.
     mask_base = block_mask_map + batch_idx * stride_mb + head_idx * stride_mh + qc_idx * stride_mq
@@ -799,11 +802,11 @@ def _fused_qc_kernel_opt(
         l_i = tl.where(m_mask, 1.0, 0.0)
 
         q_ptrs = q_base + m_offsets[:, None] * stride_qs + offs_d[None, :]
-        q = tl.load(q_ptrs, mask=m_mask[:, None], other=0.0)
+        q = tl.load(q_ptrs, mask=m_mask[:, None] & (offs_d[None, :] < D), other=0.0)
 
         # Initialize the accumulator from the token-level FlashInfer output.
         acc_ptrs = o_flash_base + m_offsets[:, None] * stride_qs + offs_d[None, :]
-        acc = tl.load(acc_ptrs, mask=m_mask[:, None], other=0.0).to(tl.float32)
+        acc = tl.load(acc_ptrs, mask=m_mask[:, None] & (offs_d[None, :] < D), other=0.0).to(tl.float32)
 
         for n_start in range(0, KC_NUM, BLOCK_N):
             # Iterate over centroid blocks and only keep entries with mask == 0.
@@ -811,7 +814,7 @@ def _fused_qc_kernel_opt(
             n_mask = n_offsets < KC_NUM
 
             k_ptrs = k_centroids_base + n_offsets[:, None] * stride_cn + offs_d[None, :]
-            k = tl.load(k_ptrs, mask=n_mask[:, None], other=0.0)
+            k = tl.load(k_ptrs, mask=n_mask[:, None] & (offs_d[None, :] < D), other=0.0)
 
             scores = tl.dot(q, tl.trans(k)) * sm_scale
 
@@ -833,7 +836,7 @@ def _fused_qc_kernel_opt(
             l_i_next = l_i * alpha + l_tile
 
             v_ptrs = v_centroids_base + n_offsets[:, None] * stride_cn + offs_d[None, :]
-            v = tl.load(v_ptrs, mask=n_mask[:, None], other=0.0)
+            v = tl.load(v_ptrs, mask=n_mask[:, None] & (offs_d[None, :] < D), other=0.0)
 
             acc = acc * alpha[:, None] + tl.dot(p.to(v.dtype), v)
 
@@ -847,7 +850,7 @@ def _fused_qc_kernel_opt(
         tl.store(
             Out + bh_idx * stride_qh + m_offsets[:, None] * stride_qs + offs_d[None, :],
             out_final.to(Out.dtype.element_ty),
-            mask=m_mask[:, None],
+            mask=m_mask[:, None] & (offs_d[None, :] < D),
         )
 
 
@@ -948,6 +951,7 @@ def dynamic_block_sparse_prune_fwd_flashinfer(
         KC_NUM=kc_num,
         BLOCK_M=128,
         BLOCK_N=64,
+        BLOCK_D=triton.next_power_of_2(D),
         num_warps=4,
         num_stages=2,
     )

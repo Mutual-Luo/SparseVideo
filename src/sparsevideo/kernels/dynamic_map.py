@@ -332,6 +332,7 @@ def _precompute_v_stats_kernel(
     stride_norm_b, stride_norm_h, stride_norm_s,
     stride_vc_sq_b, stride_vc_sq_h, stride_vc_sq_kc,
     BLOCK_S: tl.constexpr,
+    BLOCK_D: tl.constexpr,
 ):
     # Grid layout:
     # - axis 0: key-cluster index
@@ -346,7 +347,7 @@ def _precompute_v_stats_kernel(
     token_start = tl.load(kc_offsets_ptr + offset_base + kc_idx)
     token_end = tl.load(kc_offsets_ptr + offset_base + kc_idx + 1)
 
-    offs_d = tl.arange(0, D)
+    offs_d = tl.arange(0, BLOCK_D)
     value_centroid = tl.load(
         value_centroids_ptr
         + batch_idx * stride_vcb
@@ -430,6 +431,7 @@ def _error_estimation_kernel(
     BLOCK_SIZE_Q: tl.constexpr,
     BLOCK_SIZE_K: tl.constexpr,
     D: tl.constexpr,
+    BLOCK_D: tl.constexpr,
 ):
     # Grid layout:
     # - axis 0: query-cluster block
@@ -443,7 +445,7 @@ def _error_estimation_kernel(
     query_cluster_idx = pid_q_block * BLOCK_SIZE_Q + tl.arange(0, BLOCK_SIZE_Q)
     query_cluster_mask = query_cluster_idx < qc_num
 
-    offs_d = tl.arange(0, D)
+    offs_d = tl.arange(0, BLOCK_D)
     offs_k = tl.arange(0, BLOCK_SIZE_K)
 
     query_centroids = tl.load(
@@ -452,7 +454,7 @@ def _error_estimation_kernel(
         + head_idx * stride_qh
         + query_cluster_idx[:, None] * stride_qqc
         + offs_d[None, :] * stride_qd,
-        mask=query_cluster_mask[:, None],
+        mask=query_cluster_mask[:, None] & (offs_d[None, :] < D),
         other=0.0,
     )
 
@@ -504,7 +506,7 @@ def _error_estimation_kernel(
                 + head_idx * stride_kh
                 + (token_offset + offs_k)[:, None] * stride_ks
                 + offs_d[None, :] * stride_kd,
-                mask=key_token_mask[:, None],
+                mask=key_token_mask[:, None] & (offs_d[None, :] < D),
                 other=0.0,
             )
             value_norm_sq = tl.load(
@@ -594,6 +596,9 @@ def error_estimation_triton(
     seq_len = permuted_K.shape[2]
     device = query_centroids.device
     scale = D ** -0.5
+    # tl.arange needs a power-of-2 range; pad the head-dim block and mask offs_d < D
+    # so non-power-of-2 head dims (e.g. Allegro's 96) compile and stay correct.
+    BLOCK_D = triton.next_power_of_2(D)
 
     # Offsets map each key cluster to a contiguous token range in the permuted sequence.
     kc_offsets = torch.zeros((B, H, kc_num + 1), device=device, dtype=torch.long)
@@ -629,6 +634,7 @@ def error_estimation_triton(
         centroid_value_sq.stride(1),
         centroid_value_sq.stride(2),
         BLOCK_S=64,
+        BLOCK_D=BLOCK_D,
         num_warps=4,
     )
 
@@ -684,6 +690,7 @@ def error_estimation_triton(
         BLOCK_SIZE_Q=BLOCK_SIZE_Q,
         BLOCK_SIZE_K=BLOCK_SIZE_K,
         D=D,
+        BLOCK_D=BLOCK_D,
         num_warps=4,
     )
 
